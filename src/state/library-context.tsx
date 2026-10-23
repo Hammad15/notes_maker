@@ -1,0 +1,256 @@
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react"
+import { StudyError, messageOf } from "../domain/errors"
+import { parentPath } from "../domain/paths"
+import type { ProviderId } from "../domain/types"
+import { useHost } from "../platform/host"
+import {
+  assertWritableDirectory,
+  createCourse,
+  listCourses,
+  loadSettings,
+  makeNotes,
+  saveSettings,
+  type CourseSummary,
+  type MakeNotesInput,
+  type Settings,
+} from "../services/library"
+
+export interface Job {
+  id: string
+  courseId: string
+  label: string
+  status: "running" | "error"
+  error?: string
+}
+
+interface LibraryState {
+  ready: boolean
+  error: string | null
+  homeMissing: boolean
+  settings: Settings
+  courses: CourseSummary[]
+  jobs: Job[]
+  revision: number
+  reload: () => Promise<void>
+  refreshLibrary: () => Promise<void>
+  chooseHome: (path: string) => Promise<void>
+  setProvider: (provider: ProviderId) => Promise<void>
+  addCourse: (name: string) => Promise<CourseSummary>
+  startMakeNotes: (input: MakeNotesInput) => void
+  dismissJob: (id: string) => void
+}
+
+const LibraryContext = createContext<LibraryState | null>(null)
+
+const EMPTY_SETTINGS: Settings = {
+  homeDirectory: null,
+  provider: "local",
+  lastMediaDirectory: null,
+}
+
+export function LibraryProvider({ children }: { children: ReactNode }) {
+  const { store } = useHost()
+  const [ready, setReady] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [homeMissing, setHomeMissing] = useState(false)
+  const [settings, setSettings] = useState<Settings>(EMPTY_SETTINGS)
+  const [courses, setCourses] = useState<CourseSummary[]>([])
+  const [jobs, setJobs] = useState<Job[]>([])
+  const [revision, setRevision] = useState(0)
+  const settingsRef = useRef(settings)
+  settingsRef.current = settings
+
+  const refreshCourses = useCallback(
+    async (home: string) => {
+      const next = await listCourses(store, home)
+      setCourses(next)
+      setHomeMissing(false)
+    },
+    [store],
+  )
+
+  const reload = useCallback(async () => {
+    setError(null)
+    const loaded = await loadSettings(store)
+    settingsRef.current = loaded
+    setSettings(loaded)
+    if (!loaded.homeDirectory) {
+      setHomeMissing(false)
+      setCourses([])
+      return
+    }
+    try {
+      await refreshCourses(loaded.homeDirectory)
+    } catch (err) {
+      if (err instanceof StudyError && err.code === "HOME_MISSING") {
+        setHomeMissing(true)
+        setCourses([])
+        return
+      }
+      throw err
+    }
+  }, [refreshCourses, store])
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        await reload()
+      } catch (err) {
+        if (!cancelled) setError(messageOf(err))
+      } finally {
+        if (!cancelled) setReady(true)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [reload])
+
+  const refreshLibrary = useCallback(async () => {
+    const home = settingsRef.current.homeDirectory
+    if (!home) return
+    try {
+      await refreshCourses(home)
+    } catch (err) {
+      if (err instanceof StudyError && err.code === "HOME_MISSING") {
+        setHomeMissing(true)
+        setCourses([])
+      }
+    }
+  }, [refreshCourses])
+
+  const chooseHome = useCallback(
+    async (path: string) => {
+      await assertWritableDirectory(store, path)
+      const next = { ...settingsRef.current, homeDirectory: path }
+      await saveSettings(store, next)
+      settingsRef.current = next
+      setSettings(next)
+      setHomeMissing(false)
+      await refreshCourses(path)
+    },
+    [refreshCourses, store],
+  )
+
+  const setProvider = useCallback(
+    async (provider: ProviderId) => {
+      const next = { ...settingsRef.current, provider }
+      settingsRef.current = next
+      setSettings(next)
+      await saveSettings(store, next)
+    },
+    [store],
+  )
+
+  const addCourse = useCallback(
+    async (name: string) => {
+      const home = settingsRef.current.homeDirectory
+      if (!home) throw new StudyError("Choose a home folder first.", "HOME")
+      const course = await createCourse(store, home, name)
+      await refreshCourses(home)
+      return course
+    },
+    [refreshCourses, store],
+  )
+
+  const startMakeNotes = useCallback(
+    (input: MakeNotesInput) => {
+      const label = input.mediaPath.split(/[\\/]/).pop() || "recording"
+      const id = crypto.randomUUID()
+      setJobs((current) => [...current, { id, courseId: input.courseId, label, status: "running" }])
+      void (async () => {
+        const parent = parentPath(input.mediaPath)
+        if (parent && parent !== settingsRef.current.lastMediaDirectory) {
+          const next = { ...settingsRef.current, lastMediaDirectory: parent }
+          settingsRef.current = next
+          setSettings(next)
+          try {
+            await saveSettings(store, next)
+          } catch {
+            // The notes can still be filed if settings fail to update.
+          }
+        }
+        try {
+          await makeNotes(store, input)
+          setJobs((current) => current.filter((job) => job.id !== id))
+        } catch (err) {
+          setJobs((current) =>
+            current.map((job) =>
+              job.id === id ? { ...job, status: "error", error: messageOf(err) } : job,
+            ),
+          )
+        } finally {
+          setRevision((value) => value + 1)
+          const home = settingsRef.current.homeDirectory
+          if (!home) return
+          try {
+            await refreshCourses(home)
+          } catch (err) {
+            if (err instanceof StudyError && err.code === "HOME_MISSING") {
+              setHomeMissing(true)
+              setCourses([])
+            }
+          }
+        }
+      })()
+    },
+    [refreshCourses, store],
+  )
+
+  const dismissJob = useCallback((id: string) => {
+    setJobs((current) => current.filter((job) => job.id !== id))
+  }, [])
+
+  const value = useMemo<LibraryState>(
+    () => ({
+      ready,
+      error,
+      homeMissing,
+      settings,
+      courses,
+      jobs,
+      revision,
+      reload,
+      refreshLibrary,
+      chooseHome,
+      setProvider,
+      addCourse,
+      startMakeNotes,
+      dismissJob,
+    }),
+    [
+      ready,
+      error,
+      homeMissing,
+      settings,
+      courses,
+      jobs,
+      revision,
+      reload,
+      refreshLibrary,
+      chooseHome,
+      setProvider,
+      addCourse,
+      startMakeNotes,
+      dismissJob,
+    ],
+  )
+
+  return <LibraryContext.Provider value={value}>{children}</LibraryContext.Provider>
+}
+
+export function useLibrary(): LibraryState {
+  const value = useContext(LibraryContext)
+  if (!value) throw new Error("Study Notes is missing its library.")
+  return value
+}

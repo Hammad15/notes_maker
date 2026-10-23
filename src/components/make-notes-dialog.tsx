@@ -1,0 +1,189 @@
+import { useEffect, useState, type FormEvent } from "react"
+import { messageOf } from "../domain/errors"
+import { assertUsableFolderName } from "../domain/names"
+import { fileName } from "../domain/paths"
+import { isMediaFile } from "../domain/text"
+import { useHost } from "../platform/host"
+import type { ModuleInfo } from "../services/library"
+import { useLibrary } from "../state/library-context"
+import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectSeparator,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { PathBrowser } from "./path-browser"
+
+export function MakeNotesDialog({
+  open,
+  courseId,
+  courseName,
+  modules,
+  onOpenChange,
+}: {
+  open: boolean
+  courseId: string
+  courseName: string
+  modules: ModuleInfo[]
+  onOpenChange: (open: boolean) => void
+}) {
+  const host = useHost()
+  const { settings, startMakeNotes } = useLibrary()
+  const [mediaPath, setMediaPath] = useState<string | null>(null)
+  const [moduleChoice, setModuleChoice] = useState("course")
+  const [newModuleName, setNewModuleName] = useState("")
+  const [error, setError] = useState<string | null>(null)
+  const [browserOpen, setBrowserOpen] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    setMediaPath(null)
+    setModuleChoice("course")
+    setNewModuleName("")
+    setError(null)
+  }, [open])
+
+  async function chooseFile() {
+    setError(null)
+    if (host.nativeDialogs) {
+      const picked = await host.pickMedia(
+        settings.lastMediaDirectory ?? settings.homeDirectory,
+      )
+      if (picked) setMediaPath(picked)
+      return
+    }
+    setBrowserOpen(true)
+  }
+
+  function submit(event: FormEvent) {
+    event.preventDefault()
+    if (!settings.homeDirectory) return
+    if (!mediaPath || !isMediaFile(mediaPath)) {
+      setError("Choose a video or audio file.")
+      return
+    }
+    let moduleId: string | null = null
+    let moduleName: string | null = null
+    if (moduleChoice === "new") {
+      try {
+        assertUsableFolderName(newModuleName)
+      } catch (err) {
+        setError(messageOf(err))
+        return
+      }
+      moduleName = newModuleName.trim()
+    } else if (moduleChoice !== "course") {
+      moduleId = moduleChoice
+    }
+    startMakeNotes({
+      home: settings.homeDirectory,
+      courseId,
+      mediaPath,
+      provider: settings.provider,
+      moduleId,
+      newModuleName: moduleName,
+    })
+    onOpenChange(false)
+  }
+
+  return (
+    <>
+      <Dialog open={open} onOpenChange={onOpenChange}>
+        <DialogContent className="sm:max-w-lg">
+          <form onSubmit={submit} className="grid gap-4">
+            <DialogHeader>
+              <DialogTitle>Make notes</DialogTitle>
+              <DialogDescription>
+                {courseName} stays the course for these notes.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-2">
+              <Label>Course</Label>
+              <p className="font-serif text-lg">{courseName}</p>
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="recording">Recording</Label>
+              {mediaPath ? (
+                <div className="rounded-lg border border-border bg-background px-3 py-2">
+                  <p className="truncate text-sm">{fileName(mediaPath)}</p>
+                  <p className="truncate font-mono text-xs text-muted-foreground" title={mediaPath}>
+                    {mediaPath}
+                  </p>
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">No file chosen yet.</p>
+              )}
+              <Button id="recording" type="button" variant="outline" onClick={() => void chooseFile()}>
+                {mediaPath ? "Change file" : "Choose video or audio"}
+              </Button>
+            </div>
+            <div className="grid gap-2">
+              <Label>Where should the notes go?</Label>
+              <Select value={moduleChoice} onValueChange={setModuleChoice}>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="This course" />
+                </SelectTrigger>
+                <SelectContent position="popper">
+                  <SelectItem value="course">This course</SelectItem>
+                  {modules.map((module) => (
+                    <SelectItem key={module.id} value={module.id}>
+                      {module.name}
+                    </SelectItem>
+                  ))}
+                  <SelectSeparator />
+                  <SelectItem value="new">New module</SelectItem>
+                </SelectContent>
+              </Select>
+              {moduleChoice === "new" ? (
+                <Input
+                  value={newModuleName}
+                  onChange={(event) => {
+                    setNewModuleName(event.target.value)
+                    setError(null)
+                  }}
+                  placeholder="Cells"
+                  aria-label="New module name"
+                  className="h-10"
+                />
+              ) : null}
+            </div>
+            {settings.provider === "cloud" ? (
+              <p className="rounded-lg bg-muted px-3 py-2 text-sm leading-relaxed text-muted-foreground">
+                Cloud notes need an entitlement on this computer. Local notes still work.
+              </p>
+            ) : (
+              <p className="text-sm text-muted-foreground">Using local notes.</p>
+            )}
+            {error ? <p className="text-sm text-destructive">{error}</p> : null}
+            <DialogFooter className="sm:items-center sm:justify-between">
+              <p className="text-xs leading-relaxed text-muted-foreground sm:max-w-[16rem]">
+                You can close this window. Writing the notes and PDF keeps going.
+              </p>
+              <Button type="submit">Make notes</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+      <PathBrowser
+        open={browserOpen}
+        mode="media"
+        initialPath={settings.lastMediaDirectory ?? settings.homeDirectory}
+        onOpenChange={setBrowserOpen}
+        onPick={setMediaPath}
+      />
+    </>
+  )
+}

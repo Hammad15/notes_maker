@@ -1,0 +1,18 @@
+export const Ops = {
+  appDataDir: "appDataDir",
+  userHome: "userHome",
+  roots: "roots",
+  readText: "readText",
+  writeText: "writeText",
+  writeBytes: "writeBytes",
+  exists: "exists",
+  list: "list",
+  mkdir: "mkdir",
+  rename: "rename",
+  remove: "remove",
+  stat: "stat",
+  setHidden: "setHidden",
+  probeMedia: "probeMedia",
+  pickDirectory: "pickDirectory",
+  pickMedia: "pickMedia",
+} as const
