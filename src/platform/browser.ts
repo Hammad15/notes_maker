@@ -1,3 +1,4 @@
+import { DESKTOP_WINDOW_REQUIRED, WINDOWS_DIALOG_REQUIRED } from "./dialogs"
 import { createRemoteStore } from "./remoteStore"
 import type { Host } from "./types"
 
@@ -23,7 +24,14 @@ export function createBrowserHost(): Host {
   return {
     nativeDialogs: false,
     store: createRemoteStore(browserCall),
-    pickDirectory: async () => null,
-    pickMedia: async () => null,
+    pickDirectory: async () => {
+      throw new Error(WINDOWS_DIALOG_REQUIRED)
+    },
+    pickMedia: async () => {
+      throw new Error(WINDOWS_DIALOG_REQUIRED)
+    },
+    openPath: async () => {
+      throw new Error(DESKTOP_WINDOW_REQUIRED)
+    },
   }
 }

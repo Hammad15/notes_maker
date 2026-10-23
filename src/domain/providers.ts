@@ -1,13 +1,6 @@
 import { renderFull, renderRestyle } from "./compose"
 import { EntitlementError } from "./errors"
-import type {
-  MediaProbe,
-  NoteContent,
-  Preset,
-  ProviderId,
-  Transcript,
-  TranscriptSegment,
-} from "./types"
+import type { MediaProbe, NoteContent, Preset, ProviderId, Transcript } from "./types"
 
 export interface Entitlement {
   entitled: boolean
@@ -32,25 +25,16 @@ export function buildTranscript(
   provider: ProviderId,
   createdAt = new Date().toISOString(),
 ): Transcript {
-  const segments: TranscriptSegment[] = input.probe.chapters.length
-    ? input.probe.chapters.map((chapter) => ({
-        start: chapter.start,
-        end: chapter.end,
-        text: chapter.title.trim() || "Untitled section",
-      }))
-    : [
-        {
-          start: 0,
-          end: input.probe.durationSeconds ?? 0,
-          text: input.title,
-        },
-      ]
   return {
     noteId: input.noteId,
     provider,
     createdAt,
     durationSeconds: input.probe.durationSeconds,
-    segments,
+    transcribed: false,
+    segments: [],
+    chapters: input.probe.chapters.filter(
+      (chapter) => Number.isFinite(chapter.start) && Number.isFinite(chapter.end),
+    ),
   }
 }
 

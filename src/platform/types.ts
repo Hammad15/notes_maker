@@ -22,4 +22,5 @@ export interface Host {
   store: FileStore
   pickDirectory(): Promise<string | null>
   pickMedia(directory?: string | null): Promise<string | null>
+  openPath(path: string): Promise<void>
 }

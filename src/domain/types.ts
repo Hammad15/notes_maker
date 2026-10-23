@@ -11,7 +11,9 @@ export interface Transcript {
   provider: ProviderId
   createdAt: string
   durationSeconds: number | null
+  transcribed: boolean
   segments: TranscriptSegment[]
+  chapters: ChapterMark[]
 }
 
 export interface ChapterMark {
@@ -54,4 +56,6 @@ export interface NoteContent {
   filedAt: string
   durationSeconds: number | null
   segments: TranscriptSegment[]
+  chapters: ChapterMark[]
+  transcriptProduced: boolean
 }

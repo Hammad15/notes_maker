@@ -24,23 +24,37 @@ function metaLine(content: NoteContent): string {
 function summarySentence(content: NoteContent): string {
   const duration = formatDurationWords(content.durationSeconds)
   const where = whereLine(content)
-  if (duration) {
-    return `${safeTitle(content.title)} is filed in ${where}. The recording runs ${duration}.`
-  }
-  return `${safeTitle(content.title)} is filed in ${where}.`
+  const filed = duration
+    ? `${safeTitle(content.title)} is filed in ${where}. The recording runs ${duration}.`
+    : `${safeTitle(content.title)} is filed in ${where}.`
+  if (hasTranscript(content)) return filed
+  return `${filed} No transcript was produced. This build does not run a speech model.`
 }
 
-function usableSegments(content: NoteContent): TranscriptSegment[] {
-  const segments = content.segments.filter((segment) => segment.text.trim())
-  if (segments.length > 0) return segments
-  return [{ start: 0, end: content.durationSeconds ?? 0, text: safeTitle(content.title) }]
+function transcriptSegments(content: NoteContent): TranscriptSegment[] {
+  if (!content.transcriptProduced) return []
+  return content.segments.filter((segment) => segment.text.trim())
+}
+
+function hasTranscript(content: NoteContent): boolean {
+  return transcriptSegments(content).length > 0
 }
 
 function outlineLines(content: NoteContent): string[] {
-  return usableSegments(content).map((segment) => {
-    const text = segment.text.replace(/\s+/g, " ").trim()
-    return `- ${formatRange(segment.start, segment.end)} ${text}`
-  })
+  const spoken = transcriptSegments(content)
+  if (spoken.length > 0) {
+    return spoken.map((segment) => {
+      const text = segment.text.replace(/\s+/g, " ").trim()
+      return `- ${formatRange(segment.start, segment.end)} ${text}`
+    })
+  }
+  if (content.chapters.length > 0) {
+    return content.chapters.map((chapter) => {
+      const text = chapter.title.replace(/\s+/g, " ").trim() || "Untitled chapter"
+      return `- ${formatRange(chapter.start, chapter.end)} ${text}`
+    })
+  }
+  return ["- No transcript was produced."]
 }
 
 function escapeCell(text: string): string {
@@ -48,15 +62,23 @@ function escapeCell(text: string): string {
 }
 
 function tableRows(content: NoteContent): string[] {
-  return usableSegments(content).map(
+  return transcriptSegments(content).map(
     (segment) =>
       `| ${formatRange(segment.start, segment.end)} | ${escapeCell(segment.text)} |`,
   )
 }
 
+function chapterRows(content: NoteContent): string[] {
+  return content.chapters.map((chapter) => {
+    const title = escapeCell(chapter.title) || "Untitled chapter"
+    return `| ${formatRange(chapter.start, chapter.end)} | ${title} |`
+  })
+}
+
 function proseBody(content: NoteContent): string {
   const summary = summarySentence(content)
-  const segments = usableSegments(content)
+  const segments = transcriptSegments(content)
+  if (segments.length === 0) return summary
   if (segments.length === 1) {
     const only = segments[0]
     return `${summary} The transcript line is "${only.text.replace(/\s+/g, " ").trim()}".`
@@ -74,8 +96,10 @@ function heading(content: NoteContent): string {
   return `# ${safeTitle(content.title)}`
 }
 
+const NOT_A_TRANSCRIPT = "These are chapter markers from the file, not a transcript."
+
 export function renderFull(content: NoteContent): string {
-  return [
+  const lines = [
     heading(content),
     "",
     metaLine(content),
@@ -84,17 +108,26 @@ export function renderFull(content: NoteContent): string {
     "",
     summarySentence(content),
     "",
-    "## Outline",
-    "",
-    ...outlineLines(content),
-    "",
-    "## Transcript",
-    "",
-    "| Time | Notes |",
-    "| --- | --- |",
-    ...tableRows(content),
-    "",
-  ].join("\n")
+  ]
+  if (hasTranscript(content)) {
+    lines.push(
+      "## Outline",
+      "",
+      ...outlineLines(content),
+      "",
+      "## Transcript",
+      "",
+      "| Time | Notes |",
+      "| --- | --- |",
+      ...tableRows(content),
+      "",
+    )
+  } else if (content.chapters.length > 0) {
+    lines.push("## Chapters", "", ...outlineLines(content), "", NOT_A_TRANSCRIPT, "")
+  } else {
+    lines.push("## Outline", "", ...outlineLines(content), "")
+  }
+  return lines.join("\n")
 }
 
 function renderConcise(content: NoteContent): string {
@@ -131,6 +164,13 @@ function renderParagraphs(content: NoteContent): string {
 }
 
 function renderTable(content: NoteContent): string {
+  if (!hasTranscript(content)) {
+    const lines = [heading(content), "", metaLine(content), "", summarySentence(content), ""]
+    if (content.chapters.length > 0) {
+      lines.push("| Time | Chapter |", "| --- | --- |", ...chapterRows(content), "", NOT_A_TRANSCRIPT, "")
+    }
+    return lines.join("\n")
+  }
   return [
     heading(content),
     "",

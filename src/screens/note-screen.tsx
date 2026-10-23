@@ -20,7 +20,8 @@ const PRESETS: Array<{ id: Preset; label: string }> = [
 
 export function NoteScreen() {
   const { courseId = "", noteId = "" } = useParams()
-  const { store } = useHost()
+  const host = useHost()
+  const { store } = host
   const { settings, revision } = useLibrary()
   const [note, setNote] = useState<NoteDocument | null>(null)
   const [loading, setLoading] = useState(true)
@@ -29,6 +30,7 @@ export function NoteScreen() {
   const [prompt, setPrompt] = useState("")
   const [busy, setBusy] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
+  const [pdfError, setPdfError] = useState<string | null>(null)
 
   useEffect(() => {
     const home = settings.homeDirectory
@@ -117,12 +119,26 @@ export function NoteScreen() {
       >
         {note.courseName}
       </Link>
-      <p className="mt-4 text-sm text-muted-foreground">
-        {note.moduleName ?? "This course"}
-        {note.mediaPath ? ` · ${fileName(note.mediaPath)}` : ""}
-        {" · "}
-        {note.fileStem}.md and {note.fileStem}.pdf
-      </p>
+      <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-sm text-muted-foreground">
+          {note.moduleName ?? "This course"}
+          {note.mediaPath ? ` · ${fileName(note.mediaPath)}` : ""}
+          {" · "}
+          {note.fileStem}.md and {note.fileStem}.pdf
+        </p>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={!note.pdfExists}
+          onClick={() => {
+            setPdfError(null)
+            void host.openPath(note.pdfPath).catch((err: unknown) => setPdfError(messageOf(err)))
+          }}
+        >
+          Open PDF
+        </Button>
+      </div>
+      {pdfError ? <p className="mt-3 text-sm text-destructive">{pdfError}</p> : null}
       <article className="note-body mt-6 max-w-2xl">
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}

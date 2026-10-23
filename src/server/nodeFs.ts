@@ -3,7 +3,9 @@ import { promises as fs } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { promisify } from "node:util"
+import { durationFromHeader } from "../domain/media.ts"
 import type { DirEntry, FileStat, MediaProbe } from "../domain/types.ts"
+import { WINDOWS_DIALOG_REQUIRED } from "../platform/dialogs.ts"
 import { Ops } from "../platform/ops.ts"
 import type { FileStore } from "../platform/types.ts"
 
@@ -30,7 +32,53 @@ function kindOf(isDir: boolean): DirEntry["kind"] {
   return isDir ? "dir" : "file"
 }
 
+function powershellLiteral(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`
+}
+
+async function readPrefix(target: string, limit: number): Promise<Uint8Array> {
+  const handle = await fs.open(target, "r")
+  try {
+    const buffer = Buffer.alloc(limit)
+    const { bytesRead } = await handle.read(buffer, 0, limit, 0)
+    return buffer.subarray(0, bytesRead)
+  } finally {
+    await handle.close()
+  }
+}
+
+async function windowsMediaDuration(target: string): Promise<number | null> {
+  if (process.platform !== "win32") return null
+  const script = [
+    `$dir = ${powershellLiteral(path.dirname(target))}`,
+    `$name = ${powershellLiteral(path.basename(target))}`,
+    "$shell = New-Object -ComObject Shell.Application",
+    "$folder = $shell.NameSpace($dir)",
+    "if ($null -eq $folder) { exit 2 }",
+    "$item = $folder.ParseName($name)",
+    "if ($null -eq $item) { exit 3 }",
+    "$d = $item.ExtendedProperty('System.Media.Duration')",
+    "if ($null -eq $d) { exit 4 }",
+    "Write-Output $d",
+  ].join("; ")
+  try {
+    const { stdout } = await execFileAsync(
+      "powershell.exe",
+      ["-NoProfile", "-Command", script],
+      { timeout: 15000, windowsHide: true },
+    )
+    const raw = Number(String(stdout).trim())
+    if (!Number.isFinite(raw) || raw <= 0) return null
+    return raw / 10_000_000
+  } catch {
+    return null
+  }
+}
+
 async function readProbe(target: string, size: number): Promise<MediaProbe> {
+  let durationSeconds: number | null = null
+  let title: string | null = null
+  let chapters: MediaProbe["chapters"] = []
   try {
     const { stdout } = await execFileAsync(
       "ffprobe",
@@ -43,23 +91,27 @@ async function readProbe(target: string, size: number): Promise<MediaProbe> {
     }
     const duration = json.format?.duration ? Number(json.format.duration) : null
     const tags = json.format?.tags ?? {}
-    const title = tags.title || tags.Title || null
-    const chapters = (json.chapters ?? [])
+    title = tags.title || tags.Title || null
+    chapters = (json.chapters ?? [])
       .map((chapter) => ({
         start: Number(chapter.start_time),
         end: Number(chapter.end_time),
         title: chapter.tags?.title || chapter.tags?.Title || "",
       }))
       .filter((chapter) => Number.isFinite(chapter.start) && Number.isFinite(chapter.end))
-    return {
-      size,
-      durationSeconds: duration != null && Number.isFinite(duration) ? duration : null,
-      title,
-      chapters,
-    }
+    durationSeconds = duration != null && Number.isFinite(duration) ? duration : null
   } catch {
-    return { size, durationSeconds: null, title: null, chapters: [] }
+    durationSeconds = null
   }
+  if (durationSeconds == null) {
+    try {
+      durationSeconds = durationFromHeader(await readPrefix(target, 256 * 1024), size)
+    } catch {
+      durationSeconds = null
+    }
+  }
+  if (durationSeconds == null) durationSeconds = await windowsMediaDuration(target)
+  return { size, durationSeconds, title, chapters }
 }
 
 export function createNodeFileStore(appData = resolveAppDataDir(process.platform, process.env, os.homedir())): FileStore {
@@ -245,7 +297,7 @@ export async function dispatchDesktop(
       return store.probeMedia(requiredString(body, "path"))
     case Ops.pickDirectory:
     case Ops.pickMedia:
-      throw new Error("Open the desktop window to use the system file dialog.")
+      throw new Error(WINDOWS_DIALOG_REQUIRED)
     default:
       throw new Error(`Unknown request ${op}.`)
   }

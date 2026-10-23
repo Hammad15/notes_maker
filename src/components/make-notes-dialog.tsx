@@ -3,6 +3,7 @@ import { messageOf } from "../domain/errors"
 import { assertUsableFolderName } from "../domain/names"
 import { fileName } from "../domain/paths"
 import { isMediaFile } from "../domain/text"
+import { WINDOWS_DIALOG_REQUIRED } from "../platform/dialogs"
 import { useHost } from "../platform/host"
 import type { ModuleInfo } from "../services/library"
 import { useLibrary } from "../state/library-context"
@@ -25,8 +26,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { PathBrowser } from "./path-browser"
-
 export function MakeNotesDialog({
   open,
   courseId,
@@ -46,7 +45,6 @@ export function MakeNotesDialog({
   const [moduleChoice, setModuleChoice] = useState("course")
   const [newModuleName, setNewModuleName] = useState("")
   const [error, setError] = useState<string | null>(null)
-  const [browserOpen, setBrowserOpen] = useState(false)
 
   useEffect(() => {
     if (!open) return
@@ -58,14 +56,16 @@ export function MakeNotesDialog({
 
   async function chooseFile() {
     setError(null)
-    if (host.nativeDialogs) {
-      const picked = await host.pickMedia(
-        settings.lastMediaDirectory ?? settings.homeDirectory,
-      )
-      if (picked) setMediaPath(picked)
+    if (!host.nativeDialogs) {
+      setError(WINDOWS_DIALOG_REQUIRED)
       return
     }
-    setBrowserOpen(true)
+    try {
+      const picked = await host.pickMedia(settings.lastMediaDirectory ?? settings.homeDirectory)
+      if (picked) setMediaPath(picked)
+    } catch (err) {
+      setError(messageOf(err))
+    }
   }
 
   function submit(event: FormEvent) {
@@ -100,7 +100,6 @@ export function MakeNotesDialog({
   }
 
   return (
-    <>
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent className="sm:max-w-lg">
           <form onSubmit={submit} className="grid gap-4">
@@ -177,13 +176,5 @@ export function MakeNotesDialog({
           </form>
         </DialogContent>
       </Dialog>
-      <PathBrowser
-        open={browserOpen}
-        mode="media"
-        initialPath={settings.lastMediaDirectory ?? settings.homeDirectory}
-        onOpenChange={setBrowserOpen}
-        onPick={setMediaPath}
-      />
-    </>
   )
 }

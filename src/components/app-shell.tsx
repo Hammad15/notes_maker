@@ -1,10 +1,10 @@
 import { NavLink } from "react-router-dom"
 import { truncateMiddle } from "../domain/paths"
+import { WINDOWS_DIALOG_REQUIRED } from "../platform/dialogs"
+import { useHost } from "../platform/host"
 import { useLibrary } from "../state/library-context"
 import { Button } from "@/components/ui/button"
 import { useState } from "react"
-import { PathBrowser } from "./path-browser"
-import { useHost } from "../platform/host"
 
 function ProviderSwitch() {
   const { settings, setProvider } = useLibrary()
@@ -82,23 +82,22 @@ function JobBanner() {
 export function AppShell({ children }: { children: React.ReactNode }) {
   const { settings, chooseHome } = useLibrary()
   const host = useHost()
-  const [browserOpen, setBrowserOpen] = useState(false)
   const [homeError, setHomeError] = useState<string | null>(null)
   const home = settings.homeDirectory
 
   async function changeHome() {
     setHomeError(null)
-    if (host.nativeDialogs) {
-      const picked = await host.pickDirectory()
-      if (!picked) return
-      try {
-        await chooseHome(picked)
-      } catch (err) {
-        setHomeError(err instanceof Error ? err.message : "Could not use that folder.")
-      }
+    if (!host.nativeDialogs) {
+      setHomeError(WINDOWS_DIALOG_REQUIRED)
       return
     }
-    setBrowserOpen(true)
+    try {
+      const picked = await host.pickDirectory()
+      if (!picked) return
+      await chooseHome(picked)
+    } catch (err) {
+      setHomeError(err instanceof Error ? err.message : "Could not use that folder.")
+    }
   }
 
   return (
@@ -144,17 +143,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div className="mx-auto w-full max-w-4xl px-5 py-8 md:px-10 md:py-10">{children}</div>
         </div>
       </div>
-      <PathBrowser
-        open={browserOpen}
-        mode="directory"
-        initialPath={home}
-        onOpenChange={setBrowserOpen}
-        onPick={(path) => {
-          void chooseHome(path).catch((err: unknown) => {
-            setHomeError(err instanceof Error ? err.message : "Could not use that folder.")
-          })
-        }}
-      />
     </div>
   )
 }

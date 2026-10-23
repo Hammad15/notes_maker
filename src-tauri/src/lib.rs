@@ -1,6 +1,7 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
-use std::fs;
+use std::fs::{self, File};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::UNIX_EPOCH;
@@ -157,12 +158,249 @@ fn set_hidden(path: &str) -> Result<(), String> {
     }
 }
 
+fn read_prefix(path: &str, limit: usize) -> Vec<u8> {
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        Err(_) => return Vec::new(),
+    };
+    let mut buf = vec![0u8; limit];
+    let read = file.read(&mut buf).unwrap_or(0);
+    buf.truncate(read);
+    buf
+}
+
+fn u16_le(bytes: &[u8], offset: usize) -> Option<u16> {
+    let slice = bytes.get(offset..offset + 2)?;
+    Some(u16::from_le_bytes([slice[0], slice[1]]))
+}
+
+fn u32_le(bytes: &[u8], offset: usize) -> Option<u32> {
+    let slice = bytes.get(offset..offset + 4)?;
+    Some(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
+}
+
+fn u32_be(bytes: &[u8], offset: usize) -> Option<u32> {
+    let slice = bytes.get(offset..offset + 4)?;
+    Some(u32::from_be_bytes([slice[0], slice[1], slice[2], slice[3]]))
+}
+
+fn plausible_duration(seconds: f64) -> Option<f64> {
+    if seconds.is_finite() && seconds > 0.0 && seconds <= 48.0 * 60.0 * 60.0 {
+        Some(seconds)
+    } else {
+        None
+    }
+}
+
+fn wav_duration(bytes: &[u8]) -> Option<f64> {
+    if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return None;
+    }
+    let mut offset = 12usize;
+    let mut sample_rate = 0u32;
+    let mut channels = 0u16;
+    let mut bits = 0u16;
+    let mut data_size: Option<u32> = None;
+    while offset + 8 <= bytes.len() {
+        let id = &bytes[offset..offset + 4];
+        let size = u32_le(bytes, offset + 4)? as usize;
+        let start = offset + 8;
+        if id == b"fmt " && size >= 16 && start + 16 <= bytes.len() {
+            channels = u16_le(bytes, start + 2).unwrap_or(0);
+            sample_rate = u32_le(bytes, start + 4).unwrap_or(0);
+            bits = u16_le(bytes, start + 14).unwrap_or(0);
+        } else if id == b"data" {
+            data_size = Some(size as u32);
+            break;
+        }
+        offset = start + size + (size % 2);
+    }
+    let data_size = data_size?;
+    if sample_rate == 0 || channels == 0 || bits == 0 {
+        return None;
+    }
+    let bytes_per_second = f64::from(sample_rate) * f64::from(channels) * (f64::from(bits) / 8.0);
+    if bytes_per_second == 0.0 {
+        return None;
+    }
+    plausible_duration(f64::from(data_size) / bytes_per_second)
+}
+
+fn bitrate_kbps(version: u8, layer: u8, index: usize) -> u32 {
+    const MPEG1_L1: [u32; 16] = [0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, 0];
+    const MPEG1_L2: [u32; 16] = [0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 0];
+    const MPEG1_L3: [u32; 16] = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0];
+    const MPEG2_L1: [u32; 16] = [0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256, 0];
+    const MPEG2_L3: [u32; 16] = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0];
+    let table: &[u32; 16] = if version == 3 {
+        if layer == 3 {
+            &MPEG1_L1
+        } else if layer == 2 {
+            &MPEG1_L2
+        } else {
+            &MPEG1_L3
+        }
+    } else if layer == 3 {
+        &MPEG2_L1
+    } else {
+        &MPEG2_L3
+    };
+    table.get(index).copied().unwrap_or(0)
+}
+
+struct FrameInfo {
+    offset: usize,
+    bitrate: u32,
+    sample_rate: u32,
+    samples_per_frame: u32,
+    xing_offset: usize,
+}
+
+fn frame_at(bytes: &[u8], offset: usize) -> Option<FrameInfo> {
+    if offset + 4 > bytes.len() || bytes[offset] != 0xff || bytes[offset + 1] & 0xe0 != 0xe0 {
+        return None;
+    }
+    let version = (bytes[offset + 1] >> 3) & 0x3;
+    let layer = (bytes[offset + 1] >> 1) & 0x3;
+    let bitrate_index = ((bytes[offset + 2] >> 4) & 0xf) as usize;
+    let sample_index = (bytes[offset + 2] >> 2) & 0x3;
+    if version == 1 || layer == 0 || bitrate_index == 0 || bitrate_index == 15 || sample_index == 3 {
+        return None;
+    }
+    let mpeg1 = version == 3;
+    let sample_rate = if mpeg1 {
+        [44100, 48000, 32000][sample_index as usize]
+    } else if version == 2 {
+        [22050, 24000, 16000][sample_index as usize]
+    } else {
+        [11025, 12000, 8000][sample_index as usize]
+    };
+    let bitrate = bitrate_kbps(version, layer, bitrate_index) * 1000;
+    if sample_rate == 0 || bitrate == 0 {
+        return None;
+    }
+    let mono = ((bytes[offset + 3] >> 6) & 0x3) == 3;
+    let samples_per_frame = if layer == 3 {
+        384
+    } else if layer == 1 && !mpeg1 {
+        576
+    } else {
+        1152
+    };
+    let side_info = if layer == 1 {
+        if mpeg1 {
+            if mono { 17 } else { 32 }
+        } else if mono {
+            9
+        } else {
+            17
+        }
+    } else {
+        0
+    };
+    Some(FrameInfo {
+        offset,
+        bitrate,
+        sample_rate,
+        samples_per_frame,
+        xing_offset: 4 + side_info,
+    })
+}
+
+fn mp3_duration(bytes: &[u8], file_size: u64) -> Option<f64> {
+    let mut start = 0usize;
+    if bytes.len() >= 10 && &bytes[0..3] == b"ID3" {
+        let size = ((bytes[6] as usize & 0x7f) << 21)
+            | ((bytes[7] as usize & 0x7f) << 14)
+            | ((bytes[8] as usize & 0x7f) << 7)
+            | (bytes[9] as usize & 0x7f);
+        start = 10 + size + if bytes[5] & 0x10 != 0 { 10 } else { 0 };
+    }
+    let limit = bytes.len().saturating_sub(4).min(start.saturating_add(65536));
+    let mut frame = None;
+    let mut offset = start;
+    while offset <= limit {
+        if let Some(found) = frame_at(bytes, offset) {
+            frame = Some(found);
+            break;
+        }
+        offset += 1;
+    }
+    let frame = frame?;
+    let mark = frame.offset + frame.xing_offset;
+    if mark + 12 <= bytes.len() {
+        let tag = &bytes[mark..mark + 4];
+        if tag == b"Xing" || tag == b"Info" {
+            let flags = u32_be(bytes, mark + 4).unwrap_or(0);
+            if flags & 0x1 != 0 {
+                if let Some(frames) = u32_be(bytes, mark + 8) {
+                    if frames > 0 {
+                        return plausible_duration(
+                            f64::from(frames) * f64::from(frame.samples_per_frame)
+                                / f64::from(frame.sample_rate),
+                        );
+                    }
+                }
+            }
+        }
+    }
+    let audio_bytes = file_size.saturating_sub(frame.offset as u64);
+    if audio_bytes == 0 {
+        return None;
+    }
+    plausible_duration((audio_bytes as f64) * 8.0 / f64::from(frame.bitrate))
+}
+
+fn duration_from_header(bytes: &[u8], file_size: u64) -> Option<f64> {
+    if let Some(duration) = wav_duration(bytes) {
+        return Some(duration);
+    }
+    let looks_like_mp3 = bytes.len() >= 3 && &bytes[0..3] == b"ID3" || frame_at(bytes, 0).is_some();
+    if looks_like_mp3 {
+        return mp3_duration(bytes, file_size);
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn windows_media_duration(path: &str) -> Option<f64> {
+    use std::os::windows::process::CommandExt;
+    let parent = Path::new(path).parent()?.to_string_lossy().replace('\'', "''");
+    let name = Path::new(path).file_name()?.to_string_lossy().replace('\'', "''");
+    let script = format!(
+        "$dir = '{parent}'; $name = '{name}'; $shell = New-Object -ComObject Shell.Application; $folder = $shell.NameSpace($dir); if ($null -eq $folder) {{ exit 2 }}; $item = $folder.ParseName($name); if ($null -eq $item) {{ exit 3 }}; $d = $item.ExtendedProperty('System.Media.Duration'); if ($null -eq $d) {{ exit 4 }}; Write-Output $d"
+    );
+    let output = Command::new("powershell.exe")
+        .args(["-NoProfile", "-Command", &script])
+        .creation_flags(0x08000000)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let raw: f64 = text.trim().parse().ok()?;
+    if raw <= 0.0 {
+        return None;
+    }
+    Some(raw / 10_000_000.0)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn windows_media_duration(path: &str) -> Option<f64> {
+    let _ = path;
+    None
+}
+
 fn probe_media(path: &str) -> Result<Value, String> {
     let meta = fs::metadata(path).map_err(|error| io_message(path, &error))?;
     if meta.is_dir() {
         return Err("That recording is not there anymore.".into());
     }
-    let output = Command::new("ffprobe")
+    let mut duration: Option<f64> = None;
+    let mut title: Option<String> = None;
+    let mut chapters = Vec::new();
+    if let Ok(output) = Command::new("ffprobe")
         .args([
             "-v",
             "error",
@@ -172,51 +410,45 @@ fn probe_media(path: &str) -> Result<Value, String> {
             "-show_chapters",
             path,
         ])
-        .output();
-    let Ok(output) = output else {
-        return Ok(json!({
-            "size": meta.len(),
-            "durationSeconds": null,
-            "title": null,
-            "chapters": [],
-        }));
-    };
-    if !output.status.success() {
-        return Ok(json!({
-            "size": meta.len(),
-            "durationSeconds": null,
-            "title": null,
-            "chapters": [],
-        }));
-    }
-    let parsed: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
-    let duration = parsed
-        .pointer("/format/duration")
-        .and_then(|value| value.as_str())
-        .and_then(|value| value.parse::<f64>().ok());
-    let title = parsed
-        .pointer("/format/tags/title")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let mut chapters = Vec::new();
-    if let Some(items) = parsed.get("chapters").and_then(Value::as_array) {
-        for chapter in items {
-            let start = chapter
-                .get("start_time")
-                .and_then(Value::as_str)
+        .output()
+    {
+        if output.status.success() {
+            let parsed: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+            duration = parsed
+                .pointer("/format/duration")
+                .and_then(|value| value.as_str())
                 .and_then(|value| value.parse::<f64>().ok());
-            let end = chapter
-                .get("end_time")
+            title = parsed
+                .pointer("/format/tags/title")
                 .and_then(Value::as_str)
-                .and_then(|value| value.parse::<f64>().ok());
-            if let (Some(start), Some(end)) = (start, end) {
-                let title = chapter
-                    .pointer("/tags/title")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                chapters.push(json!({ "start": start, "end": end, "title": title }));
+                .map(str::to_string);
+            if let Some(items) = parsed.get("chapters").and_then(Value::as_array) {
+                for chapter in items {
+                    let start = chapter
+                        .get("start_time")
+                        .and_then(Value::as_str)
+                        .and_then(|value| value.parse::<f64>().ok());
+                    let end = chapter
+                        .get("end_time")
+                        .and_then(Value::as_str)
+                        .and_then(|value| value.parse::<f64>().ok());
+                    if let (Some(start), Some(end)) = (start, end) {
+                        let chapter_title = chapter
+                            .pointer("/tags/title")
+                            .and_then(Value::as_str)
+                            .unwrap_or("");
+                        chapters.push(json!({ "start": start, "end": end, "title": chapter_title }));
+                    }
+                }
             }
         }
+    }
+    if duration.is_none() {
+        let prefix = read_prefix(path, 256 * 1024);
+        duration = duration_from_header(&prefix, meta.len());
+    }
+    if duration.is_none() {
+        duration = windows_media_duration(path);
     }
     Ok(json!({
         "size": meta.len(),
@@ -322,4 +554,71 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![desktop_call])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod duration_tests {
+    use super::duration_from_header;
+    use serde_json::json;
+
+    fn wav(seconds: u32) -> Vec<u8> {
+        let sample_rate = 8000u32;
+        let data_size = sample_rate * seconds * 2;
+        let mut bytes = vec![0u8; 44 + data_size as usize];
+        bytes[0..4].copy_from_slice(b"RIFF");
+        bytes[4..8].copy_from_slice(&(36 + data_size).to_le_bytes());
+        bytes[8..16].copy_from_slice(b"WAVEfmt ");
+        bytes[16..20].copy_from_slice(&16u32.to_le_bytes());
+        bytes[20..22].copy_from_slice(&1u16.to_le_bytes());
+        bytes[22..24].copy_from_slice(&1u16.to_le_bytes());
+        bytes[24..28].copy_from_slice(&sample_rate.to_le_bytes());
+        bytes[28..32].copy_from_slice(&(sample_rate * 2).to_le_bytes());
+        bytes[32..34].copy_from_slice(&2u16.to_le_bytes());
+        bytes[34..36].copy_from_slice(&16u16.to_le_bytes());
+        bytes[36..40].copy_from_slice(b"data");
+        bytes[40..44].copy_from_slice(&data_size.to_le_bytes());
+        bytes
+    }
+
+    fn xing(mono: bool, frames: u32) -> Vec<u8> {
+        let side = if mono { 17 } else { 32 };
+        let mut bytes = vec![0u8; 4 + side + 12];
+        bytes[0] = 0xff;
+        bytes[1] = 0xfb;
+        bytes[2] = 0x90;
+        bytes[3] = if mono { 0xc0 } else { 0 };
+        let mark = 4 + side;
+        bytes[mark..mark + 4].copy_from_slice(b"Xing");
+        bytes[mark + 7] = 1;
+        bytes[mark + 8..mark + 12].copy_from_slice(&frames.to_be_bytes());
+        bytes
+    }
+
+    #[test]
+    fn optional_duration_json_is_a_number_or_null() {
+        let missing: Option<f64> = None;
+        let empty = json!({ "durationSeconds": missing });
+        assert!(empty.get("durationSeconds").unwrap().is_null());
+        let present = Some(57.0 * 60.0);
+        let value = json!({ "durationSeconds": present });
+        assert_eq!(value["durationSeconds"], 3420.0);
+    }
+
+    #[test]
+    fn wav_two_seconds() {
+        let bytes = wav(2);
+        let duration = duration_from_header(&bytes, bytes.len() as u64).unwrap();
+        assert!((duration - 2.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn mp3_xing_frames() {
+        let frames = 1152u32;
+        let expected = f64::from(frames) * 1152.0 / 44100.0;
+        for mono in [true, false] {
+            let bytes = xing(mono, frames);
+            let duration = duration_from_header(&bytes, 999_999).unwrap();
+            assert!((duration - expected).abs() < 0.001, "{duration} vs {expected}");
+        }
+    }
 }

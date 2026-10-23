@@ -19,6 +19,19 @@ const content: NoteContent = {
     { start: 0, end: 60, text: "Mitosis begins" },
     { start: 60, end: 125, text: "The cell divides" },
   ],
+  chapters: [],
+  transcriptProduced: true,
+}
+
+const filedOnly: NoteContent = {
+  title: "ISC 102 U01",
+  courseName: "ISGS 102",
+  moduleName: null,
+  filedAt: "2026-10-22T15:00:00.000Z",
+  durationSeconds: 57 * 60,
+  segments: [{ start: 0, end: 0, text: "ISC 102 U01" }],
+  chapters: [],
+  transcriptProduced: false,
 }
 
 describe("folder names", () => {
@@ -91,6 +104,28 @@ describe("notes", () => {
     expect(() => renderRestyle(content, null, "  ")).toThrow(/preset or write a prompt/)
   })
 
+  it("files a note when no transcript was produced", () => {
+    const note = renderFull(filedOnly)
+    expect(note).toContain("# ISC 102 U01")
+    expect(note).toContain("57 minutes")
+    expect(note).toContain("No transcript was produced.")
+    expect(note).toContain("does not run a speech model")
+    expect(note).not.toContain("## Transcript")
+    expect(note).not.toContain("| Time | Notes |")
+    expect(note).not.toContain("0:00")
+    const bullets = renderRestyle(filedOnly, "bullets", "")
+    expect(bullets).not.toContain("## Transcript")
+    expect(bullets).toContain("No transcript was produced.")
+    const chapters = renderFull({
+      ...filedOnly,
+      chapters: [{ start: 0, end: 120, title: "Introduction" }],
+    })
+    expect(chapters).toContain("## Chapters")
+    expect(chapters).toContain("Introduction")
+    expect(chapters).toContain("not a transcript")
+    expect(chapters).not.toContain("## Transcript")
+  })
+
   it("writes a PDF beside the markdown", async () => {
     const bytes = await renderPdf(renderFull(content))
     expect(Buffer.from(bytes).toString("latin1").startsWith("%PDF")).toBe(true)
@@ -117,6 +152,15 @@ describe("providers", () => {
       probe: { size: 1, durationSeconds: 1, title: null, chapters: [] },
     }).provider).toBe("cloud")
     const local = createProvider("local", { entitled: false, source: "missing" })
-    expect(local.compose(content)).toContain("Lecture 3")
+    const transcript = local.transcribe({
+      noteId: "n",
+      title: "ISC 102 U01",
+      probe: { size: 57726700, durationSeconds: 3420, title: null, chapters: [] },
+    })
+    expect(transcript.transcribed).toBe(false)
+    expect(transcript.segments).toEqual([])
+    expect(transcript.durationSeconds).toBe(3420)
+    expect(local.compose({ ...filedOnly, durationSeconds: 3420 })).not.toContain("## Transcript")
+    expect(local.compose(content)).toContain("## Transcript")
   })
 })

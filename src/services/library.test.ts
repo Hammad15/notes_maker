@@ -97,8 +97,11 @@ describe("course files", () => {
         "{}",
     )
     expect(transcript.provider).toBe("local")
+    expect(transcript.transcribed).toBe(false)
+    expect(transcript.segments).toEqual([])
     expect(transcript.durationSeconds).toBeGreaterThan(1)
-    expect(transcript.segments[0].text).toBe("Lecture 3")
+    expect(markdown).toContain("No transcript was produced")
+    expect(markdown).not.toContain("## Transcript")
     expect(await store.stat(path.join(course.path, ".study"))).toMatchObject({ isDir: true })
 
     const styled = await restyleNote(store, {
@@ -112,7 +115,8 @@ describe("course files", () => {
     expect(styled.body).toContain("- Course: Biology: 101")
     expect(styled.hasHistory).toBe(true)
     const undone = await undoRestyle(store, home, course.id, filed.id)
-    expect(undone.body).toContain("## Transcript")
+    expect(undone.body).toContain("No transcript was produced")
+    expect(undone.body).not.toContain("## Transcript")
     expect(undone.hasHistory).toBe(false)
     expect(await store.stat(undone.pdfPath)).toMatchObject({ isDir: false })
 
@@ -185,6 +189,6 @@ describe("desktop dispatch", () => {
     })
     expect(value).toBeNull()
     await expect(dispatchDesktop(store, { op: "readText", path: path.join(root, "appdata", "settings.json") })).resolves.toContain("local")
-    await expect(dispatchDesktop(store, { op: "pickDirectory" })).rejects.toThrow(/desktop window/)
+    await expect(dispatchDesktop(store, { op: "pickDirectory" })).rejects.toThrow(/tauri dev/)
   })
 })

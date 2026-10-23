@@ -5,7 +5,15 @@ import { assertUsableFolderName, folderNameFromDisplay, isReservedFolder } from 
 import { fileName, joinPath } from "../domain/paths"
 import { createProvider, type Entitlement } from "../domain/providers"
 import { isMediaFile, titleFromMediaPath } from "../domain/text"
-import type { NoteContent, Preset, ProviderId, SourceRecord, Transcript, TranscriptSegment } from "../domain/types"
+import type {
+  ChapterMark,
+  NoteContent,
+  Preset,
+  ProviderId,
+  SourceRecord,
+  Transcript,
+  TranscriptSegment,
+} from "../domain/types"
 import type { FileStore } from "../platform/types"
 
 export interface Settings {
@@ -59,6 +67,8 @@ export interface NoteDocument extends NoteInfo {
   mediaPath: string | null
   durationSeconds: number | null
   segments: TranscriptSegment[]
+  chapters: ChapterMark[]
+  transcriptProduced: boolean
 }
 
 export interface MakeNotesInput {
@@ -474,8 +484,19 @@ function contentFrom(
   filedAt: string,
   durationSeconds: number | null,
   segments: TranscriptSegment[],
+  chapters: ChapterMark[],
+  transcriptProduced: boolean,
 ): NoteContent {
-  return { title, courseName, moduleName, filedAt, durationSeconds, segments }
+  return {
+    title,
+    courseName,
+    moduleName,
+    filedAt,
+    durationSeconds,
+    segments,
+    chapters,
+    transcriptProduced,
+  }
 }
 
 export async function makeNotes(store: FileStore, input: MakeNotesInput): Promise<NoteInfo> {
@@ -509,7 +530,16 @@ export async function makeNotes(store: FileStore, input: MakeNotesInput): Promis
 
   const filedAt = new Date().toISOString()
   const body = provider.compose(
-    contentFrom(title, course.name, moduleName, filedAt, transcript.durationSeconds, transcript.segments),
+    contentFrom(
+      title,
+      course.name,
+      moduleName,
+      filedAt,
+      transcript.durationSeconds,
+      transcript.segments,
+      transcript.chapters,
+      transcript.transcribed,
+    ),
   )
   const meta: NoteMeta = {
     id: noteId,
@@ -582,19 +612,33 @@ async function loadTranscript(store: FileStore, coursePath: string, noteId: stri
   if (!text) return null
   try {
     const json = JSON.parse(text) as Partial<Transcript>
-    if (!Array.isArray(json.segments)) return null
+    const transcribed = json.transcribed === true
+    const segments = Array.isArray(json.segments)
+      ? json.segments.filter(
+          (segment): segment is TranscriptSegment =>
+            !!segment &&
+            typeof segment.text === "string" &&
+            typeof segment.start === "number" &&
+            typeof segment.end === "number",
+        )
+      : []
+    const chapters = Array.isArray(json.chapters)
+      ? json.chapters.filter(
+          (chapter): chapter is ChapterMark =>
+            !!chapter &&
+            typeof chapter.title === "string" &&
+            typeof chapter.start === "number" &&
+            typeof chapter.end === "number",
+        )
+      : []
     return {
       noteId: json.noteId || noteId,
       provider: json.provider === "cloud" ? "cloud" : "local",
       createdAt: json.createdAt || new Date(0).toISOString(),
       durationSeconds: typeof json.durationSeconds === "number" ? json.durationSeconds : null,
-      segments: json.segments.filter(
-        (segment): segment is TranscriptSegment =>
-          !!segment &&
-          typeof segment.text === "string" &&
-          typeof segment.start === "number" &&
-          typeof segment.end === "number",
-      ),
+      transcribed,
+      segments: transcribed ? segments : [],
+      chapters,
     }
   } catch {
     return null
@@ -624,6 +668,8 @@ export async function readNote(
     mediaPath: source?.mediaPath ?? null,
     durationSeconds: transcript?.durationSeconds ?? null,
     segments: transcript?.segments ?? [],
+    chapters: transcript?.chapters ?? [],
+    transcriptProduced: transcript?.transcribed === true,
   }
 }
 
@@ -650,6 +696,8 @@ export async function restyleNote(
       note.createdAt,
       note.durationSeconds,
       note.segments,
+      note.chapters,
+      note.transcriptProduced,
     ),
     input.preset,
     input.prompt,

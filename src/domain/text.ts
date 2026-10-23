@@ -15,7 +15,7 @@ const MONTHS = [
   "Dec",
 ]
 
-const MEDIA_EXTENSIONS = new Set([
+export const MEDIA_EXTENSIONS = [
   ".mp4",
   ".m4v",
   ".mov",
@@ -34,13 +34,15 @@ const MEDIA_EXTENSIONS = new Set([
   ".wma",
   ".aif",
   ".aiff",
-])
+] as const
+
+const MEDIA_EXTENSION_SET = new Set<string>(MEDIA_EXTENSIONS)
 
 export function isMediaFile(path: string): boolean {
   const name = fileName(path).toLowerCase()
   const dot = name.lastIndexOf(".")
   if (dot <= 0) return false
-  return MEDIA_EXTENSIONS.has(name.slice(dot))
+  return MEDIA_EXTENSION_SET.has(name.slice(dot))
 }
 
 export function titleFromMediaPath(mediaPath: string): string {

@@ -1,9 +1,9 @@
 import { useState } from "react"
 import { messageOf } from "../domain/errors"
+import { WINDOWS_DIALOG_REQUIRED } from "../platform/dialogs"
 import { useHost } from "../platform/host"
 import { useLibrary } from "../state/library-context"
 import { Button } from "@/components/ui/button"
-import { PathBrowser } from "../components/path-browser"
 
 export function OpeningScreen() {
   return (
@@ -33,8 +33,7 @@ export function StartupError({ message, onRetry }: { message: string; onRetry: (
 
 export function SetupScreen({ missing }: { missing: boolean }) {
   const host = useHost()
-  const { chooseHome, settings } = useLibrary()
-  const [browserOpen, setBrowserOpen] = useState(false)
+  const { chooseHome } = useLibrary()
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -52,12 +51,16 @@ export function SetupScreen({ missing }: { missing: boolean }) {
 
   async function browse() {
     setError(null)
-    if (host.nativeDialogs) {
-      const picked = await host.pickDirectory()
-      if (picked) await choose(picked)
+    if (!host.nativeDialogs) {
+      setError(WINDOWS_DIALOG_REQUIRED)
       return
     }
-    setBrowserOpen(true)
+    try {
+      const picked = await host.pickDirectory()
+      if (picked) await choose(picked)
+    } catch (err) {
+      setError(messageOf(err))
+    }
   }
 
   return (
@@ -79,13 +82,6 @@ export function SetupScreen({ missing }: { missing: boolean }) {
           {busy ? "Saving…" : "Choose folder"}
         </Button>
       </div>
-      <PathBrowser
-        open={browserOpen}
-        mode="directory"
-        initialPath={settings.homeDirectory}
-        onOpenChange={setBrowserOpen}
-        onPick={(path) => void choose(path)}
-      />
     </div>
   )
 }

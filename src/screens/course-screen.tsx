@@ -17,7 +17,8 @@ import { NameDialog } from "../components/name-dialog"
 
 export function CourseScreen() {
   const { courseId = "" } = useParams()
-  const { store } = useHost()
+  const host = useHost()
+  const { store } = host
   const { settings, revision } = useLibrary()
   const [course, setCourse] = useState<CourseDetail | null>(null)
   const [loading, setLoading] = useState(true)
@@ -122,10 +123,10 @@ export function CourseScreen() {
           ) : (
             <ul className="mt-4 border-t border-border">
               {visible.map((note) => (
-                <li key={note.id} className="border-b border-border">
+                <li key={note.id} className="flex items-center gap-3 border-b border-border">
                   <Link
                     to={`/courses/${course.id}/notes/${note.id}`}
-                    className="group block py-4 hover:bg-accent/40"
+                    className="group block min-w-0 flex-1 py-4 hover:bg-accent/40"
                   >
                     <span className="block font-serif text-xl group-hover:text-primary">{note.title}</span>
                     <span className="mt-1 block text-sm text-muted-foreground">
@@ -136,6 +137,17 @@ export function CourseScreen() {
                       {note.pdfExists ? "PDF saved" : "PDF missing"}
                     </span>
                   </Link>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="shrink-0"
+                    disabled={!note.pdfExists}
+                    onClick={() => {
+                      void host.openPath(note.pdfPath).catch((err: unknown) => setError(messageOf(err)))
+                    }}
+                  >
+                    Open PDF
+                  </Button>
                 </li>
               ))}
             </ul>
