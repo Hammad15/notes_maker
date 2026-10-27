@@ -5,7 +5,10 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::UNIX_EPOCH;
+use tauri::Emitter;
 use tauri_plugin_dialog::DialogExt;
+
+mod local_runtime;
 
 fn app_data_dir() -> PathBuf {
     #[cfg(target_os = "windows")]
@@ -227,11 +230,21 @@ fn wav_duration(bytes: &[u8]) -> Option<f64> {
 }
 
 fn bitrate_kbps(version: u8, layer: u8, index: usize) -> u32 {
-    const MPEG1_L1: [u32; 16] = [0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, 0];
-    const MPEG1_L2: [u32; 16] = [0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 0];
-    const MPEG1_L3: [u32; 16] = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0];
-    const MPEG2_L1: [u32; 16] = [0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256, 0];
-    const MPEG2_L3: [u32; 16] = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0];
+    const MPEG1_L1: [u32; 16] = [
+        0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, 0,
+    ];
+    const MPEG1_L2: [u32; 16] = [
+        0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 0,
+    ];
+    const MPEG1_L3: [u32; 16] = [
+        0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0,
+    ];
+    const MPEG2_L1: [u32; 16] = [
+        0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256, 0,
+    ];
+    const MPEG2_L3: [u32; 16] = [
+        0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0,
+    ];
     let table: &[u32; 16] = if version == 3 {
         if layer == 3 {
             &MPEG1_L1
@@ -264,7 +277,8 @@ fn frame_at(bytes: &[u8], offset: usize) -> Option<FrameInfo> {
     let layer = (bytes[offset + 1] >> 1) & 0x3;
     let bitrate_index = ((bytes[offset + 2] >> 4) & 0xf) as usize;
     let sample_index = (bytes[offset + 2] >> 2) & 0x3;
-    if version == 1 || layer == 0 || bitrate_index == 0 || bitrate_index == 15 || sample_index == 3 {
+    if version == 1 || layer == 0 || bitrate_index == 0 || bitrate_index == 15 || sample_index == 3
+    {
         return None;
     }
     let mpeg1 = version == 3;
@@ -289,7 +303,11 @@ fn frame_at(bytes: &[u8], offset: usize) -> Option<FrameInfo> {
     };
     let side_info = if layer == 1 {
         if mpeg1 {
-            if mono { 17 } else { 32 }
+            if mono {
+                17
+            } else {
+                32
+            }
         } else if mono {
             9
         } else {
@@ -316,7 +334,10 @@ fn mp3_duration(bytes: &[u8], file_size: u64) -> Option<f64> {
             | (bytes[9] as usize & 0x7f);
         start = 10 + size + if bytes[5] & 0x10 != 0 { 10 } else { 0 };
     }
-    let limit = bytes.len().saturating_sub(4).min(start.saturating_add(65536));
+    let limit = bytes
+        .len()
+        .saturating_sub(4)
+        .min(start.saturating_add(65536));
     let mut frame = None;
     let mut offset = start;
     while offset <= limit {
@@ -365,8 +386,14 @@ fn duration_from_header(bytes: &[u8], file_size: u64) -> Option<f64> {
 #[cfg(target_os = "windows")]
 fn windows_media_duration(path: &str) -> Option<f64> {
     use std::os::windows::process::CommandExt;
-    let parent = Path::new(path).parent()?.to_string_lossy().replace('\'', "''");
-    let name = Path::new(path).file_name()?.to_string_lossy().replace('\'', "''");
+    let parent = Path::new(path)
+        .parent()?
+        .to_string_lossy()
+        .replace('\'', "''");
+    let name = Path::new(path)
+        .file_name()?
+        .to_string_lossy()
+        .replace('\'', "''");
     let script = format!(
         "$dir = '{parent}'; $name = '{name}'; $shell = New-Object -ComObject Shell.Application; $folder = $shell.NameSpace($dir); if ($null -eq $folder) {{ exit 2 }}; $item = $folder.ParseName($name); if ($null -eq $item) {{ exit 3 }}; $d = $item.ExtendedProperty('System.Media.Duration'); if ($null -eq $d) {{ exit 4 }}; Write-Output $d"
     );
@@ -400,44 +427,50 @@ fn probe_media(path: &str) -> Result<Value, String> {
     let mut duration: Option<f64> = None;
     let mut title: Option<String> = None;
     let mut chapters = Vec::new();
-    if let Ok(output) = Command::new("ffprobe")
-        .args([
-            "-v",
-            "error",
-            "-print_format",
-            "json",
-            "-show_format",
-            "-show_chapters",
-            path,
-        ])
-        .output()
-    {
-        if output.status.success() {
-            let parsed: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
-            duration = parsed
-                .pointer("/format/duration")
-                .and_then(|value| value.as_str())
-                .and_then(|value| value.parse::<f64>().ok());
-            title = parsed
-                .pointer("/format/tags/title")
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            if let Some(items) = parsed.get("chapters").and_then(Value::as_array) {
-                for chapter in items {
-                    let start = chapter
-                        .get("start_time")
-                        .and_then(Value::as_str)
-                        .and_then(|value| value.parse::<f64>().ok());
-                    let end = chapter
-                        .get("end_time")
-                        .and_then(Value::as_str)
-                        .and_then(|value| value.parse::<f64>().ok());
-                    if let (Some(start), Some(end)) = (start, end) {
-                        let chapter_title = chapter
-                            .pointer("/tags/title")
+    if let Some(ffprobe) = local_runtime::tool_path(&app_data_dir(), "ffprobe") {
+        let mut command = Command::new(ffprobe);
+        local_runtime::quiet(&mut command);
+        if let Ok(output) = command
+            .args([
+                "-v",
+                "error",
+                "-print_format",
+                "json",
+                "-show_format",
+                "-show_chapters",
+                path,
+            ])
+            .output()
+        {
+            if output.status.success() {
+                let parsed: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+                duration = parsed
+                    .pointer("/format/duration")
+                    .and_then(|value| value.as_str())
+                    .and_then(|value| value.parse::<f64>().ok());
+                title = parsed
+                    .pointer("/format/tags/title")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                if let Some(items) = parsed.get("chapters").and_then(Value::as_array) {
+                    for chapter in items {
+                        let start = chapter
+                            .get("start_time")
                             .and_then(Value::as_str)
-                            .unwrap_or("");
-                        chapters.push(json!({ "start": start, "end": end, "title": chapter_title }));
+                            .and_then(|value| value.parse::<f64>().ok());
+                        let end = chapter
+                            .get("end_time")
+                            .and_then(Value::as_str)
+                            .and_then(|value| value.parse::<f64>().ok());
+                        if let (Some(start), Some(end)) = (start, end) {
+                            let chapter_title = chapter
+                                .pointer("/tags/title")
+                                .and_then(Value::as_str)
+                                .unwrap_or("");
+                            chapters.push(
+                                json!({ "start": start, "end": end, "title": chapter_title }),
+                            );
+                        }
                     }
                 }
             }
@@ -458,6 +491,18 @@ fn probe_media(path: &str) -> Result<Value, String> {
     }))
 }
 
+fn emit_setup(app: &tauri::AppHandle, phase: &str, label: &str, received: u64, total: Option<u64>) {
+    let _ = app.emit(
+        "local-setup-progress",
+        json!({
+            "phase": phase,
+            "label": label,
+            "received": received,
+            "total": total,
+        }),
+    );
+}
+
 fn file_path_string(file: tauri_plugin_dialog::FilePath) -> Result<String, String> {
     file.into_path()
         .map(|path| path.to_string_lossy().into_owned())
@@ -473,19 +518,25 @@ fn desktop_call(app: tauri::AppHandle, request: Value) -> Result<Value, String> 
         "roots" => Ok(json!(roots())),
         "readText" => read_text(require_str(&request, "path")?),
         "writeText" => {
-            write_text(require_str(&request, "path")?, request.get("text").and_then(Value::as_str).unwrap_or(""))?;
+            write_text(
+                require_str(&request, "path")?,
+                request.get("text").and_then(Value::as_str).unwrap_or(""),
+            )?;
             Ok(Value::Null)
         }
         "writeBytes" => {
             let encoded = require_str(&request, "base64")?;
-            let bytes = STANDARD.decode(encoded).map_err(|error| error.to_string())?;
+            let bytes = STANDARD
+                .decode(encoded)
+                .map_err(|error| error.to_string())?;
             write_bytes(require_str(&request, "path")?, &bytes)?;
             Ok(Value::Null)
         }
         "exists" => Ok(json!(Path::new(require_str(&request, "path")?).exists())),
         "list" => list_dir(require_str(&request, "path")?),
         "mkdir" => {
-            fs::create_dir_all(require_str(&request, "path")?).map_err(|error| error.to_string())?;
+            fs::create_dir_all(require_str(&request, "path")?)
+                .map_err(|error| error.to_string())?;
             Ok(Value::Null)
         }
         "rename" => {
@@ -509,6 +560,16 @@ fn desktop_call(app: tauri::AppHandle, request: Value) -> Result<Value, String> 
             Ok(Value::Null)
         }
         "probeMedia" => probe_media(require_str(&request, "path")?),
+        "localStatus" => local_runtime::status_json(&app_data_dir()),
+        "setupLocal" => {
+            let handle = app.clone();
+            local_runtime::setup_local(&app_data_dir(), &mut |phase, label, received, total| {
+                emit_setup(&handle, phase, label, received, total);
+            })
+        }
+        "transcribeLocal" => {
+            local_runtime::transcribe_json(&app_data_dir(), require_str(&request, "path")?)
+        }
         "pickDirectory" => {
             let picked = app
                 .dialog()
@@ -618,7 +679,10 @@ mod duration_tests {
         for mono in [true, false] {
             let bytes = xing(mono, frames);
             let duration = duration_from_header(&bytes, 999_999).unwrap();
-            assert!((duration - expected).abs() < 0.001, "{duration} vs {expected}");
+            assert!(
+                (duration - expected).abs() < 0.001,
+                "{duration} vs {expected}"
+            );
         }
     }
 }

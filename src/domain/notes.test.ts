@@ -1,7 +1,7 @@
 import { PDFDocument } from "pdf-lib"
 import { describe, expect, it } from "vitest"
 import { renderFull, renderRestyle } from "./compose"
-import { EntitlementError } from "./errors"
+import { EntitlementError, LocalSetupError } from "./errors"
 import { parseNoteFile, writeFrontmatter } from "./frontmatter"
 import { assertUsableFolderName, folderNameFromDisplay } from "./names"
 import { parentPath } from "./paths"
@@ -109,7 +109,7 @@ describe("notes", () => {
     expect(note).toContain("# ISC 102 U01")
     expect(note).toContain("57 minutes")
     expect(note).toContain("No transcript was produced.")
-    expect(note).toContain("does not run a speech model")
+    expect(note).not.toContain("speech model")
     expect(note).not.toContain("## Transcript")
     expect(note).not.toContain("| Time | Notes |")
     expect(note).not.toContain("0:00")
@@ -152,14 +152,13 @@ describe("providers", () => {
       probe: { size: 1, durationSeconds: 1, title: null, chapters: [] },
     }).provider).toBe("cloud")
     const local = createProvider("local", { entitled: false, source: "missing" })
-    const transcript = local.transcribe({
-      noteId: "n",
-      title: "ISC 102 U01",
-      probe: { size: 57726700, durationSeconds: 3420, title: null, chapters: [] },
-    })
-    expect(transcript.transcribed).toBe(false)
-    expect(transcript.segments).toEqual([])
-    expect(transcript.durationSeconds).toBe(3420)
+    expect(() =>
+      local.transcribe({
+        noteId: "n",
+        title: "ISC 102 U01",
+        probe: { size: 57726700, durationSeconds: 3420, title: null, chapters: [] },
+      }),
+    ).toThrow(LocalSetupError)
     expect(local.compose({ ...filedOnly, durationSeconds: 3420 })).not.toContain("## Transcript")
     expect(local.compose(content)).toContain("## Transcript")
   })

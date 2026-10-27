@@ -1,3 +1,4 @@
+import type { SetupProgress } from "../domain/localSpeech"
 import { MEDIA_EXTENSIONS } from "../domain/text"
 import { createRemoteStore } from "./remoteStore"
 import type { Host } from "./types"
@@ -13,9 +14,10 @@ function selectedPath(value: unknown): string | null {
 }
 
 export function createTauriHost(): Host {
+  const store = createRemoteStore(tauriCall)
   return {
     nativeDialogs: true,
-    store: createRemoteStore(tauriCall),
+    store,
     pickDirectory: async () => {
       const { open } = await import("@tauri-apps/plugin-dialog")
       const picked = await open({
@@ -44,6 +46,23 @@ export function createTauriHost(): Host {
     openPath: async (path) => {
       const { openPath } = await import("@tauri-apps/plugin-opener")
       await openPath(path)
+    },
+    setupLocal: async (onProgress) => {
+      let unlisten = () => {}
+      if (onProgress) {
+        const { listen } = await import("@tauri-apps/api/event")
+        const stop = await listen<SetupProgress>("local-setup-progress", (event) => {
+          onProgress(event.payload)
+        })
+        unlisten = () => {
+          stop()
+        }
+      }
+      try {
+        return await store.setupLocal()
+      } finally {
+        unlisten()
+      }
     },
   }
 }

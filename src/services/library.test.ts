@@ -63,11 +63,12 @@ describe("course files", () => {
     await store.writeText(path.join(course.path, "notes", "module.json"), '{"id":"x","name":"Nope"}')
     await store.mkdir(path.join(course.path, "Loose"))
 
+    await store.writeText(path.join(data, "license.json"), "{\"entitled\":true}\n")
     const filed = await makeNotes(store, {
       home,
       courseId: course.id,
       mediaPath: media,
-      provider: "local",
+      provider: "cloud",
       moduleId: null,
       newModuleName: "Cells",
     })
@@ -96,7 +97,7 @@ describe("course files", () => {
       (await store.readText(path.join(course.path, ".study", "transcripts", `${filed.id}.json`))) ??
         "{}",
     )
-    expect(transcript.provider).toBe("local")
+    expect(transcript.provider).toBe("cloud")
     expect(transcript.transcribed).toBe(false)
     expect(transcript.segments).toEqual([])
     expect(transcript.durationSeconds).toBeGreaterThan(1)
@@ -126,6 +127,27 @@ describe("course files", () => {
     const reread = await readNote(store, home, course.id, filed.id)
     expect(reread.title).toBe("Lecture 3")
     expect(reread.courseName).toBe("Life science")
+  })
+
+  it("does not file local notes before setup", async () => {
+    const home = path.join(root, "home")
+    const store = createNodeFileStore(path.join(root, "appdata"))
+    await store.mkdir(home)
+    const course = await createCourse(store, home, "Biology 101")
+    const media = path.join(root, "lecture.wav")
+    await writeFile(media, wav(2))
+    await expect(
+      makeNotes(store, {
+        home,
+        courseId: course.id,
+        mediaPath: media,
+        provider: "local",
+        moduleId: null,
+        newModuleName: null,
+      }),
+    ).rejects.toThrow(/Set up local notes/)
+    expect(await store.exists(path.join(course.path, "notes"))).toBe(false)
+    expect(await store.exists(path.join(course.path, ".study"))).toBe(false)
   })
 
   it("refuses cloud notes without writing files", async () => {

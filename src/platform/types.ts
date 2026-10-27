@@ -1,3 +1,4 @@
+import type { LocalRuntimeStatus, SetupProgress, TranscriptionResult } from "../domain/localSpeech"
 import type { DirEntry, FileStat, MediaProbe } from "../domain/types"
 
 export interface FileStore {
@@ -15,6 +16,9 @@ export interface FileStore {
   stat(path: string): Promise<FileStat | null>
   setHidden(path: string): Promise<void>
   probeMedia(path: string): Promise<MediaProbe>
+  localStatus(): Promise<LocalRuntimeStatus>
+  setupLocal(): Promise<LocalRuntimeStatus>
+  transcribeMedia(path: string): Promise<TranscriptionResult>
 }
 
 export interface Host {
@@ -23,4 +27,5 @@ export interface Host {
   pickDirectory(): Promise<string | null>
   pickMedia(directory?: string | null): Promise<string | null>
   openPath(path: string): Promise<void>
+  setupLocal(onProgress?: (progress: SetupProgress) => void): Promise<LocalRuntimeStatus>
 }

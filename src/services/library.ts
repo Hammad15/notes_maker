@@ -1,6 +1,6 @@
 import { renderPdf } from "../domain/pdf"
 import { parseNoteFile, writeFrontmatter, type NoteMeta } from "../domain/frontmatter"
-import { StudyError } from "../domain/errors"
+import { LocalSetupError, StudyError } from "../domain/errors"
 import { assertUsableFolderName, folderNameFromDisplay, isReservedFolder } from "../domain/names"
 import { fileName, joinPath } from "../domain/paths"
 import { createProvider, type Entitlement } from "../domain/providers"
@@ -15,6 +15,7 @@ import type {
   TranscriptSegment,
 } from "../domain/types"
 import type { FileStore } from "../platform/types"
+import { transcribeLocal } from "./transcribe"
 
 export interface Settings {
   homeDirectory: string | null
@@ -501,6 +502,10 @@ function contentFrom(
 
 export async function makeNotes(store: FileStore, input: MakeNotesInput): Promise<NoteInfo> {
   const course = await findCourse(store, input.home, input.courseId)
+  if (input.provider === "local") {
+    const runtime = await store.localStatus()
+    if (!runtime.ready) throw new LocalSetupError()
+  }
   const stat = await store.stat(input.mediaPath)
   if (!stat || stat.isDir || !isMediaFile(input.mediaPath)) {
     throw new StudyError("Choose a video or audio file.", "MEDIA")
@@ -510,7 +515,10 @@ export async function makeNotes(store: FileStore, input: MakeNotesInput): Promis
   const probe = await store.probeMedia(input.mediaPath)
   const noteId = crypto.randomUUID()
   const title = titleFromMediaPath(input.mediaPath)
-  const transcript = provider.transcribe({ noteId, title, probe })
+  const transcript =
+    provider.id === "local"
+      ? await transcribeLocal(store, input.mediaPath, { noteId, title, probe })
+      : provider.transcribe({ noteId, title, probe })
 
   let moduleId: string | null = null
   let moduleName: string | null = null

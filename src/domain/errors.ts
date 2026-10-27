@@ -18,6 +18,13 @@ export class EntitlementError extends StudyError {
   }
 }
 
+export class LocalSetupError extends StudyError {
+  constructor() {
+    super("Press Set up local notes before making notes.", "LOCAL_SETUP")
+    this.name = "LocalSetupError"
+  }
+}
+
 export function messageOf(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message
   return "Something went wrong."

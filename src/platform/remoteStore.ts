@@ -1,3 +1,4 @@
+import type { LocalRuntimeStatus, TranscriptionResult } from "../domain/localSpeech"
 import type { DirEntry, FileStat, MediaProbe } from "../domain/types"
 import { Ops } from "./ops"
 import type { FileStore } from "./types"
@@ -41,5 +42,8 @@ export function createRemoteStore(call: Caller): FileStore {
       await call({ op: Ops.setHidden, path })
     },
     probeMedia: (path) => call<MediaProbe>({ op: Ops.probeMedia, path }),
+    localStatus: () => call<LocalRuntimeStatus>({ op: Ops.localStatus }),
+    setupLocal: () => call<LocalRuntimeStatus>({ op: Ops.setupLocal }),
+    transcribeMedia: (path) => call<TranscriptionResult>({ op: Ops.transcribeMedia, path }),
   }
 }

@@ -2,9 +2,9 @@
 
 Desktop app for one student on a computer. Pick a home folder, create a course, and turn a video or audio file that is already on the computer into study notes. Notes are Markdown. Every save also writes a PDF beside the Markdown.
 
-This build is the course library and Make Notes. The theme is dark. Local notes run on this computer. Cloud notes stay off until an entitlement is present. There is no login and no payment screen.
+This build is the course library and Make Notes. The theme is dark. There is no login and no payment screen.
 
-The local provider does not run a speech model. Make Notes still files a Markdown note and a PDF for the course. The note records the recording and its length. It does not claim a transcript was produced.
+Press **Set up local notes** once in the sidebar. That button downloads the speech model, the speech engine, and ffmpeg and ffprobe when those programs are missing. It does not ask for an API key. After it finishes, Make Notes transcribes the recording and writes Markdown plus a PDF. A long recording takes longer than a minute. Cloud notes stay off until an entitlement is present.
 
 ## Run on Windows
 
@@ -18,6 +18,14 @@ npm run tauri dev
 ```
 
 That opens the Study Notes window. The file dialogs come from the Tauri dialog plugin. Use that window. Do not pick files from a browser tab pointed at the dev server. The `.study` folder inside a course is marked hidden.
+
+**Set up local notes** is the only setup step inside the app. It downloads:
+
+- whisper.cpp 1.9.2 for Windows (`whisper-cli.exe` and the DLLs next to it), from `whisper-bin-x64.zip`
+- the English speech model `ggml-base.en.bin` (147,964,211 bytes)
+- FFmpeg 9.0.2 `ffmpeg.exe` and `ffprobe.exe`, when they are not already on the computer
+
+Those files land in `%LOCALAPPDATA%\Study Notes`, and the button writes `models\local.json`. There is no terminal step and no API key.
 
 `npm run dev` only serves the UI at http://127.0.0.1:43127. Tauri starts it for you. Opening that address in a browser cannot show the Windows file dialog.
 
@@ -38,7 +46,7 @@ npm install
 npm run tauri dev
 ```
 
-File prompts are the system dialogs.
+File prompts are the system dialogs. The one-click speech download is the Windows build of whisper.cpp and FFmpeg.
 
 ## Tests
 

@@ -9,6 +9,8 @@ import {
   type ReactNode,
 } from "react"
 import { StudyError, messageOf } from "../domain/errors"
+import type { LocalRuntimeStatus, SetupProgress } from "../domain/localSpeech"
+import { SPEECH_MODEL } from "../domain/localSpeech"
 import { parentPath } from "../domain/paths"
 import type { ProviderId } from "../domain/types"
 import { useHost } from "../platform/host"
@@ -28,6 +30,7 @@ export interface Job {
   id: string
   courseId: string
   label: string
+  provider: ProviderId
   status: "running" | "error"
   error?: string
 }
@@ -40,6 +43,10 @@ interface LibraryState {
   courses: CourseSummary[]
   jobs: Job[]
   revision: number
+  localStatus: LocalRuntimeStatus | null
+  setupProgress: SetupProgress | null
+  setupError: string | null
+  setupLocal: () => Promise<void>
   reload: () => Promise<void>
   refreshLibrary: () => Promise<void>
   chooseHome: (path: string) => Promise<void>
@@ -57,8 +64,15 @@ const EMPTY_SETTINGS: Settings = {
   lastMediaDirectory: null,
 }
 
+const NOT_READY: LocalRuntimeStatus = {
+  ready: false,
+  model: SPEECH_MODEL.name,
+  missing: ["ffmpeg", "ffprobe", "engine", "model", "config"],
+}
+
 export function LibraryProvider({ children }: { children: ReactNode }) {
-  const { store } = useHost()
+  const host = useHost()
+  const { store } = host
   const [ready, setReady] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [homeMissing, setHomeMissing] = useState(false)
@@ -66,6 +80,9 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   const [courses, setCourses] = useState<CourseSummary[]>([])
   const [jobs, setJobs] = useState<Job[]>([])
   const [revision, setRevision] = useState(0)
+  const [localStatus, setLocalStatus] = useState<LocalRuntimeStatus | null>(null)
+  const [setupProgress, setSetupProgress] = useState<SetupProgress | null>(null)
+  const [setupError, setSetupError] = useState<string | null>(null)
   const settingsRef = useRef(settings)
   settingsRef.current = settings
 
@@ -83,6 +100,11 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     const loaded = await loadSettings(store)
     settingsRef.current = loaded
     setSettings(loaded)
+    try {
+      setLocalStatus(await store.localStatus())
+    } catch {
+      setLocalStatus(NOT_READY)
+    }
     if (!loaded.homeDirectory) {
       setHomeMissing(false)
       setCourses([])
@@ -167,7 +189,10 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     (input: MakeNotesInput) => {
       const label = input.mediaPath.split(/[\\/]/).pop() || "recording"
       const id = crypto.randomUUID()
-      setJobs((current) => [...current, { id, courseId: input.courseId, label, status: "running" }])
+      setJobs((current) => [
+        ...current,
+        { id, courseId: input.courseId, label, provider: input.provider, status: "running" },
+      ])
       void (async () => {
         const parent = parentPath(input.mediaPath)
         if (parent && parent !== settingsRef.current.lastMediaDirectory) {
@@ -211,6 +236,30 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     setJobs((current) => current.filter((job) => job.id !== id))
   }, [])
 
+  const setupLocal = useCallback(async () => {
+    setSetupError(null)
+    setSetupProgress({
+      phase: "config",
+      label: "Setting up local notes…",
+      received: 0,
+      total: null,
+    })
+    try {
+      const status = await host.setupLocal((progress) => setSetupProgress(progress))
+      setLocalStatus(status)
+      if (!status.ready) setSetupError("Local notes are not ready yet.")
+    } catch (err) {
+      setSetupError(messageOf(err))
+      try {
+        setLocalStatus(await store.localStatus())
+      } catch {
+        setLocalStatus(NOT_READY)
+      }
+    } finally {
+      setSetupProgress(null)
+    }
+  }, [host, store])
+
   const value = useMemo<LibraryState>(
     () => ({
       ready,
@@ -220,6 +269,10 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       courses,
       jobs,
       revision,
+      localStatus,
+      setupProgress,
+      setupError,
+      setupLocal,
       reload,
       refreshLibrary,
       chooseHome,
@@ -236,6 +289,10 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       courses,
       jobs,
       revision,
+      localStatus,
+      setupProgress,
+      setupError,
+      setupLocal,
       reload,
       refreshLibrary,
       chooseHome,

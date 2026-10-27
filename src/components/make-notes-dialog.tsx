@@ -40,7 +40,7 @@ export function MakeNotesDialog({
   onOpenChange: (open: boolean) => void
 }) {
   const host = useHost()
-  const { settings, startMakeNotes } = useLibrary()
+  const { settings, startMakeNotes, localStatus } = useLibrary()
   const [mediaPath, setMediaPath] = useState<string | null>(null)
   const [moduleChoice, setModuleChoice] = useState("course")
   const [newModuleName, setNewModuleName] = useState("")
@@ -163,15 +163,21 @@ export function MakeNotesDialog({
               <p className="rounded-lg bg-muted px-3 py-2 text-sm leading-relaxed text-muted-foreground">
                 Cloud notes need an entitlement on this computer. Local notes still work.
               </p>
+            ) : localStatus && !localStatus.ready ? (
+              <p className="text-sm text-muted-foreground">
+                Press Set up local notes in the sidebar. That downloads the speech model and finishes setup.
+              </p>
             ) : (
-              <p className="text-sm text-muted-foreground">Using local notes.</p>
+              <p className="text-sm text-muted-foreground">Using the speech model on this computer.</p>
             )}
             {error ? <p className="text-sm text-destructive">{error}</p> : null}
             <DialogFooter className="sm:items-center sm:justify-between">
               <p className="text-xs leading-relaxed text-muted-foreground sm:max-w-[16rem]">
                 You can close this window. Writing the notes and PDF keeps going.
               </p>
-              <Button type="submit">Make notes</Button>
+              <Button type="submit" disabled={settings.provider === "local" && localStatus?.ready !== true}>
+                Make notes
+              </Button>
             </DialogFooter>
           </form>
         </DialogContent>

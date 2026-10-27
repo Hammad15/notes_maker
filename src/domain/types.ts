@@ -14,6 +14,8 @@ export interface Transcript {
   transcribed: boolean
   segments: TranscriptSegment[]
   chapters: ChapterMark[]
+  model?: string
+  elapsedMs?: number
 }
 
 export interface ChapterMark {

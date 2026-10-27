@@ -13,6 +13,9 @@ export const Ops = {
   stat: "stat",
   setHidden: "setHidden",
   probeMedia: "probeMedia",
+  localStatus: "localStatus",
+  setupLocal: "setupLocal",
+  transcribeMedia: "transcribeMedia",
   pickDirectory: "pickDirectory",
   pickMedia: "pickMedia",
 } as const

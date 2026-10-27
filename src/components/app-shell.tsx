@@ -6,9 +6,15 @@ import { useLibrary } from "../state/library-context"
 import { Button } from "@/components/ui/button"
 import { useState } from "react"
 
+function setupPercent(received: number, total: number | null): string {
+  if (!total || total <= 0) return ""
+  return ` ${Math.min(100, Math.round((received / total) * 100))}%`
+}
+
 function ProviderSwitch() {
-  const { settings, setProvider } = useLibrary()
+  const { settings, setProvider, localStatus, setupProgress, setupError, setupLocal } = useLibrary()
   const [error, setError] = useState<string | null>(null)
+  const localReady = localStatus?.ready === true
   return (
     <fieldset className="grid gap-2">
       <legend className="text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase">
@@ -38,10 +44,33 @@ function ProviderSwitch() {
       </div>
       <p className="text-xs leading-relaxed text-muted-foreground">
         {settings.provider === "local"
-          ? "On this computer."
+          ? localReady
+            ? "On this computer. The speech model transcribes the recording."
+            : "On this computer. One button downloads the speech model and finishes setup."
           : "Waiting for an entitlement."}
       </p>
+      {settings.provider === "local" && localStatus && !localReady ? (
+        <Button
+          type="button"
+          className="w-full"
+          disabled={setupProgress !== null}
+          aria-busy={setupProgress !== null}
+          onClick={() => void setupLocal()}
+        >
+          {setupProgress ? "Setting up…" : "Set up local notes"}
+        </Button>
+      ) : null}
+      {settings.provider === "local" && !localStatus ? (
+        <p className="text-xs text-muted-foreground">Checking local notes…</p>
+      ) : null}
+      {setupProgress ? (
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          {setupProgress.label}
+          {setupPercent(setupProgress.received, setupProgress.total)}
+        </p>
+      ) : null}
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
+      {setupError ? <p className="text-xs text-destructive">{setupError}</p> : null}
     </fieldset>
   )
 }
@@ -58,7 +87,9 @@ function JobBanner() {
             role="status"
             className="rounded-lg border border-border bg-card px-4 py-3 text-sm"
           >
-            Writing notes and PDF for {job.label}…
+            {job.provider === "local"
+              ? `Transcribing ${job.label}. A long recording takes longer than a minute.`
+              : `Writing notes and PDF for ${job.label}…`}
           </p>
         ) : (
           <div

@@ -28,7 +28,7 @@ function summarySentence(content: NoteContent): string {
     ? `${safeTitle(content.title)} is filed in ${where}. The recording runs ${duration}.`
     : `${safeTitle(content.title)} is filed in ${where}.`
   if (hasTranscript(content)) return filed
-  return `${filed} No transcript was produced. This build does not run a speech model.`
+  return `${filed} No transcript was produced.`
 }
 
 function transcriptSegments(content: NoteContent): TranscriptSegment[] {

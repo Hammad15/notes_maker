@@ -8,6 +8,7 @@ import type { DirEntry, FileStat, MediaProbe } from "../domain/types.ts"
 import { WINDOWS_DIALOG_REQUIRED } from "../platform/dialogs.ts"
 import { Ops } from "../platform/ops.ts"
 import type { FileStore } from "../platform/types.ts"
+import { localRuntimeStatus, setupLocalRuntime, toolPath, transcribeWithRuntime } from "./localRuntime.ts"
 
 const execFileAsync = promisify(execFile)
 
@@ -75,15 +76,16 @@ async function windowsMediaDuration(target: string): Promise<number | null> {
   }
 }
 
-async function readProbe(target: string, size: number): Promise<MediaProbe> {
+async function readProbe(target: string, size: number, ffprobe: string | null): Promise<MediaProbe> {
   let durationSeconds: number | null = null
   let title: string | null = null
   let chapters: MediaProbe["chapters"] = []
   try {
+    if (!ffprobe) throw new Error("ffprobe is not installed yet.")
     const { stdout } = await execFileAsync(
-      "ffprobe",
+      ffprobe,
       ["-v", "error", "-print_format", "json", "-show_format", "-show_chapters", target],
-      { timeout: 20000, maxBuffer: 8 * 1024 * 1024 },
+      { timeout: 20000, maxBuffer: 8 * 1024 * 1024, windowsHide: true },
     )
     const json = JSON.parse(stdout) as {
       format?: { duration?: string; tags?: Record<string, string> }
@@ -220,7 +222,16 @@ export function createNodeFileStore(appData = resolveAppDataDir(process.platform
         throw new Error(ioMessage(target, error))
       })
       if (info.isDirectory()) throw new Error("That recording is not there anymore.")
-      return readProbe(target, info.size)
+      return readProbe(target, info.size, await toolPath(appData, "ffprobe"))
+    },
+    localStatus() {
+      return localRuntimeStatus(appData)
+    },
+    setupLocal() {
+      return setupLocalRuntime(appData)
+    },
+    transcribeMedia(target) {
+      return transcribeWithRuntime(appData, target)
     },
   }
 }
@@ -295,6 +306,12 @@ export async function dispatchDesktop(
       return null
     case Ops.probeMedia:
       return store.probeMedia(requiredString(body, "path"))
+    case Ops.localStatus:
+      return store.localStatus()
+    case Ops.setupLocal:
+      return store.setupLocal()
+    case Ops.transcribeMedia:
+      return store.transcribeMedia(requiredString(body, "path"))
     case Ops.pickDirectory:
     case Ops.pickMedia:
       throw new Error(WINDOWS_DIALOG_REQUIRED)

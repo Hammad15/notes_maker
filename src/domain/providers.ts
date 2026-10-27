@@ -1,5 +1,5 @@
 import { renderFull, renderRestyle } from "./compose"
-import { EntitlementError } from "./errors"
+import { EntitlementError, LocalSetupError } from "./errors"
 import type { MediaProbe, NoteContent, Preset, ProviderId, Transcript } from "./types"
 
 export interface Entitlement {
@@ -45,8 +45,8 @@ function assertEntitled(entitlement: Entitlement): void {
 class LocalProvider implements NotesProvider {
   readonly id = "local" as const
 
-  transcribe(input: TranscribeInput): Transcript {
-    return buildTranscript(input, this.id)
+  transcribe(_input: TranscribeInput): Transcript {
+    throw new LocalSetupError()
   }
 
   compose(content: NoteContent): string {
