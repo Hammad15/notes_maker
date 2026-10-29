@@ -25,7 +25,23 @@ export class LocalSetupError extends StudyError {
   }
 }
 
+function textOf(value: unknown): string | null {
+  if (typeof value !== "string") return null
+  const text = value.trim()
+  return text || null
+}
+
 export function messageOf(error: unknown): string {
-  if (error instanceof Error && error.message.trim()) return error.message
+  const direct = textOf(error)
+  if (direct) return direct
+  if (error instanceof Error) {
+    const message = error.message.trim()
+    if (message) return message
+  }
+  if (error && typeof error === "object") {
+    const record = error as { message?: unknown; error?: unknown }
+    const nested = textOf(record.message) ?? textOf(record.error)
+    if (nested) return nested
+  }
   return "Something went wrong."
 }

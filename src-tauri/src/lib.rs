@@ -567,7 +567,7 @@ fn desktop_call(app: tauri::AppHandle, request: Value) -> Result<Value, String> 
                 emit_setup(&handle, phase, label, received, total);
             })
         }
-        "transcribeLocal" => {
+        "transcribeMedia" | "transcribeLocal" => {
             local_runtime::transcribe_json(&app_data_dir(), require_str(&request, "path")?)
         }
         "pickDirectory" => {
@@ -653,6 +653,15 @@ mod duration_tests {
         bytes[mark + 7] = 1;
         bytes[mark + 8..mark + 12].copy_from_slice(&frames.to_be_bytes());
         bytes
+    }
+
+    #[test]
+    fn make_notes_command_accepts_the_ui_request() {
+        let source = include_str!("lib.rs");
+        assert!(
+            source.contains("\"transcribeMedia\" | \"transcribeLocal\""),
+            "Make Notes sends op transcribeMedia"
+        );
     }
 
     #[test]

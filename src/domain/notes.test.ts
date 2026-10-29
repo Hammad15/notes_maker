@@ -1,7 +1,7 @@
 import { PDFDocument } from "pdf-lib"
 import { describe, expect, it } from "vitest"
 import { renderFull, renderRestyle } from "./compose"
-import { EntitlementError, LocalSetupError } from "./errors"
+import { EntitlementError, LocalSetupError, StudyError, messageOf } from "./errors"
 import { parseNoteFile, writeFrontmatter } from "./frontmatter"
 import { assertUsableFolderName, folderNameFromDisplay } from "./names"
 import { parentPath } from "./paths"
@@ -33,6 +33,20 @@ const filedOnly: NoteContent = {
   chapters: [],
   transcriptProduced: false,
 }
+
+describe("command failures", () => {
+  it("shows the desktop command text instead of a generic failure", () => {
+    expect(messageOf("Unknown request transcribeMedia.")).toBe("Unknown request transcribeMedia.")
+    expect(messageOf({ message: "Could not read that recording." })).toBe(
+      "Could not read that recording.",
+    )
+    expect(messageOf(new StudyError("No speech was found in that recording.", "TRANSCRIPT"))).toBe(
+      "No speech was found in that recording.",
+    )
+    expect(messageOf("  ")).toBe("Something went wrong.")
+    expect(messageOf(null)).toBe("Something went wrong.")
+  })
+})
 
 describe("folder names", () => {
   it("strips characters Windows rejects", () => {
@@ -132,6 +146,25 @@ describe("notes", () => {
     expect(bytes.byteLength).toBeGreaterThan(500)
     const loaded = await PDFDocument.load(bytes)
     expect(loaded.getPageCount()).toBeGreaterThan(0)
+  })
+
+  it("writes a PDF the course can open for a 57-minute transcript", async () => {
+    const segments = Array.from({ length: 228 }, (_, index) => ({
+      start: index * 15,
+      end: index * 15 + 14,
+      text: "The lecture continues with the next point about the cell and how it divides.",
+    }))
+    const bytes = await renderPdf(
+      renderFull({
+        ...filedOnly,
+        durationSeconds: 57 * 60,
+        segments,
+        transcriptProduced: true,
+      }),
+    )
+    expect(Buffer.from(bytes).subarray(0, 5).toString()).toBe("%PDF-")
+    const loaded = await PDFDocument.load(bytes)
+    expect(loaded.getPageCount()).toBeGreaterThan(1)
   })
 })
 
