@@ -70,6 +70,7 @@ describe("course files", () => {
       mediaPath: media,
       provider: "cloud",
       moduleId: null,
+      moduleName: "Cells",
       newModuleName: "Cells",
     })
     const detail = await getCourse(store, home, course.id)
@@ -143,6 +144,7 @@ describe("course files", () => {
         mediaPath: media,
         provider: "local",
         moduleId: null,
+        moduleName: null,
         newModuleName: null,
       }),
     ).rejects.toThrow(/Set up local notes/)
@@ -164,6 +166,7 @@ describe("course files", () => {
         mediaPath: media,
         provider: "cloud",
         moduleId: null,
+        moduleName: null,
         newModuleName: null,
       }),
     ).rejects.toBeInstanceOf(EntitlementError)
@@ -179,6 +182,7 @@ describe("course files", () => {
       mediaPath: media,
       provider: "cloud",
       moduleId: null,
+      moduleName: null,
       newModuleName: null,
     })
     expect(filed.provider).toBe("cloud")

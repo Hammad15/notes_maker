@@ -1,5 +1,8 @@
-import { StudyError } from "./errors"
+import { messageOf, StudyError } from "./errors"
 import type { TranscriptSegment } from "./types"
+
+/** Shown when a different recording replaces the one that is already running. */
+export const TRANSCRIPTION_REPLACED = "Transcription was replaced by a different recording."
 
 /**
  * Files the Set up local notes button downloads into %LOCALAPPDATA%\Study Notes.
@@ -60,7 +63,47 @@ export interface TranscriptionProgress {
   phase: "reading" | "transcribing" | "writing"
   label: string
   percent: number | null
+  jobId?: string
 }
+
+/** The recording plus where the notes will be filed. */
+export interface TranscriptionTarget {
+  mediaPath: string
+  courseId: string
+  moduleId: string | null
+  moduleName: string | null
+}
+
+export interface TranscriptionRequest extends TranscriptionTarget {
+  jobId: string
+  home: string
+  newModuleName: string | null
+}
+
+export interface ActiveTranscription extends TranscriptionRequest {
+  id: string
+  phase: TranscriptionProgress["phase"]
+  label: string
+  percent: number | null
+}
+
+export interface SavedTranscription extends ActiveTranscription {
+  pid: number | null
+  stderrPath: string
+  stdoutPath: string
+  jsonPath: string
+  wavPath: string
+  startedMs: number
+  durationSeconds: number | null
+}
+
+export interface WhisperProcess {
+  pid: number
+  executablePath: string
+  commandLine: string
+}
+
+export type ResumePlan = { action: "attach"; pid: number } | { action: "reuse" } | { action: "start" }
 
 /**
  * Half the logical processors, at least one. whisper.cpp's default is every
@@ -71,6 +114,125 @@ export function whisperThreadCount(logicalCpus: number): number {
   const cpus = Number.isFinite(logicalCpus) ? Math.floor(logicalCpus) : 1
   if (cpus <= 1) return 1
   return Math.max(1, Math.floor(cpus / 2))
+}
+
+export function normalizeMediaPath(value: string): string {
+  return value.trim().replace(/\\/g, "/").replace(/\/+$/, "").toLocaleLowerCase()
+}
+
+/**
+ * Same recording and the same course or module. A different file, course, or
+ * module starts a new transcription. A module chosen by name matches that
+ * module later chosen from the list when only one side has an id.
+ */
+export function sameTranscriptionJob(a: TranscriptionTarget, b: TranscriptionTarget): boolean {
+  if (normalizeMediaPath(a.mediaPath) !== normalizeMediaPath(b.mediaPath)) return false
+  if (a.courseId !== b.courseId) return false
+  const aCourse = !a.moduleId && !a.moduleName?.trim()
+  const bCourse = !b.moduleId && !b.moduleName?.trim()
+  if (aCourse || bCourse) return aCourse && bCourse
+  if (a.moduleId && b.moduleId) return a.moduleId === b.moduleId
+  const aName = a.moduleName?.trim().toLocaleLowerCase() ?? ""
+  const bName = b.moduleName?.trim().toLocaleLowerCase() ?? ""
+  return aName.length > 0 && aName === bName
+}
+
+/** Keep the higher percent. Progress from the one running process must not go backward. */
+export function forwardProgress(current: number | null, next: number | null): number | null {
+  if (next == null || !Number.isFinite(next)) return current
+  const value = Math.trunc(next)
+  if (value < 0 || value > 100) return current
+  if (current == null) return value
+  return value < current ? current : value
+}
+
+export function transcriptionWasReplaced(error: unknown): boolean {
+  return messageOf(error).includes("replaced by a different recording")
+}
+
+export function parseProcessSnapshot(snapshot: string): WhisperProcess[] {
+  const processes: WhisperProcess[] = []
+  for (const line of snapshot.split(/\r?\n/)) {
+    if (!line.trim()) continue
+    const [pidText, executablePath = "", commandLine = ""] = line.split("\t")
+    const pid = Number(pidText.trim())
+    if (!Number.isInteger(pid) || pid <= 0) continue
+    processes.push({ pid, executablePath, commandLine })
+  }
+  return processes
+}
+
+function normalizeExecutable(value: string): string {
+  return normalizeMediaPath(value).replace(/"/g, "")
+}
+
+/**
+ * whisper-cli processes started from this app's own engine.
+ * The pid of the in-progress job is kept. Every other match is stopped.
+ * A whisper-cli that is not this app's copy is left alone.
+ */
+export function whisperPidsToStop(
+  processes: WhisperProcess[],
+  ownExecutable: string,
+  keepPid: number | null,
+): number[] {
+  const own = normalizeExecutable(ownExecutable)
+  if (!own) return []
+  const stop: number[] = []
+  for (const process of processes) {
+    if (process.pid === keepPid) continue
+    const executable = normalizeExecutable(process.executablePath)
+    const command = normalizeExecutable(process.commandLine)
+    if (executable === own || command.includes(own)) stop.push(process.pid)
+  }
+  return stop
+}
+
+export function planResume(
+  saved: (TranscriptionTarget & { pid: number | null; jsonReady: boolean }) | null,
+  requested: TranscriptionTarget,
+  processes: WhisperProcess[],
+  ownExecutable: string,
+): ResumePlan {
+  if (!saved || !sameTranscriptionJob(saved, requested)) return { action: "start" }
+  if (saved.pid && whisperPidsToStop(processes, ownExecutable, null).includes(saved.pid)) {
+    return { action: "attach", pid: saved.pid }
+  }
+  if (saved.jsonReady) return { action: "reuse" }
+  return { action: "start" }
+}
+
+export function parseSavedTranscription(raw: string): SavedTranscription | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  if (!parsed || typeof parsed !== "object") return null
+  const row = parsed as Partial<SavedTranscription>
+  if (!row.id || !row.mediaPath || !row.courseId || !row.home) return null
+  const phase = row.phase === "reading" || row.phase === "writing" ? row.phase : "transcribing"
+  return {
+    id: row.id,
+    jobId: row.id,
+    mediaPath: row.mediaPath,
+    home: row.home,
+    courseId: row.courseId,
+    moduleId: row.moduleId ?? null,
+    moduleName: row.moduleName ?? null,
+    newModuleName: row.newModuleName ?? null,
+    phase,
+    label: row.label || "Transcribing the recording",
+    percent: typeof row.percent === "number" ? forwardProgress(null, row.percent) : null,
+    pid: typeof row.pid === "number" && row.pid > 0 ? row.pid : null,
+    stderrPath: row.stderrPath || "",
+    stdoutPath: row.stdoutPath || "",
+    jsonPath: row.jsonPath || "",
+    wavPath: row.wavPath || "",
+    startedMs: typeof row.startedMs === "number" ? row.startedMs : 0,
+    durationSeconds: typeof row.durationSeconds === "number" ? row.durationSeconds : null,
+  }
 }
 
 export function localJobMessage(fileLabel: string, progress?: TranscriptionProgress | null): string {

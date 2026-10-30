@@ -8,7 +8,15 @@ import type { DirEntry, FileStat, MediaProbe } from "../domain/types.ts"
 import { WINDOWS_DIALOG_REQUIRED } from "../platform/dialogs.ts"
 import { Ops } from "../platform/ops.ts"
 import type { FileStore } from "../platform/types.ts"
-import { localRuntimeStatus, setupLocalRuntime, toolPath, transcribeWithRuntime } from "./localRuntime.ts"
+import {
+  clearTranscriptionJob,
+  localRuntimeStatus,
+  readActiveTranscription,
+  reconcileTranscriptionOnLaunch,
+  setupLocalRuntime,
+  toolPath,
+  transcribeWithRuntime,
+} from "./localRuntime.ts"
 
 const execFileAsync = promisify(execFile)
 
@@ -117,6 +125,7 @@ async function readProbe(target: string, size: number, ffprobe: string | null): 
 }
 
 export function createNodeFileStore(appData = resolveAppDataDir(process.platform, process.env, os.homedir())): FileStore {
+  void reconcileTranscriptionOnLaunch(appData).catch(() => undefined)
   return {
     async appDataDir() {
       return appData
@@ -230,8 +239,14 @@ export function createNodeFileStore(appData = resolveAppDataDir(process.platform
     setupLocal() {
       return setupLocalRuntime(appData)
     },
-    transcribeMedia(target) {
-      return transcribeWithRuntime(appData, target)
+    transcribeMedia(target, request) {
+      return transcribeWithRuntime(appData, target, request)
+    },
+    activeTranscription() {
+      return readActiveTranscription(appData)
+    },
+    clearTranscription(id) {
+      return clearTranscriptionJob(appData, id)
     },
   }
 }
@@ -260,6 +275,13 @@ function requiredString(request: Record<string, unknown>, key: string): string {
   const value = request[key]
   if (typeof value !== "string" || !value.trim()) throw new Error(`Missing ${key}.`)
   return value
+}
+
+function optionalString(request: Record<string, unknown>, key: string): string | null {
+  const value = request[key]
+  if (typeof value !== "string") return null
+  const text = value.trim()
+  return text || null
 }
 
 export async function dispatchDesktop(
@@ -311,7 +333,20 @@ export async function dispatchDesktop(
     case Ops.setupLocal:
       return store.setupLocal()
     case Ops.transcribeMedia:
-      return store.transcribeMedia(requiredString(body, "path"))
+      return store.transcribeMedia(requiredString(body, "path"), {
+        jobId: optionalString(body, "jobId") ?? "",
+        home: optionalString(body, "home") ?? "",
+        mediaPath: requiredString(body, "path"),
+        courseId: optionalString(body, "courseId") ?? "",
+        moduleId: optionalString(body, "moduleId"),
+        moduleName: optionalString(body, "moduleName"),
+        newModuleName: optionalString(body, "newModuleName"),
+      })
+    case Ops.activeTranscription:
+      return store.activeTranscription()
+    case Ops.clearTranscription:
+      await store.clearTranscription(requiredString(body, "id"))
+      return null
     case Ops.pickDirectory:
     case Ops.pickMedia:
       throw new Error(WINDOWS_DIALOG_REQUIRED)

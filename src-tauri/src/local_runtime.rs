@@ -1,12 +1,14 @@
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
-use std::io::{copy, BufRead, BufReader, Read, Write};
+use std::io::{copy, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use zip::ZipArchive;
 
 const MODEL_NAME: &str = "ggml-base.en";
@@ -33,6 +35,9 @@ const FFMPEG_ZIP_SHA256: &str = "60f467265b1e312373dbcd92200c2618a74850f98d3d078
 const LONG_RECORDING_SECONDS: f64 = 30.0 * 60.0;
 const MIN_LONG_ELAPSED_MS: u128 = 60_000;
 const SETUP_REQUIRED: &str = "Press Set up local notes before making notes.";
+const REPLACED: &str = "Transcription was replaced by a different recording.";
+#[cfg(windows)]
+const PROCESS_SNAPSHOT_SCRIPT: &str = r#"Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'whisper-cli.exe' -or $_.Name -eq 'ffmpeg.exe' } | ForEach-Object { $cmd = $_.CommandLine; if ($null -eq $cmd) { $cmd = '' }; $cmd = ($cmd -replace "`t", ' ' -replace "`r|`n", ' '); $exe = $_.ExecutablePath; if ($null -eq $exe) { $exe = '' }; Write-Output (('{0}`t{1}`t{2}' -f $_.ProcessId, $exe, $cmd)) }"#;
 
 const ENGINE_DLLS: [&str; 4] = [
     "whisper.dll",
@@ -405,7 +410,7 @@ pub(crate) fn setup_local(
 }
 
 fn run_command(command: Command, timeout: Duration, what: &str) -> Result<(), String> {
-    run_command_watched(command, Some(timeout), what, &mut |_| {})
+    run_command_watched(command, Some(timeout), what, &mut |_| {}, &|| false, &mut |_| {})
 }
 
 fn run_command_watched(
@@ -413,6 +418,8 @@ fn run_command_watched(
     timeout: Option<Duration>,
     what: &str,
     on_progress: &mut dyn FnMut(u8),
+    should_stop: &dyn Fn() -> bool,
+    on_spawn: &mut dyn FnMut(u32),
 ) -> Result<(), String> {
     quiet(&mut command);
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -423,6 +430,7 @@ fn run_command_watched(
             format!("{what} {error}")
         }
     })?;
+    on_spawn(child.id());
     let mut stdout = child
         .stdout
         .take()
@@ -454,6 +462,13 @@ fn run_command_watched(
         }
         match child.try_wait() {
             Ok(Some(status)) => break status,
+            Ok(None) if should_stop() => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = out_thread.join();
+                let _ = err_thread.join();
+                return Err(REPLACED.into());
+            }
             Ok(None) if timeout.is_some_and(|limit| started.elapsed() > limit) => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -615,29 +630,772 @@ fn whisper_wait_limit(_duration_seconds: Option<f64>) -> Option<Duration> {
     None
 }
 
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn normalize_media(value: &str) -> String {
+    value
+        .trim()
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_lowercase()
+}
+
+fn nonempty(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+#[derive(Clone)]
+struct Target {
+    media: String,
+    course_id: String,
+    module_id: Option<String>,
+    module_name: Option<String>,
+}
+
+fn same_job(a: &Target, b: &Target) -> bool {
+    if normalize_media(&a.media) != normalize_media(&b.media) || a.course_id != b.course_id {
+        return false;
+    }
+    let a_name = a.module_name.as_deref().map(str::trim).unwrap_or("");
+    let b_name = b.module_name.as_deref().map(str::trim).unwrap_or("");
+    let a_course = a.module_id.is_none() && a_name.is_empty();
+    let b_course = b.module_id.is_none() && b_name.is_empty();
+    if a_course || b_course {
+        return a_course && b_course;
+    }
+    if let (Some(a_id), Some(b_id)) = (&a.module_id, &b.module_id) {
+        return a_id == b_id;
+    }
+    !a_name.is_empty() && a_name.eq_ignore_ascii_case(b_name)
+}
+
+fn forward_percent(current: Option<u8>, next: u8) -> Option<u8> {
+    if next > 100 {
+        return current;
+    }
+    match current {
+        Some(prev) if next < prev => Some(prev),
+        _ => Some(next),
+    }
+}
+
+/// Pids whose executable path or command line is this app's own tool.
+/// `keep_pid` is the live transcription and is not stopped.
+fn owned_pids_to_stop(snapshot: &str, own_executable: &str, keep_pid: Option<u32>) -> Vec<u32> {
+    let own = normalize_media(own_executable).replace('"', "");
+    if own.is_empty() {
+        return Vec::new();
+    }
+    let mut pids = Vec::new();
+    for line in snapshot.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let mut parts = line.splitn(3, '\t');
+        let Some(pid_text) = parts.next() else {
+            continue;
+        };
+        let Ok(pid) = pid_text.trim().parse::<u32>() else {
+            continue;
+        };
+        if pid == 0 || Some(pid) == keep_pid {
+            continue;
+        }
+        let executable = normalize_media(parts.next().unwrap_or("")).replace('"', "");
+        let command = normalize_media(parts.next().unwrap_or("")).replace('"', "");
+        if executable == own || command.contains(&own) {
+            pids.push(pid);
+        }
+    }
+    pids
+}
+
+fn own_whisper_exe(app_data: &Path) -> PathBuf {
+    bin_dir(app_data).join(ENGINE_EXE)
+}
+
+fn own_ffmpeg_exe(app_data: &Path) -> PathBuf {
+    bin_dir(app_data).join(exe_name("ffmpeg"))
+}
+
+fn process_snapshot() -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        let mut command = Command::new("powershell.exe");
+        command.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            PROCESS_SNAPSHOT_SCRIPT,
+        ]);
+        quiet(&mut command);
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = command.spawn().map_err(|error| {
+            format!("Could not check for a running transcription. {error}")
+        })?;
+        let started = Instant::now();
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if started.elapsed() > Duration::from_secs(30) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("Could not check for a running transcription.".into());
+                }
+                Ok(None) => thread::sleep(Duration::from_millis(50)),
+                Err(error) => return Err(error.to_string()),
+            }
+        };
+        let mut stdout = String::new();
+        if let Some(mut pipe) = child.stdout.take() {
+            let _ = pipe.read_to_string(&mut stdout);
+        }
+        if !status.success() {
+            let mut stderr = String::new();
+            if let Some(mut pipe) = child.stderr.take() {
+                let _ = pipe.read_to_string(&mut stderr);
+            }
+            return Err(format!(
+                "Could not check for a running transcription. {}",
+                tail(&stderr)
+            ));
+        }
+        return Ok(stdout);
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(linux_process_snapshot())
+    }
+}
+
+#[cfg(not(windows))]
+fn linux_process_snapshot() -> String {
+    let mut lines = String::new();
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return lines;
+    };
+    for entry in entries.flatten() {
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        let exe = fs::read_link(entry.path().join("exe"))
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let command = fs::read(entry.path().join("cmdline"))
+            .map(|bytes| String::from_utf8_lossy(&bytes).replace('\u{0}', " "))
+            .unwrap_or_default()
+            .replace(['\t', '\n', '\r'], " ");
+        lines.push_str(&format!("{pid}\t{exe}\t{command}\n"));
+    }
+    lines
+}
+
+fn pid_alive(pid: u32) -> bool {
+    if pid <= 4 {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        let mut command = Command::new("tasklist");
+        command.args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"]);
+        quiet(&mut command);
+        let Ok(output) = command.output() else {
+            return false;
+        };
+        let text = String::from_utf8_lossy(&output.stdout);
+        let lower = text.to_ascii_lowercase();
+        !lower.contains("no tasks") && text.contains(&pid.to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        Path::new(&format!("/proc/{pid}")).exists()
+    }
+}
+
+/// Stop this app's whisper-cli. On Windows that is `taskkill /PID <pid> /F /T`
+/// after the process list shows the executable is our own `bin\\whisper-cli.exe`.
+/// The live job pid is left running so the same recording can resume.
+fn kill_pid(pid: u32) {
+    if pid <= 4 || pid == std::process::id() {
+        return;
+    }
+    #[cfg(windows)]
+    {
+        let mut command = Command::new("taskkill");
+        command.args(["/PID", &pid.to_string(), "/F", "/T"]);
+        quiet(&mut command);
+        let _ = command.output();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = Command::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .output();
+    }
+}
+
+fn stop_pids(pids: &[u32]) {
+    for pid in pids {
+        kill_pid(*pid);
+    }
+}
+
+fn job_file(app_data: &Path) -> PathBuf {
+    app_data.join("transcription-job.json")
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedJob {
+    id: String,
+    media_path: String,
+    home: String,
+    course_id: String,
+    #[serde(default)]
+    module_id: Option<String>,
+    #[serde(default)]
+    module_name: Option<String>,
+    #[serde(default)]
+    new_module_name: Option<String>,
+    phase: String,
+    label: String,
+    #[serde(default)]
+    percent: Option<u8>,
+    #[serde(default)]
+    pid: Option<u32>,
+    stderr_path: String,
+    stdout_path: String,
+    json_path: String,
+    wav_path: String,
+    started_ms: u64,
+    #[serde(default)]
+    duration_seconds: Option<f64>,
+}
+
+fn saved_target(job: &SavedJob) -> Target {
+    Target {
+        media: job.media_path.clone(),
+        course_id: job.course_id.clone(),
+        module_id: job.module_id.clone(),
+        module_name: job.module_name.clone(),
+    }
+}
+
+fn read_saved(app_data: &Path) -> Option<SavedJob> {
+    let text = fs::read_to_string(job_file(app_data)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+fn write_saved(app_data: &Path, job: &SavedJob) -> Result<(), String> {
+    if let Some(parent) = job_file(app_data).parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let text = serde_json::to_string_pretty(job).map_err(|error| error.to_string())?;
+    let temp = app_data.join("transcription-job.json.tmp");
+    fs::write(&temp, format!("{text}\n")).map_err(|error| error.to_string())?;
+    fs::rename(&temp, job_file(app_data)).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn update_saved(app_data: &Path, id: &str, mutate: impl FnOnce(&mut SavedJob)) {
+    let Some(mut job) = read_saved(app_data) else {
+        return;
+    };
+    if job.id != id {
+        return;
+    }
+    mutate(&mut job);
+    let _ = write_saved(app_data, &job);
+}
+
+fn is_tmp_file(app_data: &Path, path: &str) -> bool {
+    let tmp = app_data.join("tmp");
+    Path::new(path).starts_with(&tmp)
+}
+
+fn remove_work_files(app_data: &Path, job: &SavedJob) {
+    for path in [&job.wav_path, &job.json_path, &job.stderr_path, &job.stdout_path] {
+        if is_tmp_file(app_data, path) {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+fn public_job(job: &SavedJob) -> Value {
+    json!({
+        "id": job.id,
+        "jobId": job.id,
+        "mediaPath": job.media_path,
+        "home": job.home,
+        "courseId": job.course_id,
+        "moduleId": job.module_id,
+        "moduleName": job.module_name,
+        "newModuleName": job.new_module_name,
+        "provider": "local",
+        "phase": job.phase,
+        "label": job.label,
+        "percent": job.percent,
+    })
+}
+
+pub(crate) fn active_job_json(app_data: &Path) -> Value {
+    read_saved(app_data)
+        .map(|job| public_job(&job))
+        .unwrap_or(Value::Null)
+}
+
+struct Flight {
+    id: u64,
+    job_id: String,
+    target: Target,
+    pid: Mutex<u32>,
+    cancelled: Mutex<bool>,
+    done: Mutex<Option<Result<Value, String>>>,
+    cv: Condvar,
+}
+
+fn lock_mutex<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|error| error.into_inner())
+}
+
+impl Flight {
+    fn publish(&self, result: Result<Value, String>) {
+        let mut done = lock_mutex(&self.done);
+        if done.is_none() {
+            *done = Some(result);
+        }
+        self.cv.notify_all();
+    }
+
+    fn wait(&self) -> Result<Value, String> {
+        let mut done = lock_mutex(&self.done);
+        while done.is_none() {
+            done = self.cv.wait(done).unwrap_or_else(|error| error.into_inner());
+        }
+        done.clone().unwrap()
+    }
+
+    fn cancel(&self) {
+        *lock_mutex(&self.cancelled) = true;
+    }
+
+    fn cancelled(&self) -> bool {
+        *lock_mutex(&self.cancelled)
+    }
+
+    fn pid(&self) -> u32 {
+        *lock_mutex(&self.pid)
+    }
+
+    fn set_pid(&self, pid: u32) {
+        *lock_mutex(&self.pid) = pid;
+    }
+}
+
+fn gate() -> &'static Mutex<Option<Arc<Flight>>> {
+    static GATE: OnceLock<Mutex<Option<Arc<Flight>>>> = OnceLock::new();
+    GATE.get_or_init(|| Mutex::new(None))
+}
+
+fn lock_gate() -> std::sync::MutexGuard<'static, Option<Arc<Flight>>> {
+    gate().lock().unwrap_or_else(|error| error.into_inner())
+}
+
+fn next_flight_id() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+enum Admission {
+    Wait(Arc<Flight>),
+    Own(Arc<Flight>),
+}
+
+fn admit(target: &Target, job_id: &str) -> Admission {
+    loop {
+        let mut guard = lock_gate();
+        if let Some(flight) = guard.clone() {
+            if same_job(&flight.target, target) && !flight.cancelled() {
+                return Admission::Wait(flight);
+            }
+            flight.cancel();
+            let pid = flight.pid();
+            let flight_id = flight.id;
+            drop(guard);
+            if pid > 4 {
+                kill_pid(pid);
+            }
+            let mut guard = lock_gate();
+            if guard.as_ref().map(|item| item.id) == Some(flight_id) {
+                *guard = None;
+            }
+            continue;
+        }
+        let flight = Arc::new(Flight {
+            id: next_flight_id(),
+            job_id: if job_id.is_empty() {
+                format!("job-{}", now_ms())
+            } else {
+                job_id.to_string()
+            },
+            target: target.clone(),
+            pid: Mutex::new(0),
+            cancelled: Mutex::new(false),
+            done: Mutex::new(None),
+            cv: Condvar::new(),
+        });
+        *guard = Some(flight.clone());
+        return Admission::Own(flight);
+    }
+}
+
+enum ResumePlan {
+    Attach(SavedJob),
+    Reuse(SavedJob),
+    Start,
+}
+
+fn json_ready(path: &str) -> bool {
+    let Ok(raw) = fs::read_to_string(path) else {
+        return false;
+    };
+    parse_whisper_json(&raw).is_ok()
+}
+
+fn plan_resume(saved: Option<&SavedJob>, target: &Target, snapshot: &str, own_exe: &str) -> ResumePlan {
+    let Some(saved) = saved else {
+        return ResumePlan::Start;
+    };
+    if !same_job(&saved_target(saved), target) {
+        return ResumePlan::Start;
+    }
+    if let Some(pid) = saved.pid {
+        if owned_pids_to_stop(snapshot, own_exe, None).contains(&pid) {
+            return ResumePlan::Attach(saved.clone());
+        }
+    }
+    if json_ready(&saved.json_path) {
+        return ResumePlan::Reuse(saved.clone());
+    }
+    ResumePlan::Start
+}
+
+/// On launch, stop leftover whisper-cli from this app. Keep the pid recorded
+/// for the in-progress job when that process is still our whisper-cli.
+pub(crate) fn reconcile_on_launch(app_data: &Path) -> Result<(), String> {
+    let saved = read_saved(app_data);
+    let snapshot = process_snapshot()?;
+    let own = own_whisper_exe(app_data);
+    let own_text = own.to_string_lossy().into_owned();
+    let keep = saved.as_ref().and_then(|job| {
+        let pid = job.pid?;
+        if owned_pids_to_stop(&snapshot, &own_text, None).contains(&pid) {
+            Some(pid)
+        } else {
+            None
+        }
+    });
+    stop_pids(&owned_pids_to_stop(&snapshot, &own_text, keep));
+    let ffmpeg = own_ffmpeg_exe(app_data);
+    stop_pids(&owned_pids_to_stop(
+        &snapshot,
+        &ffmpeg.to_string_lossy(),
+        None,
+    ));
+    if keep.is_none() {
+        if let Some(mut job) = saved {
+            job.pid = None;
+            let _ = write_saved(app_data, &job);
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn clear_job(app_data: &Path, id: &str) -> Result<(), String> {
+    let finished = {
+        let guard = lock_gate();
+        guard
+            .as_ref()
+            .map(|flight| flight.job_id == id && lock_mutex(&flight.done).is_some())
+            .unwrap_or(false)
+    };
+    if let Some(job) = read_saved(app_data) {
+        if job.id == id {
+            if let Some(pid) = job.pid {
+                if !finished {
+                    if let Ok(snapshot) = process_snapshot() {
+                        let own = own_whisper_exe(app_data);
+                        if owned_pids_to_stop(&snapshot, &own.to_string_lossy(), None).contains(&pid)
+                        {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+            remove_work_files(app_data, &job);
+            let _ = fs::remove_file(job_file(app_data));
+        }
+    }
+    let mut guard = lock_gate();
+    if guard
+        .as_ref()
+        .map(|flight| flight.job_id == id)
+        .unwrap_or(false)
+    {
+        *guard = None;
+    }
+    Ok(())
+}
+
+fn pull_progress(path: &Path, offset: u64, mut last: Option<u8>) -> (u64, Option<u8>, Option<u8>) {
+    let Ok(mut file) = File::open(path) else {
+        return (offset, last, None);
+    };
+    if file.seek(SeekFrom::Start(offset)).is_err() {
+        return (offset, last, None);
+    }
+    let mut buf = Vec::new();
+    if file.read_to_end(&mut buf).is_err() {
+        return (offset, last, None);
+    }
+    let usable = if buf.ends_with(b"\n") {
+        buf.len()
+    } else {
+        buf.iter()
+            .rposition(|byte| *byte == b'\n')
+            .map(|index| index + 1)
+            .unwrap_or(0)
+    };
+    if usable == 0 {
+        return (offset, last, None);
+    }
+    let text = String::from_utf8_lossy(&buf[..usable]);
+    let mut emitted = None;
+    for line in text.lines() {
+        let Some(percent) = progress_percent(line) else {
+            continue;
+        };
+        let next = forward_percent(last, percent);
+        if next != last {
+            emitted = next;
+            last = next;
+        }
+    }
+    (offset + usable as u64, last, emitted)
+}
+
+fn transcript_value(duration: Option<f64>, elapsed_ms: u128, segments: &[Segment]) -> Value {
+    json!({
+        "segments": segments.iter().map(|segment| json!({
+            "start": segment.start,
+            "end": segment.end,
+            "text": segment.text,
+        })).collect::<Vec<_>>(),
+        "durationSeconds": duration,
+        "elapsedMs": elapsed_ms as u64,
+        "model": MODEL_NAME,
+    })
+}
+
+fn finish_transcript(job: &SavedJob) -> Result<Value, String> {
+    let raw = fs::read_to_string(&job.json_path)
+        .map_err(|_| "The speech model did not write a transcript.".to_string())?;
+    let segments = parse_whisper_json(&raw)?;
+    let elapsed_ms = now_ms().saturating_sub(job.started_ms) as u128;
+    assert_heard(job.duration_seconds, elapsed_ms, &segments)?;
+    Ok(transcript_value(job.duration_seconds, elapsed_ms, &segments))
+}
+
+fn stopped(flight: &Flight) -> Result<(), String> {
+    if flight.cancelled() {
+        Err(REPLACED.into())
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) struct TranscribeRequest {
+    pub job_id: String,
+    pub home: String,
+    pub course_id: String,
+    pub module_id: Option<String>,
+    pub module_name: Option<String>,
+    pub new_module_name: Option<String>,
+}
+
 pub(crate) fn transcribe_json(
     app_data: &Path,
     media: &str,
+    request: &TranscribeRequest,
     progress: &mut dyn FnMut(&str, &str, Option<u8>),
 ) -> Result<Value, String> {
     let status = collect_status(app_data)?;
     if !status.ready {
         return Err(SETUP_REQUIRED.into());
     }
+    let target = Target {
+        media: media.to_string(),
+        course_id: request.course_id.clone(),
+        module_id: nonempty(request.module_id.as_deref()),
+        module_name: nonempty(request.module_name.as_deref()),
+    };
+    match admit(&target, &request.job_id) {
+        Admission::Wait(flight) => {
+            let keep = flight.pid();
+            if keep > 4 {
+                if let Ok(snapshot) = process_snapshot() {
+                    let own = own_whisper_exe(app_data);
+                    stop_pids(&owned_pids_to_stop(
+                        &snapshot,
+                        &own.to_string_lossy(),
+                        Some(keep),
+                    ));
+                }
+            }
+            flight.wait()
+        }
+        Admission::Own(flight) => {
+            let result = run_owned(app_data, media, request, &flight, progress);
+            let cancelled = flight.cancelled();
+            flight.publish(result.clone());
+            if result.is_err() && !cancelled {
+                let mut guard = lock_gate();
+                if guard.as_ref().map(|item| item.id) == Some(flight.id) {
+                    *guard = None;
+                }
+            }
+            result
+        }
+    }
+}
+
+fn run_owned(
+    app_data: &Path,
+    media: &str,
+    request: &TranscribeRequest,
+    flight: &Arc<Flight>,
+    progress: &mut dyn FnMut(&str, &str, Option<u8>),
+) -> Result<Value, String> {
+    stopped(flight)?;
+    let snapshot = process_snapshot()?;
+    let own = own_whisper_exe(app_data);
+    let own_text = own.to_string_lossy().into_owned();
+    let saved = read_saved(app_data);
+    match plan_resume(saved.as_ref(), &flight.target, &snapshot, &own_text) {
+        ResumePlan::Attach(job) => {
+            let pid = job.pid.ok_or_else(|| "The transcription process is gone.".to_string())?;
+            stop_pids(&owned_pids_to_stop(&snapshot, &own_text, Some(pid)));
+            let ffmpeg = own_ffmpeg_exe(app_data);
+            stop_pids(&owned_pids_to_stop(
+                &snapshot,
+                &ffmpeg.to_string_lossy(),
+                None,
+            ));
+            flight.set_pid(pid);
+            let mut job = job;
+            job.id = flight.job_id.clone();
+            write_saved(app_data, &job)?;
+            if let Some(percent) = job.percent {
+                progress("transcribing", "Transcribing the recording", Some(percent));
+            }
+            wait_for_pid(pid, Path::new(&job.stderr_path), flight, job.percent, |percent| {
+                progress("transcribing", "Transcribing the recording", Some(percent));
+                update_saved(app_data, &job.id, |saved| {
+                    saved.phase = "transcribing".into();
+                    saved.label = "Transcribing the recording".into();
+                    saved.percent = forward_percent(saved.percent, percent);
+                });
+            })?;
+            stopped(flight)?;
+            let mut done = read_saved(app_data).unwrap_or(job);
+            done.pid = None;
+            done.phase = "writing".into();
+            done.percent = Some(100);
+            write_saved(app_data, &done)?;
+            progress("transcribing", "Transcribing the recording", Some(100));
+            finish_transcript(&done)
+        }
+        ResumePlan::Reuse(mut job) => {
+            stop_pids(&owned_pids_to_stop(&snapshot, &own_text, None));
+            let ffmpeg = own_ffmpeg_exe(app_data);
+            stop_pids(&owned_pids_to_stop(
+                &snapshot,
+                &ffmpeg.to_string_lossy(),
+                None,
+            ));
+            job.id = flight.job_id.clone();
+            job.pid = None;
+            job.phase = "writing".into();
+            job.percent = Some(100);
+            write_saved(app_data, &job)?;
+            progress("transcribing", "Transcribing the recording", Some(100));
+            finish_transcript(&job)
+        }
+        ResumePlan::Start => {
+            stop_pids(&owned_pids_to_stop(&snapshot, &own_text, None));
+            let ffmpeg_path = own_ffmpeg_exe(app_data);
+            stop_pids(&owned_pids_to_stop(
+                &snapshot,
+                &ffmpeg_path.to_string_lossy(),
+                None,
+            ));
+            if let Some(old) = saved {
+                if old.id != flight.job_id {
+                    remove_work_files(app_data, &old);
+                }
+            }
+            start_fresh(app_data, media, request, flight, progress)
+        }
+    }
+}
+
+fn start_fresh(
+    app_data: &Path,
+    media: &str,
+    request: &TranscribeRequest,
+    flight: &Arc<Flight>,
+    progress: &mut dyn FnMut(&str, &str, Option<u8>),
+) -> Result<Value, String> {
+    stopped(flight)?;
     let ffmpeg = tool_path(app_data, "ffmpeg").ok_or_else(|| SETUP_REQUIRED.to_string())?;
     let ffprobe = tool_path(app_data, "ffprobe").ok_or_else(|| SETUP_REQUIRED.to_string())?;
-    let started = Instant::now();
     let tmp = app_data.join("tmp");
     fs::create_dir_all(&tmp).map_err(|error| error.to_string())?;
-    let millis = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or(0);
-    let id = format!("{}-{}", std::process::id(), millis);
-    let wav = tmp.join(format!("{id}.wav"));
-    let json_base = tmp.join(&id);
-    let json_path = tmp.join(format!("{id}.json"));
-    let _cleanup = TempFiles(vec![wav.clone(), json_path.clone()]);
+    let work = format!("{}-{}", std::process::id(), now_ms());
+    let wav = tmp.join(format!("{work}.wav"));
+    let json_base = tmp.join(&work);
+    let json_path = tmp.join(format!("{work}.json"));
+    let stderr_path = tmp.join(format!("{work}.stderr"));
+    let stdout_path = tmp.join(format!("{work}.stdout"));
+    let job = SavedJob {
+        id: flight.job_id.clone(),
+        media_path: media.to_string(),
+        home: request.home.clone(),
+        course_id: request.course_id.clone(),
+        module_id: nonempty(request.module_id.as_deref()),
+        module_name: nonempty(request.module_name.as_deref()),
+        new_module_name: nonempty(request.new_module_name.as_deref()),
+        phase: "reading".into(),
+        label: "Reading the recording".into(),
+        percent: None,
+        pid: None,
+        stderr_path: stderr_path.to_string_lossy().into_owned(),
+        stdout_path: stdout_path.to_string_lossy().into_owned(),
+        json_path: json_path.to_string_lossy().into_owned(),
+        wav_path: wav.to_string_lossy().into_owned(),
+        started_ms: now_ms(),
+        duration_seconds: None,
+    };
+    write_saved(app_data, &job)?;
+    progress("reading", "Reading the recording", None);
     let mut convert = Command::new(&ffmpeg);
     convert.args([
         "-hide_banner",
@@ -655,22 +1413,61 @@ pub(crate) fn transcribe_json(
         "-vn",
     ]);
     convert.arg(&wav);
-    progress("reading", "Reading the recording", None);
-    run_command(
+    let flight_stop = flight.clone();
+    let flight_spawn = flight.clone();
+    let app_data_spawn = app_data.to_path_buf();
+    let job_id = flight.job_id.clone();
+    let converted = run_command_watched(
         convert,
-        Duration::from_secs(2 * 60 * 60),
+        Some(Duration::from_secs(2 * 60 * 60)),
         "Could not read that recording.",
-    )?;
+        &mut |_| {},
+        &|| flight_stop.cancelled(),
+        &mut |pid| {
+            flight_spawn.set_pid(pid);
+            update_saved(&app_data_spawn, &job_id, |saved| {
+                saved.pid = Some(pid);
+            });
+        },
+    );
+    if let Err(error) = converted {
+        flight.set_pid(0);
+        return Err(error);
+    }
+    stopped(flight)?;
     let duration = probe_duration(&ffprobe, &wav).or_else(|| {
         fs::metadata(&wav)
             .ok()
             .and_then(|meta| wav_seconds(meta.len()))
     });
+    update_saved(app_data, &flight.job_id, |saved| {
+        saved.duration_seconds = duration;
+        saved.pid = None;
+    });
+    stopped(flight)?;
+    let own = own_whisper_exe(app_data);
+    let own_text = own.to_string_lossy().into_owned();
+    let snapshot = process_snapshot()?;
+    stop_pids(&owned_pids_to_stop(&snapshot, &own_text, None));
+    let still = owned_pids_to_stop(&process_snapshot()?, &own_text, None);
+    if !still.is_empty() {
+        stop_pids(&still);
+        let still = owned_pids_to_stop(&process_snapshot()?, &own_text, None);
+        if !still.is_empty() {
+            return Err("A transcription is already running. Wait for it to finish.".into());
+        }
+    }
     let bin = bin_dir(app_data);
+    let stderr = File::create(&stderr_path).map_err(|error| error.to_string())?;
+    let stdout = File::create(&stdout_path).map_err(|error| error.to_string())?;
     let mut whisper = Command::new(bin.join(ENGINE_EXE));
+    quiet(&mut whisper);
     whisper
         .current_dir(&bin)
         .env("PATH", prepend_path(&bin))
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
         .arg("-m")
         .arg(model_path(app_data))
         .arg("-f")
@@ -685,38 +1482,111 @@ pub(crate) fn transcribe_json(
         .arg("-np")
         .arg("-pp")
         .arg("-ng");
+    let _ = whisper_wait_limit(duration);
+    let mut child = whisper.spawn().map_err(|error| {
+        format!("Could not transcribe that recording. {error}")
+    })?;
+    let pid = child.id();
+    flight.set_pid(pid);
+    update_saved(app_data, &flight.job_id, |saved| {
+        saved.phase = "transcribing".into();
+        saved.label = "Transcribing the recording".into();
+        saved.pid = Some(pid);
+        saved.duration_seconds = duration;
+    });
     progress("transcribing", "Transcribing the recording", Some(0));
-    run_command_watched(
-        whisper,
-        whisper_wait_limit(duration),
-        "Could not transcribe that recording.",
-        &mut |percent| progress("transcribing", "Transcribing the recording", Some(percent)),
-    )?;
+    let waited = wait_child(&mut child, &stderr_path, flight, |percent| {
+        progress("transcribing", "Transcribing the recording", Some(percent));
+        update_saved(app_data, &flight.job_id, |saved| {
+            saved.percent = forward_percent(saved.percent, percent);
+        });
+    });
+    flight.set_pid(0);
+    waited?;
+    stopped(flight)?;
+    let mut done = read_saved(app_data).unwrap_or(job);
+    done.pid = None;
+    done.phase = "writing".into();
+    done.percent = Some(100);
+    done.duration_seconds = duration;
+    write_saved(app_data, &done)?;
     progress("transcribing", "Transcribing the recording", Some(100));
-    let raw = fs::read_to_string(&json_path)
-        .map_err(|_| "The speech model did not write a transcript.".to_string())?;
-    let segments = parse_whisper_json(&raw)?;
-    let elapsed_ms = started.elapsed().as_millis();
-    assert_heard(duration, elapsed_ms, &segments)?;
-    Ok(json!({
-        "segments": segments.iter().map(|segment| json!({
-            "start": segment.start,
-            "end": segment.end,
-            "text": segment.text,
-        })).collect::<Vec<_>>(),
-        "durationSeconds": duration,
-        "elapsedMs": elapsed_ms as u64,
-        "model": MODEL_NAME,
-    }))
+    finish_transcript(&done)
 }
 
-struct TempFiles(Vec<PathBuf>);
-
-impl Drop for TempFiles {
-    fn drop(&mut self) {
-        for path in &self.0 {
-            let _ = fs::remove_file(path);
+fn wait_child(
+    child: &mut std::process::Child,
+    stderr_path: &Path,
+    flight: &Flight,
+    mut on_progress: impl FnMut(u8),
+) -> Result<(), String> {
+    let mut offset = 0u64;
+    let mut last = None;
+    loop {
+        if flight.cancelled() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(REPLACED.into());
         }
+        let pulled = pull_progress(stderr_path, offset, last);
+        offset = pulled.0;
+        last = pulled.1;
+        if let Some(percent) = pulled.2 {
+            on_progress(percent);
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let pulled = pull_progress(stderr_path, offset, last);
+                if let Some(percent) = pulled.2 {
+                    on_progress(percent);
+                }
+                if status.success() {
+                    return Ok(());
+                }
+                let detail = fs::read_to_string(stderr_path).unwrap_or_default();
+                let message = tail(&detail);
+                if message.is_empty() {
+                    return Err(format!(
+                        "Could not transcribe that recording. The command failed ({status})."
+                    ));
+                }
+                return Err(format!("Could not transcribe that recording. {message}"));
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(200)),
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+}
+
+fn wait_for_pid(
+    pid: u32,
+    stderr_path: &Path,
+    flight: &Flight,
+    mut last: Option<u8>,
+    mut on_progress: impl FnMut(u8),
+) -> Result<(), String> {
+    let mut offset = 0u64;
+    let mut ticks = 0u32;
+    loop {
+        if flight.cancelled() {
+            kill_pid(pid);
+            return Err(REPLACED.into());
+        }
+        let pulled = pull_progress(stderr_path, offset, last);
+        offset = pulled.0;
+        last = pulled.1;
+        if let Some(percent) = pulled.2 {
+            on_progress(percent);
+        }
+        ticks = ticks.wrapping_add(1);
+        if ticks % 10 == 0 && !pid_alive(pid) {
+            let pulled = pull_progress(stderr_path, offset, last);
+            if let Some(percent) = pulled.2 {
+                on_progress(percent);
+            }
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(200));
     }
 }
 
@@ -864,8 +1734,9 @@ fn assert_heard(
 #[cfg(test)]
 mod tests {
     use super::{
-        assert_heard, parse_whisper_json, progress_percent, whisper_thread_count,
-        whisper_wait_limit, Segment,
+        assert_heard, forward_percent, owned_pids_to_stop, parse_whisper_json, plan_resume,
+        progress_percent, same_job, whisper_thread_count, whisper_wait_limit, ResumePlan, SavedJob,
+        Segment, Target,
     };
 
     #[test]
@@ -898,6 +1769,94 @@ mod tests {
         assert_eq!(whisper_thread_count(4), 2);
         assert_eq!(whisper_thread_count(8), 4);
         assert!(whisper_thread_count(4) < 4);
+    }
+
+    fn lecture() -> Target {
+        Target {
+            media: r"D:\Lectures\ISC 102 U01.mp3".into(),
+            course_id: "isc-102".into(),
+            module_id: None,
+            module_name: None,
+        }
+    }
+
+    #[test]
+    fn same_recording_and_course_or_module_resumes() {
+        let lecture = lecture();
+        let mut other_path = lecture.clone();
+        other_path.media = "d:/lectures/isc 102 u01.mp3".into();
+        assert!(same_job(&lecture, &other_path));
+        let mut module = lecture.clone();
+        module.module_name = Some("Cells".into());
+        assert!(!same_job(&lecture, &module));
+        let mut listed = module.clone();
+        listed.module_id = Some("module-1".into());
+        assert!(same_job(&module, &listed));
+        let mut labs = listed.clone();
+        labs.module_id = Some("module-2".into());
+        labs.module_name = Some("Labs".into());
+        assert!(!same_job(&listed, &labs));
+        let mut next_file = lecture.clone();
+        next_file.media = r"D:\Lectures\ISC 102 U02.mp3".into();
+        assert!(!same_job(&lecture, &next_file));
+    }
+
+    #[test]
+    fn stops_leftover_whisper_from_this_app_and_keeps_the_live_pid() {
+        let own = r"C:\Users\A\AppData\Local\Study Notes\bin\whisper-cli.exe";
+        let snapshot = format!(
+            "11\t{own}\t{own} -m model\n22\t{own}\t{own} -m model\n33\t{own}\t{own} -m model\n44\t{own}\t{own} -m model\n55\t{own}\t{own} -m model\n66\tC:\\tools\\whisper-cli.exe\tC:\\tools\\whisper-cli.exe -m model\n77\tC:\\Windows\\System32\\notepad.exe\tnotepad\n"
+        );
+        assert_eq!(
+            owned_pids_to_stop(&snapshot, own, Some(11)),
+            vec![22, 33, 44, 55]
+        );
+        assert_eq!(
+            owned_pids_to_stop(&snapshot, own, None),
+            vec![11, 22, 33, 44, 55]
+        );
+    }
+
+    #[test]
+    fn attaches_to_the_same_job_and_starts_fresh_when_the_module_differs() {
+        let own = r"C:\Users\A\AppData\Local\Study Notes\bin\whisper-cli.exe";
+        let snapshot = format!("11\t{own}\t{own} -m model\n");
+        let saved = SavedJob {
+            id: "job".into(),
+            media_path: r"D:\Lectures\ISC 102 U01.mp3".into(),
+            home: r"D:\Notes".into(),
+            course_id: "isc-102".into(),
+            module_id: None,
+            module_name: None,
+            new_module_name: None,
+            phase: "transcribing".into(),
+            label: "Transcribing the recording".into(),
+            percent: Some(15),
+            pid: Some(11),
+            stderr_path: "stderr".into(),
+            stdout_path: "stdout".into(),
+            json_path: "missing.json".into(),
+            wav_path: "audio.wav".into(),
+            started_ms: 1,
+            duration_seconds: Some(57.0 * 60.0),
+        };
+        assert!(matches!(
+            plan_resume(Some(&saved), &lecture(), &snapshot, own),
+            ResumePlan::Attach(_)
+        ));
+        let mut other = lecture();
+        other.module_name = Some("Cells".into());
+        assert!(matches!(
+            plan_resume(Some(&saved), &other, &snapshot, own),
+            ResumePlan::Start
+        ));
+    }
+
+    #[test]
+    fn progress_from_one_process_does_not_go_backward() {
+        assert_eq!(forward_percent(Some(30), 15), Some(30));
+        assert_eq!(forward_percent(Some(15), 30), Some(30));
+        assert_eq!(forward_percent(None, 15), Some(15));
     }
 
     #[test]
@@ -942,8 +1901,17 @@ mod tests {
         assert_eq!(status["model"], "ggml-base.en");
         let wav = root.join("sample.wav");
         synthesize(&wav).unwrap();
+        let request = super::TranscribeRequest {
+            job_id: "job".into(),
+            home: root.to_string_lossy().into_owned(),
+            course_id: "course".into(),
+            module_id: None,
+            module_name: None,
+            new_module_name: None,
+        };
         let transcript =
-            super::transcribe_json(&root, wav.to_str().unwrap(), &mut |_, _, _| {}).unwrap();
+            super::transcribe_json(&root, wav.to_str().unwrap(), &request, &mut |_, _, _| {})
+                .unwrap();
         let text = transcript["segments"]
             .as_array()
             .unwrap()

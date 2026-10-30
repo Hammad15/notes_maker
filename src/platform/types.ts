@@ -1,7 +1,9 @@
 import type {
+  ActiveTranscription,
   LocalRuntimeStatus,
   SetupProgress,
   TranscriptionProgress,
+  TranscriptionRequest,
   TranscriptionResult,
 } from "../domain/localSpeech"
 import type { DirEntry, FileStat, MediaProbe } from "../domain/types"
@@ -23,7 +25,9 @@ export interface FileStore {
   probeMedia(path: string): Promise<MediaProbe>
   localStatus(): Promise<LocalRuntimeStatus>
   setupLocal(): Promise<LocalRuntimeStatus>
-  transcribeMedia(path: string): Promise<TranscriptionResult>
+  transcribeMedia(path: string, request: TranscriptionRequest): Promise<TranscriptionResult>
+  activeTranscription(): Promise<ActiveTranscription | null>
+  clearTranscription(id: string): Promise<void>
 }
 
 export interface Host {

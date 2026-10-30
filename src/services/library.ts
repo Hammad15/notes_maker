@@ -78,7 +78,9 @@ export interface MakeNotesInput {
   mediaPath: string
   provider: ProviderId
   moduleId: string | null
+  moduleName: string | null
   newModuleName: string | null
+  jobId?: string
 }
 
 interface CourseFile {
@@ -521,7 +523,15 @@ export async function makeNotes(
   const title = titleFromMediaPath(input.mediaPath)
   const transcript =
     provider.id === "local"
-      ? await transcribeLocal(store, input.mediaPath, { noteId, title, probe })
+      ? await transcribeLocal(store, input.mediaPath, { noteId, title, probe }, {
+          jobId: input.jobId || noteId,
+          home: input.home,
+          courseId: input.courseId,
+          moduleId: input.moduleId,
+          moduleName: input.moduleName,
+          newModuleName: input.newModuleName,
+          mediaPath: input.mediaPath,
+        })
       : provider.transcribe({ noteId, title, probe })
   hooks?.onWriting?.()
 

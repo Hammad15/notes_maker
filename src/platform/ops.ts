@@ -16,6 +16,8 @@ export const Ops = {
   localStatus: "localStatus",
   setupLocal: "setupLocal",
   transcribeMedia: "transcribeMedia",
+  activeTranscription: "activeTranscription",
+  clearTranscription: "clearTranscription",
   pickDirectory: "pickDirectory",
   pickMedia: "pickMedia",
 } as const

@@ -1,4 +1,4 @@
-import type { LocalRuntimeStatus, TranscriptionResult } from "../domain/localSpeech"
+import type { ActiveTranscription, LocalRuntimeStatus, TranscriptionRequest, TranscriptionResult } from "../domain/localSpeech"
 import type { DirEntry, FileStat, MediaProbe } from "../domain/types"
 import { Ops } from "./ops"
 import type { FileStore } from "./types"
@@ -44,6 +44,20 @@ export function createRemoteStore(call: Caller): FileStore {
     probeMedia: (path) => call<MediaProbe>({ op: Ops.probeMedia, path }),
     localStatus: () => call<LocalRuntimeStatus>({ op: Ops.localStatus }),
     setupLocal: () => call<LocalRuntimeStatus>({ op: Ops.setupLocal }),
-    transcribeMedia: (path) => call<TranscriptionResult>({ op: Ops.transcribeMedia, path }),
+    transcribeMedia: (path, request: TranscriptionRequest) =>
+      call<TranscriptionResult>({
+        op: Ops.transcribeMedia,
+        path,
+        jobId: request.jobId,
+        home: request.home,
+        courseId: request.courseId,
+        moduleId: request.moduleId,
+        moduleName: request.moduleName,
+        newModuleName: request.newModuleName,
+      }),
+    activeTranscription: () => call<ActiveTranscription | null>({ op: Ops.activeTranscription }),
+    clearTranscription: async (id) => {
+      await call({ op: Ops.clearTranscription, id })
+    },
   }
 }

@@ -77,6 +77,7 @@ export function MakeNotesDialog({
     }
     let moduleId: string | null = null
     let moduleName: string | null = null
+    let createdModule: string | null = null
     if (moduleChoice === "new") {
       try {
         assertUsableFolderName(newModuleName)
@@ -84,9 +85,11 @@ export function MakeNotesDialog({
         setError(messageOf(err))
         return
       }
-      moduleName = newModuleName.trim()
+      createdModule = newModuleName.trim()
+      moduleName = createdModule
     } else if (moduleChoice !== "course") {
       moduleId = moduleChoice
+      moduleName = modules.find((item) => item.id === moduleChoice)?.name ?? null
     }
     startMakeNotes({
       home: settings.homeDirectory,
@@ -94,7 +97,8 @@ export function MakeNotesDialog({
       mediaPath,
       provider: settings.provider,
       moduleId,
-      newModuleName: moduleName,
+      moduleName,
+      newModuleName: createdModule,
     })
     onOpenChange(false)
   }

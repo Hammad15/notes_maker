@@ -4,19 +4,30 @@ import { promises as fs } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { finished } from "node:stream/promises"
-import { execFile } from "node:child_process"
+import { execFile, spawn, type ChildProcess } from "node:child_process"
 import { promisify } from "node:util"
-import { LocalSetupError, StudyError } from "../domain/errors.ts"
+import { LocalSetupError } from "../domain/errors.ts"
 import {
   assertHeardRecording,
   FFMPEG_BUNDLE,
+  forwardProgress,
+  parseProcessSnapshot,
+  parseSavedTranscription,
   parseWhisperJson,
+  planResume,
+  sameTranscriptionJob,
   SPEECH_MODEL,
+  TRANSCRIPTION_REPLACED,
   WHISPER_ENGINE,
+  whisperPidsToStop,
   whisperThreadCount,
+  type ActiveTranscription,
   type LocalRuntimeStatus,
+  type SavedTranscription,
   type SetupProgress,
+  type TranscriptionRequest,
   type TranscriptionResult,
+  type TranscriptionTarget,
 } from "../domain/localSpeech.ts"
 
 const execFileAsync = promisify(execFile)
@@ -334,68 +345,554 @@ function wavSeconds(size: number): number | null {
   return seconds
 }
 
-export async function transcribeWithRuntime(appData: string, mediaPath: string): Promise<TranscriptionResult> {
+const PROCESS_SNAPSHOT_SCRIPT =
+  "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'whisper-cli.exe' -or $_.Name -eq 'ffmpeg.exe' } | ForEach-Object { $cmd = $_.CommandLine; if ($null -eq $cmd) { $cmd = '' }; $cmd = ($cmd -replace \"`t\", ' ' -replace \"`r|`n\", ' '); $exe = $_.ExecutablePath; if ($null -eq $exe) { $exe = '' }; Write-Output (('{0}`t{1}`t{2}' -f $_.ProcessId, $exe, $cmd)) }"
+
+function jobFile(appData: string): string {
+  return path.join(appData, "transcription-job.json")
+}
+
+function whisperExe(appData: string): string {
+  return path.join(binDir(appData), WHISPER_ENGINE.file)
+}
+
+function ffmpegExe(appData: string): string {
+  return path.join(binDir(appData), exe("ffmpeg"))
+}
+
+async function readJob(appData: string): Promise<SavedTranscription | null> {
+  try {
+    return parseSavedTranscription(await fs.readFile(jobFile(appData), "utf8"))
+  } catch {
+    return null
+  }
+}
+
+async function writeJob(appData: string, job: SavedTranscription): Promise<void> {
+  const temp = `${jobFile(appData)}.tmp`
+  await fs.mkdir(appData, { recursive: true })
+  await fs.writeFile(temp, `${JSON.stringify(job, null, 2)}\n`, "utf8")
+  await fs.rename(temp, jobFile(appData))
+}
+
+async function updateJob(appData: string, id: string, mutate: (job: SavedTranscription) => void): Promise<void> {
+  const job = await readJob(appData)
+  if (!job || job.id !== id) return
+  mutate(job)
+  await writeJob(appData, job)
+}
+
+function isTmpFile(appData: string, target: string): boolean {
+  const tmp = path.join(appData, "tmp")
+  const relative = path.relative(tmp, target)
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
+}
+
+async function removeWork(appData: string, job: SavedTranscription): Promise<void> {
+  for (const target of [job.wavPath, job.jsonPath, job.stderrPath, job.stdoutPath]) {
+    if (target && isTmpFile(appData, target)) await fs.rm(target, { force: true })
+  }
+}
+
+async function processSnapshot(): Promise<string> {
+  if (process.platform === "win32") {
+    const { stdout } = await execFileAsync(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", PROCESS_SNAPSHOT_SCRIPT],
+      { windowsHide: true, timeout: 30_000 },
+    )
+    return String(stdout)
+  }
+  const lines: string[] = []
+  let names: string[] = []
+  try {
+    names = await fs.readdir("/proc")
+  } catch {
+    return ""
+  }
+  for (const name of names) {
+    if (!/^\d+$/.test(name)) continue
+    const dir = path.join("/proc", name)
+    let executable = ""
+    try {
+      executable = await fs.readlink(path.join(dir, "exe"))
+    } catch {
+      executable = ""
+    }
+    let command = ""
+    try {
+      command = (await fs.readFile(path.join(dir, "cmdline"))).toString("utf8").replace(/\u0000/g, " ")
+    } catch {
+      command = ""
+    }
+    lines.push(`${name}\t${executable}\t${command.replace(/\t/g, " ")}`)
+  }
+  return lines.join("\n")
+}
+
+async function killPid(pid: number): Promise<void> {
+  if (!Number.isInteger(pid) || pid <= 4 || pid === process.pid) return
+  try {
+    if (process.platform === "win32") {
+      await execFileAsync("taskkill", ["/PID", String(pid), "/F", "/T"], { windowsHide: true })
+      return
+    }
+    process.kill(pid, "SIGKILL")
+  } catch {
+    // The process already exited.
+  }
+}
+
+async function pidAlive(pid: number): Promise<boolean> {
+  if (!Number.isInteger(pid) || pid <= 4) return false
+  if (process.platform === "win32") {
+    try {
+      const { stdout } = await execFileAsync("tasklist", ["/FI", `PID eq ${pid}`, "/NH", "/FO", "CSV"], {
+        windowsHide: true,
+      })
+      const text = String(stdout)
+      return !text.toLowerCase().includes("no tasks") && text.includes(String(pid))
+    } catch {
+      return false
+    }
+  }
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function stopOwned(executable: string, keepPid: number | null, snapshot?: string): Promise<void> {
+  const processes = parseProcessSnapshot(snapshot ?? (await processSnapshot()))
+  for (const pid of whisperPidsToStop(processes, executable, keepPid)) {
+    await killPid(pid)
+  }
+}
+
+async function jsonReady(file: string): Promise<boolean> {
+  if (!file) return false
+  try {
+    parseWhisperJson(await fs.readFile(file, "utf8"))
+    return true
+  } catch {
+    return false
+  }
+}
+
+type Flight = {
+  id: string
+  target: TranscriptionTarget
+  cancelled: boolean
+  pid: number | null
+  settled: boolean
+  promise: Promise<TranscriptionResult>
+  resolve: (value: TranscriptionResult) => void
+  reject: (error: Error) => void
+}
+
+let currentFlight: Flight | null = null
+let gate: Promise<unknown> = Promise.resolve()
+
+function withGate<T>(fn: () => Promise<T>): Promise<T> {
+  const run = gate.then(fn, fn)
+  gate = run.then(
+    () => undefined,
+    () => undefined,
+  )
+  return run
+}
+
+function createFlight(id: string, target: TranscriptionTarget): Flight {
+  let resolve: (value: TranscriptionResult) => void = () => undefined
+  let reject: (error: Error) => void = () => undefined
+  const promise = new Promise<TranscriptionResult>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { id, target, cancelled: false, pid: null, settled: false, promise, resolve, reject }
+}
+
+function settle(flight: Flight, work: Promise<TranscriptionResult>) {
+  void work.then(
+    (value) => {
+      flight.settled = true
+      flight.resolve(value)
+    },
+    (error: unknown) => {
+      flight.settled = true
+      const wrapped = error instanceof Error ? error : new Error("Could not transcribe that recording.")
+      flight.reject(wrapped)
+      if (currentFlight === flight && !flight.cancelled) currentFlight = null
+    },
+  )
+}
+
+function resultFrom(saved: SavedTranscription, segments: TranscriptionResult["segments"]): TranscriptionResult {
+  return {
+    segments,
+    durationSeconds: saved.durationSeconds,
+    elapsedMs: Math.max(0, Date.now() - (saved.startedMs || Date.now())),
+    model: SPEECH_MODEL.name,
+  }
+}
+
+async function finishSaved(saved: SavedTranscription): Promise<TranscriptionResult> {
+  const raw = await fs.readFile(saved.jsonPath, "utf8")
+  const segments = parseWhisperJson(raw)
+  const result = resultFrom(saved, segments)
+  assertHeardRecording({
+    durationSeconds: result.durationSeconds,
+    elapsedMs: result.elapsedMs,
+    segments,
+  })
+  return result
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function pullProgress(file: string, offset: number, last: number | null): Promise<{ offset: number; last: number | null; emitted: number | null }> {
+  let text = ""
+  try {
+    const handle = await fs.open(file, "r")
+    try {
+      const info = await handle.stat()
+      if (info.size <= offset) return { offset, last, emitted: null }
+      const buf = Buffer.alloc(info.size - offset)
+      await handle.read(buf, 0, buf.length, offset)
+      text = buf.toString("utf8")
+    } finally {
+      await handle.close()
+    }
+  } catch {
+    return { offset, last, emitted: null }
+  }
+  const newline = text.endsWith("\n") ? text.length : text.lastIndexOf("\n") + 1
+  if (newline <= 0) return { offset, last, emitted: null }
+  let emitted: number | null = null
+  for (const line of text.slice(0, newline).split(/\r?\n/)) {
+    const marker = "progress ="
+    const at = line.indexOf(marker)
+    if (at < 0) continue
+    const value = Number(line.slice(at + marker.length).trim().replace(/%$/, ""))
+    const next = forwardProgress(last, Number.isFinite(value) ? value : null)
+    if (next !== last) {
+      emitted = next
+      last = next
+    }
+  }
+  return { offset: offset + Buffer.byteLength(text.slice(0, newline)), last, emitted }
+}
+
+export async function readActiveTranscription(appData: string): Promise<ActiveTranscription | null> {
+  const saved = await readJob(appData)
+  if (!saved) return null
+  return {
+    id: saved.id,
+    jobId: saved.id,
+    mediaPath: saved.mediaPath,
+    home: saved.home,
+    courseId: saved.courseId,
+    moduleId: saved.moduleId,
+    moduleName: saved.moduleName,
+    newModuleName: saved.newModuleName,
+    phase: saved.phase,
+    label: saved.label,
+    percent: saved.percent,
+  }
+}
+
+export async function clearTranscriptionJob(appData: string, id: string): Promise<void> {
+  const saved = await readJob(appData)
+  if (saved?.id === id) {
+    const stillRunning =
+      saved.pid != null &&
+      whisperPidsToStop(parseProcessSnapshot(await processSnapshot().catch(() => "")), whisperExe(appData), null).includes(
+        saved.pid,
+      )
+    if (stillRunning && currentFlight?.id === id && !currentFlight.settled) return
+    await removeWork(appData, saved)
+    await fs.rm(jobFile(appData), { force: true })
+  }
+  if (currentFlight?.id === id) currentFlight = null
+}
+
+export async function reconcileTranscriptionOnLaunch(appData: string): Promise<void> {
+  const saved = await readJob(appData)
+  const snapshot = await processSnapshot()
+  const own = whisperExe(appData)
+  const processes = parseProcessSnapshot(snapshot)
+  const keep = saved?.pid && whisperPidsToStop(processes, own, null).includes(saved.pid) ? saved.pid : null
+  await stopOwned(own, keep, snapshot)
+  await stopOwned(ffmpegExe(appData), null, snapshot)
+  if (saved && keep == null) {
+    saved.pid = null
+    await writeJob(appData, saved)
+  }
+}
+
+export async function transcribeWithRuntime(
+  appData: string,
+  mediaPath: string,
+  request: TranscriptionRequest,
+): Promise<TranscriptionResult> {
   const status = await localRuntimeStatus(appData)
   if (!status.ready) throw new LocalSetupError()
+  const target: TranscriptionTarget = {
+    mediaPath,
+    courseId: request.courseId,
+    moduleId: request.moduleId,
+    moduleName: request.moduleName,
+  }
+  const admitted = await withGate(async () => {
+    if (currentFlight && sameTranscriptionJob(currentFlight.target, target) && !currentFlight.cancelled) {
+      if (currentFlight.pid) await stopOwned(whisperExe(appData), currentFlight.pid)
+      return { kind: "wait" as const, promise: currentFlight.promise }
+    }
+    if (currentFlight && !currentFlight.settled) {
+      currentFlight.cancelled = true
+      const pid = currentFlight.pid
+      currentFlight.reject(new Error(TRANSCRIPTION_REPLACED))
+      currentFlight.settled = true
+      currentFlight = null
+      if (pid) await killPid(pid)
+    } else {
+      currentFlight = null
+    }
+    const saved = await readJob(appData)
+    const own = whisperExe(appData)
+    const snapshot = await processSnapshot()
+    const processes = parseProcessSnapshot(snapshot)
+    const plan = planResume(
+      saved ? { mediaPath: saved.mediaPath, courseId: saved.courseId, moduleId: saved.moduleId, moduleName: saved.moduleName, pid: saved.pid, jsonReady: await jsonReady(saved.jsonPath) } : null,
+      target,
+      processes,
+      own,
+    )
+    const keep = plan.action === "attach" ? plan.pid : null
+    await stopOwned(own, keep, snapshot)
+    await stopOwned(ffmpegExe(appData), null, snapshot)
+    if (plan.action === "start" && saved) await removeWork(appData, saved)
+    if (plan.action === "reuse" && saved) return { kind: "reuse" as const, saved }
+    if (plan.action === "attach" && saved) {
+      const flight = createFlight(request.jobId || saved.id, target)
+      flight.pid = plan.pid
+      currentFlight = flight
+      return { kind: "attach" as const, flight, saved, pid: plan.pid }
+    }
+    const flight = createFlight(request.jobId || crypto.randomUUID(), target)
+    currentFlight = flight
+    return { kind: "start" as const, flight }
+  })
+  if (admitted.kind === "wait") return admitted.promise
+  if (admitted.kind === "reuse") {
+    const saved = { ...admitted.saved, id: request.jobId || admitted.saved.id, jobId: request.jobId || admitted.saved.id, pid: null, phase: "writing" as const, percent: 100 }
+    await writeJob(appData, saved)
+    return finishSaved(saved)
+  }
+  if (admitted.kind === "attach") {
+    settle(admitted.flight, attachJob(appData, admitted.saved, admitted.pid, admitted.flight))
+    return admitted.flight.promise
+  }
+  settle(admitted.flight, startFresh(appData, mediaPath, request, admitted.flight))
+  return admitted.flight.promise
+}
+
+async function attachJob(appData: string, saved: SavedTranscription, pid: number, flight: Flight): Promise<TranscriptionResult> {
+  const job = { ...saved, id: flight.id, jobId: flight.id }
+  await writeJob(appData, job)
+  let offset = 0
+  let last = job.percent
+  let ticks = 0
+  while (!flight.cancelled) {
+    const pulled = await pullProgress(job.stderrPath, offset, last)
+    offset = pulled.offset
+    last = pulled.last
+    if (pulled.emitted != null) {
+      await updateJob(appData, job.id, (current) => {
+        current.phase = "transcribing"
+        current.percent = forwardProgress(current.percent, pulled.emitted)
+      })
+    }
+    ticks += 1
+    if (ticks % 10 === 0 && !(await pidAlive(pid))) break
+    await delay(200)
+  }
+  if (flight.cancelled) {
+    await killPid(pid)
+    throw new Error(TRANSCRIPTION_REPLACED)
+  }
+  const done = (await readJob(appData)) ?? job
+  done.pid = null
+  done.phase = "writing"
+  done.percent = 100
+  await writeJob(appData, done)
+  return finishSaved(done)
+}
+
+async function startFresh(
+  appData: string,
+  mediaPath: string,
+  request: TranscriptionRequest,
+  flight: Flight,
+): Promise<TranscriptionResult> {
   const ffmpeg = await toolPath(appData, "ffmpeg")
   const ffprobe = await toolPath(appData, "ffprobe")
   if (!ffmpeg || !ffprobe) throw new LocalSetupError()
-  const started = Date.now()
   const tmp = path.join(appData, "tmp")
   await fs.mkdir(tmp, { recursive: true })
-  const id = crypto.randomUUID()
-  const wav = path.join(tmp, `${id}.wav`)
-  const jsonBase = path.join(tmp, id)
-  try {
-    await execFileAsync(
-      ffmpeg,
-      ["-hide_banner", "-loglevel", "error", "-y", "-i", mediaPath, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-vn", wav],
-      { windowsHide: true, timeout: 2 * 60 * 60 * 1000 },
-    )
-    let durationSeconds = await probeDuration(ffprobe, wav)
-    if (durationSeconds == null) {
-      const info = await fs.stat(wav)
-      durationSeconds = wavSeconds(info.size)
-    }
-    const whisper = path.join(binDir(appData), WHISPER_ENGINE.file)
-    // No timeout. The old cap was duration × 20, clamped to 6 hours, and that
-    // stopped a 57-minute lecture. -t leaves processors free for the window.
-    await execFileAsync(
-      whisper,
-      [
-        "-m",
-        modelPath(appData),
-        "-f",
-        wav,
-        "-l",
-        "en",
-        "-t",
-        String(whisperThreadCount(os.availableParallelism())),
-        "-oj",
-        "-of",
-        jsonBase,
-        "-np",
-        "-pp",
-        "-ng",
-      ],
-      {
-        windowsHide: true,
-        maxBuffer: 16 * 1024 * 1024,
-        cwd: binDir(appData),
-      },
-    )
-    const raw = await fs.readFile(`${jsonBase}.json`, "utf8")
-    const segments = parseWhisperJson(raw)
-    const elapsedMs = Date.now() - started
-    assertHeardRecording({ durationSeconds, elapsedMs, segments })
-    return { segments, durationSeconds, elapsedMs, model: SPEECH_MODEL.name }
-  } catch (error) {
-    if (error instanceof StudyError) throw error
-    const detail = error instanceof Error && error.message.trim() ? error.message.trim() : "The speech model stopped."
-    const tail = detail.length > 500 ? detail.slice(-500) : detail
-    throw new Error(`Could not transcribe that recording. ${tail}`)
-  } finally {
-    await fs.rm(wav, { force: true })
-    await fs.rm(`${jsonBase}.json`, { force: true })
+  const work = `${process.pid}-${Date.now()}`
+  const wav = path.join(tmp, `${work}.wav`)
+  const jsonBase = path.join(tmp, work)
+  const jsonPath = `${jsonBase}.json`
+  const stderrPath = path.join(tmp, `${work}.stderr`)
+  const stdoutPath = path.join(tmp, `${work}.stdout`)
+  const job: SavedTranscription = {
+    id: flight.id,
+    jobId: flight.id,
+    mediaPath,
+    home: request.home,
+    courseId: request.courseId,
+    moduleId: request.moduleId,
+    moduleName: request.moduleName,
+    newModuleName: request.newModuleName,
+    phase: "reading",
+    label: "Reading the recording",
+    percent: null,
+    pid: null,
+    stderrPath,
+    stdoutPath,
+    jsonPath,
+    wavPath: wav,
+    startedMs: Date.now(),
+    durationSeconds: null,
   }
+  await writeJob(appData, job)
+  await runChild(
+    ffmpeg,
+    ["-hide_banner", "-loglevel", "error", "-y", "-i", mediaPath, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-vn", wav],
+    flight,
+    appData,
+    null,
+    null,
+    undefined,
+    "Could not read that recording.",
+  )
+  if (flight.cancelled) throw new Error(TRANSCRIPTION_REPLACED)
+  let durationSeconds = await probeDuration(ffprobe, wav)
+  if (durationSeconds == null) {
+    const info = await fs.stat(wav)
+    durationSeconds = wavSeconds(info.size)
+  }
+  await updateJob(appData, flight.id, (current) => {
+    current.durationSeconds = durationSeconds
+    current.pid = null
+  })
+  const own = whisperExe(appData)
+  await stopOwned(own, null)
+  const still = whisperPidsToStop(parseProcessSnapshot(await processSnapshot()), own, null)
+  if (still.length > 0) {
+    for (const pid of still) await killPid(pid)
+    const left = whisperPidsToStop(parseProcessSnapshot(await processSnapshot()), own, null)
+    if (left.length > 0) throw new Error("A transcription is already running. Wait for it to finish.")
+  }
+  await runChild(
+    own,
+    ["-m", modelPath(appData), "-f", wav, "-l", "en", "-t", String(whisperThreadCount(os.availableParallelism())), "-oj", "-of", jsonBase, "-np", "-pp", "-ng"],
+    flight,
+    appData,
+    stderrPath,
+    stdoutPath,
+    binDir(appData),
+    "Could not transcribe that recording.",
+  )
+  if (flight.cancelled) throw new Error(TRANSCRIPTION_REPLACED)
+  const done = (await readJob(appData)) ?? job
+  done.pid = null
+  done.phase = "writing"
+  done.percent = 100
+  done.durationSeconds = durationSeconds
+  await writeJob(appData, done)
+  return finishSaved(done)
+}
+
+function runChild(
+  command: string,
+  args: string[],
+  flight: Flight,
+  appData: string,
+  stderrPath: string | null,
+  stdoutPath: string | null,
+  cwd: string | undefined,
+  failure: string,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const stdout = stdoutPath ? createWriteStream(stdoutPath) : null
+    const stderr = stderrPath ? createWriteStream(stderrPath) : null
+    const child: ChildProcess = spawn(command, args, {
+      cwd,
+      windowsHide: true,
+      env: cwd ? { ...process.env, PATH: `${cwd}${path.delimiter}${process.env.PATH ?? ""}` } : process.env,
+      stdio: ["ignore", stdout ?? "ignore", stderr ?? "ignore"],
+    })
+    flight.pid = child.pid ?? null
+    if (child.pid) {
+      void updateJob(appData, flight.id, (job) => {
+        job.pid = child.pid ?? null
+        if (stderrPath) {
+          job.phase = "transcribing"
+          job.label = "Transcribing the recording"
+        }
+      })
+    }
+    let offset = 0
+    let last: number | null = null
+    let timer: NodeJS.Timeout | null = null
+    const stopTimer = () => {
+      if (timer) clearInterval(timer)
+      timer = null
+      stdout?.end()
+      stderr?.end()
+    }
+    if (stderrPath) {
+      timer = setInterval(() => {
+        if (flight.cancelled && child.pid) {
+          void killPid(child.pid)
+          return
+        }
+        void pullProgress(stderrPath, offset, last).then((pulled) => {
+          offset = pulled.offset
+          last = pulled.last
+          if (pulled.emitted == null) return
+          void updateJob(appData, flight.id, (job) => {
+            job.percent = forwardProgress(job.percent, pulled.emitted)
+          })
+        })
+      }, 200)
+    }
+    child.once("error", (error) => {
+      stopTimer()
+      flight.pid = null
+      reject(error)
+    })
+    child.once("exit", (code) => {
+      stopTimer()
+      flight.pid = null
+      if (flight.cancelled) {
+        reject(new Error(TRANSCRIPTION_REPLACED))
+        return
+      }
+      if (code === 0) {
+        resolve()
+        return
+      }
+      void fs.readFile(stderrPath || "", "utf8").then(
+        (detail) => reject(new Error(`${failure} ${detail.trim().slice(-500)}`)),
+        () => reject(new Error(failure)),
+      )
+    })
+  })
 }

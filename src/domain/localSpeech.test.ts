@@ -6,6 +6,11 @@ import {
   parseWhisperJson,
   SPEECH_MODEL,
   WHISPER_ENGINE,
+  forwardProgress,
+  parseProcessSnapshot,
+  planResume,
+  sameTranscriptionJob,
+  whisperPidsToStop,
   whisperThreadCount,
 } from "./localSpeech"
 
@@ -97,6 +102,86 @@ describe("transcription stays usable", () => {
     expect(
       localJobMessage("ISC 102 U01.mp3", { phase: "writing", label: "Writing the notes and PDF", percent: null }),
     ).toBe("Writing the notes and PDF for ISC 102 U01.mp3…")
+  })
+})
+
+describe("one transcription", () => {
+  const own = "C:\\Users\\A\\AppData\\Local\\Study Notes\\bin\\whisper-cli.exe"
+  const lecture = {
+    mediaPath: "D:\\Lectures\\ISC 102 U01.mp3",
+    courseId: "isc-102",
+    moduleId: null,
+    moduleName: null,
+  }
+
+  it("resumes the same recording and course or module", () => {
+    expect(
+      sameTranscriptionJob(lecture, {
+        ...lecture,
+        mediaPath: "d:/lectures/isc 102 u01.mp3",
+      }),
+    ).toBe(true)
+    expect(
+      sameTranscriptionJob(lecture, {
+        ...lecture,
+        moduleId: null,
+        moduleName: "Cells",
+      }),
+    ).toBe(false)
+    expect(
+      sameTranscriptionJob(
+        { ...lecture, moduleId: null, moduleName: "Cells" },
+        { ...lecture, moduleId: "module-1", moduleName: "Cells" },
+      ),
+    ).toBe(true)
+    expect(
+      sameTranscriptionJob(
+        { ...lecture, moduleId: "module-1", moduleName: "Cells" },
+        { ...lecture, moduleId: "module-2", moduleName: "Labs" },
+      ),
+    ).toBe(false)
+    expect(sameTranscriptionJob(lecture, { ...lecture, mediaPath: "D:\\Lectures\\ISC 102 U02.mp3" })).toBe(false)
+  })
+
+  it("stops leftover whisper-cli from this app and keeps the live one", () => {
+    const processes = parseProcessSnapshot(
+      [
+        `11\t${own}\t${own} -m model`,
+        `22\t${own}\t${own} -m model`,
+        `33\t${own}\t${own} -m model`,
+        `44\t${own}\t${own} -m model`,
+        `55\t${own}\t${own} -m model`,
+        `66\tC:\\tools\\whisper-cli.exe\tC:\\tools\\whisper-cli.exe -m model`,
+        `77\tC:\\Windows\\System32\\notepad.exe\tnotepad`,
+      ].join("\n"),
+    )
+    expect(whisperPidsToStop(processes, own, 11).sort((a, b) => a - b)).toEqual([22, 33, 44, 55])
+    expect(whisperPidsToStop(processes, own, null).sort((a, b) => a - b)).toEqual([11, 22, 33, 44, 55])
+  })
+
+  it("attaches to the same job and starts fresh when the file or module differs", () => {
+    const processes = parseProcessSnapshot(`11\t${own}\t${own} -m model`)
+    expect(
+      planResume({ ...lecture, pid: 11, jsonReady: false }, lecture, processes, own),
+    ).toEqual({ action: "attach", pid: 11 })
+    expect(
+      planResume(
+        { ...lecture, pid: 11, jsonReady: false },
+        { ...lecture, moduleName: "Cells" },
+        processes,
+        own,
+      ),
+    ).toEqual({ action: "start" })
+    expect(
+      planResume({ ...lecture, pid: null, jsonReady: true }, lecture, [], own),
+    ).toEqual({ action: "reuse" })
+  })
+
+  it("does not move the percent backward", () => {
+    expect(forwardProgress(30, 15)).toBe(30)
+    expect(forwardProgress(15, 30)).toBe(30)
+    expect(forwardProgress(null, 15)).toBe(15)
+    expect(forwardProgress(15, null)).toBe(15)
   })
 })
 

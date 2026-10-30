@@ -491,10 +491,26 @@ fn probe_media(path: &str) -> Result<Value, String> {
     }))
 }
 
-fn emit_transcribe(app: &tauri::AppHandle, phase: &str, label: &str, percent: Option<u8>) {
+fn optional_string(request: &Value, key: &str) -> Option<String> {
+    request
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn emit_transcribe(
+    app: &tauri::AppHandle,
+    job_id: &str,
+    phase: &str,
+    label: &str,
+    percent: Option<u8>,
+) {
     let _ = app.emit(
         "local-transcribe-progress",
         json!({
+            "jobId": job_id,
             "phase": phase,
             "label": label,
             "percent": percent,
@@ -532,12 +548,26 @@ async fn desktop_call(app: tauri::AppHandle, request: Value) -> Result<Value, St
         // thread, and Windows then marks the desktop Not Responding.
         "transcribeMedia" | "transcribeLocal" => {
             let media = require_str(&request, "path")?.to_string();
+            let transcribe = local_runtime::TranscribeRequest {
+                job_id: optional_string(&request, "jobId").unwrap_or_default(),
+                home: optional_string(&request, "home").unwrap_or_default(),
+                course_id: optional_string(&request, "courseId").unwrap_or_default(),
+                module_id: optional_string(&request, "moduleId"),
+                module_name: optional_string(&request, "moduleName"),
+                new_module_name: optional_string(&request, "newModuleName"),
+            };
             let app_data = app_data_dir();
             let handle = app.clone();
             return match tauri::async_runtime::spawn_blocking(move || {
-                local_runtime::transcribe_json(&app_data, &media, &mut |phase, label, percent| {
-                    emit_transcribe(&handle, phase, label, percent);
-                })
+                let job_id = transcribe.job_id.clone();
+                local_runtime::transcribe_json(
+                    &app_data,
+                    &media,
+                    &transcribe,
+                    &mut |phase, label, percent| {
+                        emit_transcribe(&handle, &job_id, phase, label, percent);
+                    },
+                )
             })
             .await
             {
@@ -603,6 +633,11 @@ fn desktop_request(app: tauri::AppHandle, request: Value) -> Result<Value, Strin
         }
         "probeMedia" => probe_media(require_str(&request, "path")?),
         "localStatus" => local_runtime::status_json(&app_data_dir()),
+        "activeTranscription" => Ok(local_runtime::active_job_json(&app_data_dir())),
+        "clearTranscription" => {
+            local_runtime::clear_job(&app_data_dir(), require_str(&request, "id")?)?;
+            Ok(Value::Null)
+        }
         "setupLocal" => {
             let handle = app.clone();
             local_runtime::setup_local(&app_data_dir(), &mut |phase, label, received, total| {
@@ -651,6 +686,12 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .setup(|_app| {
+            // A sleep can leave whisper-cli running after the window reloads.
+            // Stop every copy started from this app except the job we can resume.
+            let _ = local_runtime::reconcile_on_launch(&app_data_dir());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![desktop_call])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -713,6 +754,10 @@ mod duration_tests {
         assert!(
             source.contains("spawn_blocking"),
             "whisper has to run on a worker thread"
+        );
+        assert!(
+            source.contains("reconcile_on_launch"),
+            "launch has to stop leftover whisper-cli processes"
         );
         let transcribe = source
             .split("async fn desktop_call")
