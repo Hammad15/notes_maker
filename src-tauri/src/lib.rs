@@ -491,6 +491,17 @@ fn probe_media(path: &str) -> Result<Value, String> {
     }))
 }
 
+fn emit_transcribe(app: &tauri::AppHandle, phase: &str, label: &str, percent: Option<u8>) {
+    let _ = app.emit(
+        "local-transcribe-progress",
+        json!({
+            "phase": phase,
+            "label": label,
+            "percent": percent,
+        }),
+    );
+}
+
 fn emit_setup(app: &tauri::AppHandle, phase: &str, label: &str, received: u64, total: Option<u64>) {
     let _ = app.emit(
         "local-setup-progress",
@@ -510,7 +521,38 @@ fn file_path_string(file: tauri_plugin_dialog::FilePath) -> Result<String, Strin
 }
 
 #[tauri::command]
-fn desktop_call(app: tauri::AppHandle, request: Value) -> Result<Value, String> {
+async fn desktop_call(app: tauri::AppHandle, request: Value) -> Result<Value, String> {
+    let op = request
+        .get("op")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    match op.as_str() {
+        // Whisper stays off the window thread. A sync command runs on that
+        // thread, and Windows then marks the desktop Not Responding.
+        "transcribeMedia" | "transcribeLocal" => {
+            let media = require_str(&request, "path")?.to_string();
+            let app_data = app_data_dir();
+            let handle = app.clone();
+            return match tauri::async_runtime::spawn_blocking(move || {
+                local_runtime::transcribe_json(&app_data, &media, &mut |phase, label, percent| {
+                    emit_transcribe(&handle, phase, label, percent);
+                })
+            })
+            .await
+            {
+                Ok(result) => result,
+                Err(_) => {
+                    Err("Could not transcribe that recording. The worker thread stopped.".into())
+                }
+            };
+        }
+        _ => {}
+    }
+    desktop_request(app, request)
+}
+
+fn desktop_request(app: tauri::AppHandle, request: Value) -> Result<Value, String> {
     let op = require_str(&request, "op")?;
     match op {
         "appDataDir" => Ok(json!(app_data_dir().to_string_lossy())),
@@ -566,9 +608,6 @@ fn desktop_call(app: tauri::AppHandle, request: Value) -> Result<Value, String> 
             local_runtime::setup_local(&app_data_dir(), &mut |phase, label, received, total| {
                 emit_setup(&handle, phase, label, received, total);
             })
-        }
-        "transcribeMedia" | "transcribeLocal" => {
-            local_runtime::transcribe_json(&app_data_dir(), require_str(&request, "path")?)
         }
         "pickDirectory" => {
             let picked = app
@@ -661,6 +700,34 @@ mod duration_tests {
         assert!(
             source.contains("\"transcribeMedia\" | \"transcribeLocal\""),
             "Make Notes sends op transcribeMedia"
+        );
+    }
+
+    #[test]
+    fn transcription_runs_off_the_ui_thread() {
+        let source = include_str!("lib.rs");
+        assert!(
+            source.contains("async fn desktop_call"),
+            "a sync desktop command runs on the window thread"
+        );
+        assert!(
+            source.contains("spawn_blocking"),
+            "whisper has to run on a worker thread"
+        );
+        let transcribe = source
+            .split("async fn desktop_call")
+            .nth(1)
+            .and_then(|body| body.split("fn desktop_request").next())
+            .unwrap_or("");
+        let blocking = transcribe
+            .find("spawn_blocking")
+            .expect("whisper has to run on a worker thread");
+        let call = transcribe
+            .find("transcribe_json")
+            .expect("the worker has to run transcription");
+        assert!(
+            blocking < call,
+            "whisper starts only after the worker is spawned, not on the window thread"
         );
     }
 

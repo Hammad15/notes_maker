@@ -500,7 +500,11 @@ function contentFrom(
   }
 }
 
-export async function makeNotes(store: FileStore, input: MakeNotesInput): Promise<NoteInfo> {
+export async function makeNotes(
+  store: FileStore,
+  input: MakeNotesInput,
+  hooks?: { onWriting?: () => void },
+): Promise<NoteInfo> {
   const course = await findCourse(store, input.home, input.courseId)
   if (input.provider === "local") {
     const runtime = await store.localStatus()
@@ -519,6 +523,7 @@ export async function makeNotes(store: FileStore, input: MakeNotesInput): Promis
     provider.id === "local"
       ? await transcribeLocal(store, input.mediaPath, { noteId, title, probe })
       : provider.transcribe({ noteId, title, probe })
+  hooks?.onWriting?.()
 
   let moduleId: string | null = null
   let moduleName: string | null = null

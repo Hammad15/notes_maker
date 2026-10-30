@@ -56,6 +56,32 @@ export interface TranscriptionResult {
   model: string
 }
 
+export interface TranscriptionProgress {
+  phase: "reading" | "transcribing" | "writing"
+  label: string
+  percent: number | null
+}
+
+/**
+ * Half the logical processors, at least one. whisper.cpp's default is every
+ * processor on a 4-core machine, which holds the computer at 100%.
+ * Keep the Rust copy in src-tauri/src/local_runtime.rs on this same count.
+ */
+export function whisperThreadCount(logicalCpus: number): number {
+  const cpus = Number.isFinite(logicalCpus) ? Math.floor(logicalCpus) : 1
+  if (cpus <= 1) return 1
+  return Math.max(1, Math.floor(cpus / 2))
+}
+
+export function localJobMessage(fileLabel: string, progress?: TranscriptionProgress | null): string {
+  if (progress?.phase === "reading") return `Reading ${fileLabel}…`
+  if (progress?.phase === "writing") return `Writing the notes and PDF for ${fileLabel}…`
+  if (progress?.phase === "transcribing" && progress.percent != null) {
+    return `Transcribing ${fileLabel}… ${progress.percent}%`
+  }
+  return `Transcribing ${fileLabel}…`
+}
+
 export function cleanSpokenText(text: string): string {
   const cleaned = text
     .replace(/<\|[^>]*\|>/g, " ")

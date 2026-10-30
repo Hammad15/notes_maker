@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto"
 import { createReadStream, createWriteStream } from "node:fs"
 import { promises as fs } from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import { finished } from "node:stream/promises"
 import { execFile } from "node:child_process"
@@ -12,6 +13,7 @@ import {
   parseWhisperJson,
   SPEECH_MODEL,
   WHISPER_ENGINE,
+  whisperThreadCount,
   type LocalRuntimeStatus,
   type SetupProgress,
   type TranscriptionResult,
@@ -332,11 +334,6 @@ function wavSeconds(size: number): number | null {
   return seconds
 }
 
-function whisperTimeout(durationSeconds: number | null): number {
-  const duration = durationSeconds ?? 60 * 60
-  return Math.min(6 * 60 * 60 * 1000, Math.max(15 * 60 * 1000, Math.round(duration * 20 * 1000)))
-}
-
 export async function transcribeWithRuntime(appData: string, mediaPath: string): Promise<TranscriptionResult> {
   const status = await localRuntimeStatus(appData)
   if (!status.ready) throw new LocalSetupError()
@@ -361,12 +358,28 @@ export async function transcribeWithRuntime(appData: string, mediaPath: string):
       durationSeconds = wavSeconds(info.size)
     }
     const whisper = path.join(binDir(appData), WHISPER_ENGINE.file)
+    // No timeout. The old cap was duration × 20, clamped to 6 hours, and that
+    // stopped a 57-minute lecture. -t leaves processors free for the window.
     await execFileAsync(
       whisper,
-      ["-m", modelPath(appData), "-f", wav, "-l", "en", "-oj", "-of", jsonBase, "-np", "-ng"],
+      [
+        "-m",
+        modelPath(appData),
+        "-f",
+        wav,
+        "-l",
+        "en",
+        "-t",
+        String(whisperThreadCount(os.availableParallelism())),
+        "-oj",
+        "-of",
+        jsonBase,
+        "-np",
+        "-pp",
+        "-ng",
+      ],
       {
         windowsHide: true,
-        timeout: whisperTimeout(durationSeconds),
         maxBuffer: 16 * 1024 * 1024,
         cwd: binDir(appData),
       },

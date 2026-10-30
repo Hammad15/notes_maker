@@ -1,4 +1,9 @@
-import type { LocalRuntimeStatus, SetupProgress, TranscriptionResult } from "../domain/localSpeech"
+import type {
+  LocalRuntimeStatus,
+  SetupProgress,
+  TranscriptionProgress,
+  TranscriptionResult,
+} from "../domain/localSpeech"
 import type { DirEntry, FileStat, MediaProbe } from "../domain/types"
 
 export interface FileStore {
@@ -28,4 +33,5 @@ export interface Host {
   pickMedia(directory?: string | null): Promise<string | null>
   openPath(path: string): Promise<void>
   setupLocal(onProgress?: (progress: SetupProgress) => void): Promise<LocalRuntimeStatus>
+  watchTranscription?(onProgress: (progress: TranscriptionProgress) => void): Promise<() => void>
 }

@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest"
 import {
   assertHeardRecording,
   FFMPEG_BUNDLE,
+  localJobMessage,
   parseWhisperJson,
   SPEECH_MODEL,
   WHISPER_ENGINE,
+  whisperThreadCount,
 } from "./localSpeech"
 
 const whisperJson = `{
@@ -72,6 +74,29 @@ describe("long recordings", () => {
         segments: [],
       }),
     ).toThrow(/No speech/)
+  })
+})
+
+describe("transcription stays usable", () => {
+  it("uses half the processors so a lecture does not pin the machine", () => {
+    expect(whisperThreadCount(1)).toBe(1)
+    expect(whisperThreadCount(2)).toBe(1)
+    expect(whisperThreadCount(4)).toBe(2)
+    expect(whisperThreadCount(8)).toBe(4)
+    expect(whisperThreadCount(4)).toBeLessThan(4)
+  })
+
+  it("shows reading, percent, and the notes write", () => {
+    expect(localJobMessage("ISC 102 U01.mp3", null)).toBe("Transcribing ISC 102 U01.mp3…")
+    expect(localJobMessage("ISC 102 U01.mp3", { phase: "reading", label: "Reading the recording", percent: null })).toBe(
+      "Reading ISC 102 U01.mp3…",
+    )
+    expect(
+      localJobMessage("ISC 102 U01.mp3", { phase: "transcribing", label: "Transcribing the recording", percent: 40 }),
+    ).toBe("Transcribing ISC 102 U01.mp3… 40%")
+    expect(
+      localJobMessage("ISC 102 U01.mp3", { phase: "writing", label: "Writing the notes and PDF", percent: null }),
+    ).toBe("Writing the notes and PDF for ISC 102 U01.mp3…")
   })
 })
 

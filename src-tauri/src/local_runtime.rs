@@ -1,9 +1,10 @@
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
-use std::io::{copy, Read, Write};
+use std::io::{copy, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 use zip::ZipArchive;
@@ -403,7 +404,16 @@ pub(crate) fn setup_local(
     Ok(status_value(&status))
 }
 
-fn run_command(mut command: Command, timeout: Duration, what: &str) -> Result<(), String> {
+fn run_command(command: Command, timeout: Duration, what: &str) -> Result<(), String> {
+    run_command_watched(command, Some(timeout), what, &mut |_| {})
+}
+
+fn run_command_watched(
+    mut command: Command,
+    timeout: Option<Duration>,
+    what: &str,
+    on_progress: &mut dyn FnMut(u8),
+) -> Result<(), String> {
     quiet(&mut command);
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command.spawn().map_err(|error| {
@@ -417,17 +427,34 @@ fn run_command(mut command: Command, timeout: Duration, what: &str) -> Result<()
         .stdout
         .take()
         .ok_or_else(|| "Could not read command output.".to_string())?;
-    let mut stderr = child
+    let stderr = child
         .stderr
         .take()
         .ok_or_else(|| "Could not read command output.".to_string())?;
-    let out_thread = thread::spawn(move || read_capped(&mut stdout));
-    let err_thread = thread::spawn(move || read_capped(&mut stderr));
+    let (progress_tx, progress_rx) = mpsc::channel();
+    let out_thread = thread::spawn(move || drain_tail(&mut stdout));
+    let err_thread = thread::spawn(move || {
+        let reader = BufReader::new(stderr);
+        let mut kept = String::new();
+        for line in reader.lines() {
+            let Ok(line) = line else {
+                break;
+            };
+            if let Some(percent) = progress_percent(&line) {
+                let _ = progress_tx.send(percent);
+            }
+            append_tail(&mut kept, &line);
+        }
+        kept
+    });
     let started = Instant::now();
     let status = loop {
+        while let Ok(percent) = progress_rx.try_recv() {
+            on_progress(percent);
+        }
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) if started.elapsed() > timeout => {
+            Ok(None) if timeout.is_some_and(|limit| started.elapsed() > limit) => {
                 let _ = child.kill();
                 let _ = child.wait();
                 let _ = out_thread.join();
@@ -444,6 +471,9 @@ fn run_command(mut command: Command, timeout: Duration, what: &str) -> Result<()
     };
     let stdout = out_thread.join().unwrap_or_default();
     let stderr = err_thread.join().unwrap_or_default();
+    while let Ok(percent) = progress_rx.try_recv() {
+        on_progress(percent);
+    }
     if status.success() {
         return Ok(());
     }
@@ -461,20 +491,45 @@ fn run_command(mut command: Command, timeout: Duration, what: &str) -> Result<()
     }
 }
 
-fn read_capped(reader: &mut dyn Read) -> String {
-    let mut buf = vec![0u8; 64 * 1024];
+fn drain_tail(reader: &mut dyn Read) -> String {
+    let mut buf = vec![0u8; 8 * 1024];
     let mut out = Vec::new();
-    while out.len() < 1024 * 1024 {
+    loop {
         let Ok(read) = reader.read(&mut buf) else {
             break;
         };
         if read == 0 {
             break;
         }
-        let room = (1024 * 1024usize).saturating_sub(out.len());
-        out.extend_from_slice(&buf[..read.min(room)]);
+        out.extend_from_slice(&buf[..read]);
+        if out.len() > 8 * 1024 {
+            let drop = out.len() - 8 * 1024;
+            out.drain(..drop);
+        }
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+fn append_tail(tail: &mut String, line: &str) {
+    if !tail.is_empty() {
+        tail.push('\n');
+    }
+    tail.push_str(line.trim_end());
+    let count = tail.chars().count();
+    if count > 700 {
+        *tail = tail.chars().skip(count - 700).collect();
+    }
+}
+
+fn progress_percent(line: &str) -> Option<u8> {
+    let marker = "progress =";
+    let rest = line.split_once(marker)?.1.trim();
+    let number = rest.trim_end_matches('%').trim();
+    let value: u8 = number.parse().ok()?;
+    if value > 100 {
+        return None;
+    }
+    Some(value)
 }
 
 fn tail(text: &str) -> String {
@@ -537,13 +592,34 @@ fn wav_seconds(size: u64) -> Option<f64> {
     }
 }
 
-fn whisper_timeout(duration: Option<f64>) -> Duration {
-    let seconds = duration.unwrap_or(60.0 * 60.0);
-    let scaled = (seconds * 20.0).clamp(15.0 * 60.0, 6.0 * 60.0 * 60.0);
-    Duration::from_secs(scaled as u64)
+/// Half the logical processors, and at least one. The speech engine's own
+/// default uses every processor on a 4-core laptop and holds the machine at
+/// 100% for the whole recording. Half still finishes the file.
+pub(crate) fn whisper_thread_count(logical_cpus: usize) -> usize {
+    if logical_cpus <= 1 {
+        1
+    } else {
+        (logical_cpus / 2).max(1)
+    }
 }
 
-pub(crate) fn transcribe_json(app_data: &Path, media: &str) -> Result<Value, String> {
+fn logical_cpus() -> usize {
+    std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1)
+}
+
+/// No deadline. The old cap was duration × 20, clamped to 6 hours, and that
+/// killed a 57-minute lecture overnight (`That step took too long and was stopped`).
+fn whisper_wait_limit(_duration_seconds: Option<f64>) -> Option<Duration> {
+    None
+}
+
+pub(crate) fn transcribe_json(
+    app_data: &Path,
+    media: &str,
+    progress: &mut dyn FnMut(&str, &str, Option<u8>),
+) -> Result<Value, String> {
     let status = collect_status(app_data)?;
     if !status.ready {
         return Err(SETUP_REQUIRED.into());
@@ -579,6 +655,7 @@ pub(crate) fn transcribe_json(app_data: &Path, media: &str) -> Result<Value, Str
         "-vn",
     ]);
     convert.arg(&wav);
+    progress("reading", "Reading the recording", None);
     run_command(
         convert,
         Duration::from_secs(2 * 60 * 60),
@@ -600,16 +677,22 @@ pub(crate) fn transcribe_json(app_data: &Path, media: &str) -> Result<Value, Str
         .arg(&wav)
         .arg("-l")
         .arg("en")
+        .arg("-t")
+        .arg(whisper_thread_count(logical_cpus()).to_string())
         .arg("-oj")
         .arg("-of")
         .arg(&json_base)
         .arg("-np")
+        .arg("-pp")
         .arg("-ng");
-    run_command(
+    progress("transcribing", "Transcribing the recording", Some(0));
+    run_command_watched(
         whisper,
-        whisper_timeout(duration),
+        whisper_wait_limit(duration),
         "Could not transcribe that recording.",
+        &mut |percent| progress("transcribing", "Transcribing the recording", Some(percent)),
     )?;
+    progress("transcribing", "Transcribing the recording", Some(100));
     let raw = fs::read_to_string(&json_path)
         .map_err(|_| "The speech model did not write a transcript.".to_string())?;
     let segments = parse_whisper_json(&raw)?;
@@ -780,7 +863,10 @@ fn assert_heard(
 
 #[cfg(test)]
 mod tests {
-    use super::{assert_heard, parse_whisper_json, Segment};
+    use super::{
+        assert_heard, parse_whisper_json, progress_percent, whisper_thread_count,
+        whisper_wait_limit, Segment,
+    };
 
     #[test]
     fn reads_timed_speech_and_drops_non_speech() {
@@ -797,6 +883,34 @@ mod tests {
         assert_eq!(segments.len(), 1);
         assert_eq!(segments[0].text, "Mitosis begins when the cell divides.");
         assert!((segments[0].end - 2.48).abs() < 0.001);
+    }
+
+    #[test]
+    fn a_57_minute_recording_is_not_stopped_for_time() {
+        assert!(whisper_wait_limit(Some(57.0 * 60.0)).is_none());
+        assert!(whisper_wait_limit(None).is_none());
+    }
+
+    #[test]
+    fn whisper_threads_leave_processors_free() {
+        assert_eq!(whisper_thread_count(1), 1);
+        assert_eq!(whisper_thread_count(2), 1);
+        assert_eq!(whisper_thread_count(4), 2);
+        assert_eq!(whisper_thread_count(8), 4);
+        assert!(whisper_thread_count(4) < 4);
+    }
+
+    #[test]
+    fn reads_whisper_progress_percent() {
+        assert_eq!(
+            progress_percent("whisper_print_progress_callback: progress =   5%"),
+            Some(5)
+        );
+        assert_eq!(
+            progress_percent("whisper_print_progress_callback: progress = 100%"),
+            Some(100)
+        );
+        assert_eq!(progress_percent("no progress here"), None);
     }
 
     #[test]
@@ -828,7 +942,8 @@ mod tests {
         assert_eq!(status["model"], "ggml-base.en");
         let wav = root.join("sample.wav");
         synthesize(&wav).unwrap();
-        let transcript = super::transcribe_json(&root, wav.to_str().unwrap()).unwrap();
+        let transcript =
+            super::transcribe_json(&root, wav.to_str().unwrap(), &mut |_, _, _| {}).unwrap();
         let text = transcript["segments"]
             .as_array()
             .unwrap()

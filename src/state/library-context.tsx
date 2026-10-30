@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from "react"
 import { StudyError, messageOf } from "../domain/errors"
-import type { LocalRuntimeStatus, SetupProgress } from "../domain/localSpeech"
+import type { LocalRuntimeStatus, SetupProgress, TranscriptionProgress } from "../domain/localSpeech"
 import { SPEECH_MODEL } from "../domain/localSpeech"
 import { parentPath } from "../domain/paths"
 import type { ProviderId } from "../domain/types"
@@ -33,6 +33,7 @@ export interface Job {
   provider: ProviderId
   status: "running" | "error"
   error?: string
+  progress?: TranscriptionProgress | null
 }
 
 interface LibraryState {
@@ -205,8 +206,35 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
             // The notes can still be filed if settings fail to update.
           }
         }
+        let stopWatch = () => {}
         try {
-          await makeNotes(store, input)
+          if (input.provider === "local" && host.watchTranscription) {
+            stopWatch = await host.watchTranscription((progress) => {
+              setJobs((current) =>
+                current.map((job) =>
+                  job.id === id && job.progress?.phase !== "writing" ? { ...job, progress } : job,
+                ),
+              )
+            })
+          }
+          await makeNotes(store, input, {
+            onWriting: () => {
+              setJobs((current) =>
+                current.map((job) =>
+                  job.id === id
+                    ? {
+                        ...job,
+                        progress: {
+                          phase: "writing",
+                          label: "Writing the notes and PDF",
+                          percent: null,
+                        },
+                      }
+                    : job,
+                ),
+              )
+            },
+          })
           setJobs((current) => current.filter((job) => job.id !== id))
         } catch (err) {
           setJobs((current) =>
@@ -215,6 +243,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
             ),
           )
         } finally {
+          stopWatch()
           setRevision((value) => value + 1)
           const home = settingsRef.current.homeDirectory
           if (!home) return
@@ -227,9 +256,9 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
             }
           }
         }
-      })()
+        })()
     },
-    [refreshCourses, store],
+    [host, refreshCourses, store],
   )
 
   const dismissJob = useCallback((id: string) => {

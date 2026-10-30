@@ -1,5 +1,5 @@
 import { messageOf } from "../domain/errors"
-import type { SetupProgress } from "../domain/localSpeech"
+import type { SetupProgress, TranscriptionProgress } from "../domain/localSpeech"
 import { MEDIA_EXTENSIONS } from "../domain/text"
 import { createRemoteStore } from "./remoteStore"
 import type { Host } from "./types"
@@ -52,6 +52,15 @@ export function createTauriHost(): Host {
     openPath: async (path) => {
       const { openPath } = await import("@tauri-apps/plugin-opener")
       await openPath(path)
+    },
+    watchTranscription: async (onProgress) => {
+      const { listen } = await import("@tauri-apps/api/event")
+      const stop = await listen<TranscriptionProgress>("local-transcribe-progress", (event) => {
+        onProgress(event.payload)
+      })
+      return () => {
+        stop()
+      }
     },
     setupLocal: async (onProgress) => {
       let unlisten = () => {}
