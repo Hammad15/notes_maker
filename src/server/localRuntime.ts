@@ -7,6 +7,7 @@ import { finished } from "node:stream/promises"
 import { execFile, spawn, type ChildProcess } from "node:child_process"
 import { promisify } from "node:util"
 import { LocalSetupError } from "../domain/errors.ts"
+import { CLOUD_CHUNK_BYTES, CLOUD_CHUNK_SECONDS, type PreparedAudio } from "../domain/groq.ts"
 import {
   assertHeardRecording,
   FFMPEG_BUNDLE,
@@ -16,11 +17,13 @@ import {
   parseWhisperJson,
   planResume,
   sameTranscriptionJob,
-  SPEECH_MODEL,
+  speechModel,
+  speechPace,
   TRANSCRIPTION_REPLACED,
   WHISPER_ENGINE,
   whisperPidsToStop,
   whisperThreadCount,
+  type SpeechPace,
   type ActiveTranscription,
   type LocalRuntimeStatus,
   type SavedTranscription,
@@ -42,8 +45,8 @@ function binDir(appData: string): string {
   return path.join(appData, "bin")
 }
 
-function modelPath(appData: string): string {
-  return path.join(appData, "models", SPEECH_MODEL.file)
+function modelPath(appData: string, pace: SpeechPace): string {
+  return path.join(appData, "models", speechModel(pace).file)
 }
 
 function configPath(appData: string): string {
@@ -112,25 +115,22 @@ async function engineReady(dir: string): Promise<boolean> {
 
 async function readConfig(appData: string): Promise<boolean> {
   try {
-    const json = JSON.parse(await fs.readFile(configPath(appData), "utf8")) as {
-      ready?: unknown
-      model?: unknown
-      modelBytes?: unknown
-    }
-    return json.ready === true && json.model === SPEECH_MODEL.name && json.modelBytes === SPEECH_MODEL.bytes
+    const json = JSON.parse(await fs.readFile(configPath(appData), "utf8")) as { ready?: unknown }
+    return json.ready === true
   } catch {
     return false
   }
 }
 
-export async function localRuntimeStatus(appData: string): Promise<LocalRuntimeStatus> {
+export async function localRuntimeStatus(appData: string, pace: SpeechPace = "clearer"): Promise<LocalRuntimeStatus> {
+  const model = speechModel(pace)
   const missing: LocalRuntimeStatus["missing"] = []
   if (!(await toolPath(appData, "ffmpeg"))) missing.push("ffmpeg")
   if (!(await toolPath(appData, "ffprobe"))) missing.push("ffprobe")
   if (!(await engineReady(binDir(appData)))) missing.push("engine")
-  if (!(await fileMatches(modelPath(appData), SPEECH_MODEL.bytes, SPEECH_MODEL.sha256))) missing.push("model")
+  if (!(await fileMatches(modelPath(appData, pace), model.bytes, model.sha256))) missing.push("model")
   if (!(await readConfig(appData))) missing.push("config")
-  return { ready: missing.length === 0, model: SPEECH_MODEL.name, missing }
+  return { ready: missing.length === 0, model: model.name, missing }
 }
 
 async function downloadVerified(
@@ -241,6 +241,7 @@ function report(
 
 export async function setupLocalRuntime(
   appData: string,
+  pace: SpeechPace = "clearer",
   onProgress?: (progress: SetupProgress) => void,
 ): Promise<LocalRuntimeStatus> {
   const bin = binDir(appData)
@@ -295,10 +296,11 @@ export async function setupLocalRuntime(
     if (!(await engineReady(bin))) throw new Error("The speech engine download did not include whisper-cli.")
   }
 
-  const label = "Downloading the speech model"
-  report(onProgress, "model", label, 0, SPEECH_MODEL.bytes)
+  const model = speechModel(pace)
+  const label = pace === "faster" ? "Downloading the tiny English model" : "Downloading the speech model"
+  report(onProgress, "model", label, 0, model.bytes)
   try {
-    await downloadVerified(SPEECH_MODEL.url, modelPath(appData), SPEECH_MODEL.bytes, SPEECH_MODEL.sha256, (received, total) =>
+    await downloadVerified(model.url, modelPath(appData, pace), model.bytes, model.sha256, (received, total) =>
       report(onProgress, "model", label, received, total),
     )
   } catch (error) {
@@ -310,15 +312,16 @@ export async function setupLocalRuntime(
   const ffmpegFromPath = !(await exists(path.join(bin, "ffmpeg.exe")))
   const config = {
     ready: true,
-    model: SPEECH_MODEL.name,
-    modelFile: SPEECH_MODEL.file,
-    modelBytes: SPEECH_MODEL.bytes,
+    pace,
+    model: model.name,
+    modelFile: model.file,
+    modelBytes: model.bytes,
     engine: "whisper.cpp",
     engineVersion: WHISPER_ENGINE.version,
     ffmpeg: ffmpegFromPath ? "path" : FFMPEG_BUNDLE.version,
   }
   await fs.writeFile(configPath(appData), `${JSON.stringify(config, null, 2)}\n`, "utf8")
-  const status = await localRuntimeStatus(appData)
+  const status = await localRuntimeStatus(appData, pace)
   if (!status.ready) throw new Error("Local notes are still missing pieces after setup.")
   return status
 }
@@ -534,7 +537,7 @@ function resultFrom(saved: SavedTranscription, segments: TranscriptionResult["se
     segments,
     durationSeconds: saved.durationSeconds,
     elapsedMs: Math.max(0, Date.now() - (saved.startedMs || Date.now())),
-    model: SPEECH_MODEL.name,
+    model: speechModel(speechPace(saved.pace)).name,
   }
 }
 
@@ -548,6 +551,70 @@ async function finishSaved(saved: SavedTranscription): Promise<TranscriptionResu
     segments,
   })
   return result
+}
+
+const DIRECT_CLOUD_AUDIO = new Set([
+  ".mp3",
+  ".m4a",
+  ".wav",
+  ".flac",
+  ".ogg",
+  ".opus",
+  ".webm",
+  ".mp4",
+  ".mpeg",
+  ".mpg",
+  ".mpga",
+  ".aac",
+])
+
+export async function prepareCloudAudio(appData: string, mediaPath: string): Promise<PreparedAudio> {
+  const info = await fs.stat(mediaPath)
+  const extension = path.extname(mediaPath).toLowerCase()
+  if (info.size > 0 && info.size <= CLOUD_CHUNK_BYTES && DIRECT_CLOUD_AUDIO.has(extension)) {
+    return { chunks: [{ path: mediaPath, startSeconds: 0 }], temporaryDirectory: null }
+  }
+  const ffmpeg = await toolPath(appData, "ffmpeg")
+  if (!ffmpeg) {
+    throw new Error("This recording has to be prepared with ffmpeg. Press Set up local notes once, then try Cloud again.")
+  }
+  const directory = path.join(appData, "tmp", `groq-${process.pid}-${Date.now()}`)
+  await fs.mkdir(directory, { recursive: true })
+  const pattern = path.join(directory, "chunk_%03d.wav")
+  await execFileAsync(
+    ffmpeg,
+    [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-y",
+      "-i",
+      mediaPath,
+      "-ar",
+      "16000",
+      "-ac",
+      "1",
+      "-c:a",
+      "pcm_s16le",
+      "-f",
+      "segment",
+      "-segment_time",
+      String(CLOUD_CHUNK_SECONDS),
+      "-reset_timestamps",
+      "1",
+      pattern,
+    ],
+    { windowsHide: true, timeout: 2 * 60 * 60 * 1000 },
+  )
+  const names = (await fs.readdir(directory)).filter((name) => name.toLowerCase().endsWith(".wav")).sort()
+  if (names.length === 0) throw new Error("Could not prepare that recording for Groq.")
+  return {
+    temporaryDirectory: directory,
+    chunks: names.map((name, index) => ({
+      path: path.join(directory, name),
+      startSeconds: index * CLOUD_CHUNK_SECONDS,
+    })),
+  }
 }
 
 function delay(ms: number): Promise<void> {
@@ -599,9 +666,12 @@ export async function readActiveTranscription(appData: string): Promise<ActiveTr
     moduleId: saved.moduleId,
     moduleName: saved.moduleName,
     newModuleName: saved.newModuleName,
+    pace: speechPace(saved.pace),
+    language: saved.language?.trim() || "en",
     phase: saved.phase,
     label: saved.label,
     percent: saved.percent,
+    transcribeStartedMs: saved.transcribeStartedMs || null,
   }
 }
 
@@ -639,7 +709,8 @@ export async function transcribeWithRuntime(
   mediaPath: string,
   request: TranscriptionRequest,
 ): Promise<TranscriptionResult> {
-  const status = await localRuntimeStatus(appData)
+  const pace = speechPace(request.pace)
+  const status = await localRuntimeStatus(appData, pace)
   if (!status.ready) throw new LocalSetupError()
   const target: TranscriptionTarget = {
     mediaPath,
@@ -769,6 +840,9 @@ async function startFresh(
     wavPath: wav,
     startedMs: Date.now(),
     durationSeconds: null,
+    pace: speechPace(request.pace),
+    language: request.language?.trim() || "en",
+    transcribeStartedMs: 0,
   }
   await writeJob(appData, job)
   await runChild(
@@ -801,7 +875,7 @@ async function startFresh(
   }
   await runChild(
     own,
-    ["-m", modelPath(appData), "-f", wav, "-l", "en", "-t", String(whisperThreadCount(os.availableParallelism())), "-oj", "-of", jsonBase, "-np", "-pp", "-ng"],
+    ["-m", modelPath(appData, speechPace(request.pace)), "-f", wav, "-l", request.language?.trim() || "en", "-t", String(whisperThreadCount(os.availableParallelism(), speechPace(request.pace))), "-oj", "-of", jsonBase, "-np", "-pp", "-ng"],
     flight,
     appData,
     stderrPath,
@@ -845,6 +919,7 @@ function runChild(
         if (stderrPath) {
           job.phase = "transcribing"
           job.label = "Transcribing the recording"
+          if (!job.transcribeStartedMs) job.transcribeStartedMs = Date.now()
         }
       })
     }

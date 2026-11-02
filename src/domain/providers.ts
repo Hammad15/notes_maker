@@ -1,11 +1,6 @@
 import { renderFull, renderRestyle } from "./compose"
-import { EntitlementError, LocalSetupError } from "./errors"
+import { GroqKeyError, LocalSetupError } from "./errors"
 import type { MediaProbe, NoteContent, Preset, ProviderId, Transcript } from "./types"
-
-export interface Entitlement {
-  entitled: boolean
-  source: "missing" | "license"
-}
 
 export interface TranscribeInput {
   noteId: string
@@ -38,10 +33,6 @@ export function buildTranscript(
   }
 }
 
-function assertEntitled(entitlement: Entitlement): void {
-  if (!entitlement.entitled) throw new EntitlementError()
-}
-
 class LocalProvider implements NotesProvider {
   readonly id = "local" as const
 
@@ -61,28 +52,20 @@ class LocalProvider implements NotesProvider {
 class CloudProvider implements NotesProvider {
   readonly id = "cloud" as const
 
-  constructor(private readonly entitlement: Entitlement) {}
-
-  transcribe(input: TranscribeInput): Transcript {
-    assertEntitled(this.entitlement)
-    return buildTranscript(input, this.id)
+  transcribe(_input: TranscribeInput): Transcript {
+    throw new GroqKeyError()
   }
 
-  compose(content: NoteContent): string {
-    assertEntitled(this.entitlement)
-    return renderFull(content)
+  compose(_content: NoteContent): string {
+    throw new GroqKeyError()
   }
 
-  restyle(content: NoteContent, preset: Preset | null, prompt: string): string {
-    assertEntitled(this.entitlement)
-    return renderRestyle(content, preset, prompt)
+  restyle(_content: NoteContent, _preset: Preset | null, _prompt: string): string {
+    throw new GroqKeyError()
   }
 }
 
-export function createProvider(
-  id: ProviderId,
-  entitlement: Entitlement,
-): NotesProvider {
-  if (id === "cloud") return new CloudProvider(entitlement)
+export function createProvider(id: ProviderId): NotesProvider {
+  if (id === "cloud") return new CloudProvider()
   return new LocalProvider()
 }

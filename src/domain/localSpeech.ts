@@ -16,6 +16,25 @@ export const SPEECH_MODEL = {
   url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin",
 } as const
 
+/** Faster local speech. English for this build; another language adds its own file. */
+export const TINY_MODEL = {
+  name: "ggml-tiny.en",
+  file: "ggml-tiny.en.bin",
+  bytes: 77_704_715,
+  sha256: "921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f",
+  url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin",
+} as const
+
+export type SpeechPace = "faster" | "clearer"
+
+export function speechPace(value: unknown): SpeechPace {
+  return value === "faster" ? "faster" : "clearer"
+}
+
+export function speechModel(pace: SpeechPace): typeof SPEECH_MODEL | typeof TINY_MODEL {
+  return pace === "faster" ? TINY_MODEL : SPEECH_MODEL
+}
+
 export const WHISPER_ENGINE = {
   version: "1.9.2",
   file: "whisper-cli.exe",
@@ -64,6 +83,7 @@ export interface TranscriptionProgress {
   label: string
   percent: number | null
   jobId?: string
+  startedMs?: number | null
 }
 
 /** The recording plus where the notes will be filed. */
@@ -78,6 +98,8 @@ export interface TranscriptionRequest extends TranscriptionTarget {
   jobId: string
   home: string
   newModuleName: string | null
+  pace: SpeechPace
+  language: string
 }
 
 export interface ActiveTranscription extends TranscriptionRequest {
@@ -85,6 +107,7 @@ export interface ActiveTranscription extends TranscriptionRequest {
   phase: TranscriptionProgress["phase"]
   label: string
   percent: number | null
+  transcribeStartedMs?: number | null
 }
 
 export interface SavedTranscription extends ActiveTranscription {
@@ -95,6 +118,9 @@ export interface SavedTranscription extends ActiveTranscription {
   wavPath: string
   startedMs: number
   durationSeconds: number | null
+  pace: SpeechPace
+  language: string
+  transcribeStartedMs: number
 }
 
 export interface WhisperProcess {
@@ -106,14 +132,51 @@ export interface WhisperProcess {
 export type ResumePlan = { action: "attach"; pid: number } | { action: "reuse" } | { action: "start" }
 
 /**
- * Half the logical processors, at least one. whisper.cpp's default is every
- * processor on a 4-core machine, which holds the computer at 100%.
+ * Clearer uses half the logical processors, at least one.
+ * Faster uses every logical processor.
  * Keep the Rust copy in src-tauri/src/local_runtime.rs on this same count.
  */
-export function whisperThreadCount(logicalCpus: number): number {
-  const cpus = Number.isFinite(logicalCpus) ? Math.floor(logicalCpus) : 1
+export function whisperThreadCount(logicalCpus: number, pace: SpeechPace = "clearer"): number {
+  const cpus = Number.isFinite(logicalCpus) ? Math.max(1, Math.floor(logicalCpus)) : 1
+  if (pace === "faster") return cpus
   if (cpus <= 1) return 1
   return Math.max(1, Math.floor(cpus / 2))
+}
+
+export function sameSavedRecording(
+  source: { mediaPath: string; courseId: string; moduleId: string | null },
+  target: { mediaPath: string; courseId: string; moduleId: string | null; newModuleName: string | null },
+): boolean {
+  if (target.newModuleName?.trim()) return false
+  if (source.courseId !== target.courseId) return false
+  if (normalizeMediaPath(source.mediaPath) !== normalizeMediaPath(target.mediaPath)) return false
+  return (source.moduleId ?? null) === (target.moduleId ?? null)
+}
+
+/** Seconds left from a start time and a percent that is already underway. */
+export function remainingSeconds(
+  startedMs: number | null | undefined,
+  percent: number | null | undefined,
+  now = Date.now(),
+): number | null {
+  if (startedMs == null || percent == null) return null
+  if (!Number.isFinite(startedMs) || !Number.isFinite(percent)) return null
+  if (percent <= 0 || percent >= 100) return null
+  const elapsed = now - startedMs
+  if (elapsed < 1000) return null
+  const remaining = Math.round((elapsed / (percent / 100) - elapsed) / 1000)
+  if (!Number.isFinite(remaining) || remaining < 0) return null
+  return remaining
+}
+
+export function formatRemaining(seconds: number): string {
+  if (seconds < 60) return "less than a minute left"
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return `about ${minutes} min left`
+  const hours = Math.floor(minutes / 60)
+  const rest = minutes % 60
+  if (rest === 0) return hours === 1 ? "about 1 hour left" : `about ${hours} hours left`
+  return `about ${hours} hr ${rest} min left`
 }
 
 export function normalizeMediaPath(value: string): string {
@@ -222,6 +285,9 @@ export function parseSavedTranscription(raw: string): SavedTranscription | null 
     moduleId: row.moduleId ?? null,
     moduleName: row.moduleName ?? null,
     newModuleName: row.newModuleName ?? null,
+    pace: speechPace(row.pace),
+    language: typeof row.language === "string" && row.language.trim() ? row.language.trim() : "en",
+    transcribeStartedMs: typeof row.transcribeStartedMs === "number" ? row.transcribeStartedMs : 0,
     phase,
     label: row.label || "Transcribing the recording",
     percent: typeof row.percent === "number" ? forwardProgress(null, row.percent) : null,
@@ -239,7 +305,9 @@ export function localJobMessage(fileLabel: string, progress?: TranscriptionProgr
   if (progress?.phase === "reading") return `Reading ${fileLabel}…`
   if (progress?.phase === "writing") return `Writing the notes and PDF for ${fileLabel}…`
   if (progress?.phase === "transcribing" && progress.percent != null) {
-    return `Transcribing ${fileLabel}… ${progress.percent}%`
+    const remaining = remainingSeconds(progress.startedMs, progress.percent)
+    const time = remaining == null ? "" : ` · ${formatRemaining(remaining)}`
+    return `Transcribing ${fileLabel}… ${progress.percent}%${time}`
   }
   return `Transcribing ${fileLabel}…`
 }

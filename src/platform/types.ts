@@ -1,7 +1,9 @@
+import type { PreparedAudio } from "../domain/groq"
 import type {
   ActiveTranscription,
   LocalRuntimeStatus,
   SetupProgress,
+  SpeechPace,
   TranscriptionProgress,
   TranscriptionRequest,
   TranscriptionResult,
@@ -23,8 +25,10 @@ export interface FileStore {
   stat(path: string): Promise<FileStat | null>
   setHidden(path: string): Promise<void>
   probeMedia(path: string): Promise<MediaProbe>
-  localStatus(): Promise<LocalRuntimeStatus>
-  setupLocal(): Promise<LocalRuntimeStatus>
+  localStatus(pace: SpeechPace): Promise<LocalRuntimeStatus>
+  setupLocal(pace: SpeechPace): Promise<LocalRuntimeStatus>
+  prepareCloudAudio(path: string): Promise<PreparedAudio>
+  readBytes(path: string): Promise<Uint8Array>
   transcribeMedia(path: string, request: TranscriptionRequest): Promise<TranscriptionResult>
   activeTranscription(): Promise<ActiveTranscription | null>
   clearTranscription(id: string): Promise<void>
@@ -36,6 +40,6 @@ export interface Host {
   pickDirectory(): Promise<string | null>
   pickMedia(directory?: string | null): Promise<string | null>
   openPath(path: string): Promise<void>
-  setupLocal(onProgress?: (progress: SetupProgress) => void): Promise<LocalRuntimeStatus>
+  setupLocal(pace: SpeechPace, onProgress?: (progress: SetupProgress) => void): Promise<LocalRuntimeStatus>
   watchTranscription?(onProgress: (progress: TranscriptionProgress) => void): Promise<() => void>
 }

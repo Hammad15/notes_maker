@@ -1,4 +1,5 @@
-import type { ActiveTranscription, LocalRuntimeStatus, TranscriptionRequest, TranscriptionResult } from "../domain/localSpeech"
+import type { SpeechPace, ActiveTranscription, LocalRuntimeStatus, TranscriptionRequest, TranscriptionResult } from "../domain/localSpeech"
+import type { PreparedAudio } from "../domain/groq"
 import type { DirEntry, FileStat, MediaProbe } from "../domain/types"
 import { Ops } from "./ops"
 import type { FileStore } from "./types"
@@ -42,8 +43,16 @@ export function createRemoteStore(call: Caller): FileStore {
       await call({ op: Ops.setHidden, path })
     },
     probeMedia: (path) => call<MediaProbe>({ op: Ops.probeMedia, path }),
-    localStatus: () => call<LocalRuntimeStatus>({ op: Ops.localStatus }),
-    setupLocal: () => call<LocalRuntimeStatus>({ op: Ops.setupLocal }),
+    localStatus: (pace: SpeechPace) => call<LocalRuntimeStatus>({ op: Ops.localStatus, pace }),
+    setupLocal: (pace: SpeechPace) => call<LocalRuntimeStatus>({ op: Ops.setupLocal, pace }),
+    prepareCloudAudio: (path) => call<PreparedAudio>({ op: Ops.prepareCloudAudio, path }),
+    readBytes: async (path) => {
+      const encoded = await call<string>({ op: Ops.readBytes, path })
+      const binary = atob(encoded)
+      const bytes = new Uint8Array(binary.length)
+      for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+      return bytes
+    },
     transcribeMedia: (path, request: TranscriptionRequest) =>
       call<TranscriptionResult>({
         op: Ops.transcribeMedia,
@@ -54,6 +63,8 @@ export function createRemoteStore(call: Caller): FileStore {
         moduleId: request.moduleId,
         moduleName: request.moduleName,
         newModuleName: request.newModuleName,
+        pace: request.pace,
+        language: request.language,
       }),
     activeTranscription: () => call<ActiveTranscription | null>({ op: Ops.activeTranscription }),
     clearTranscription: async (id) => {

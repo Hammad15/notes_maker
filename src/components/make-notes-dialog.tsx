@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react"
-import { messageOf } from "../domain/errors"
+import { MISSING_GROQ_KEY, messageOf } from "../domain/errors"
 import { assertUsableFolderName } from "../domain/names"
 import { fileName } from "../domain/paths"
 import { isMediaFile } from "../domain/text"
@@ -165,7 +165,9 @@ export function MakeNotesDialog({
             </div>
             {settings.provider === "cloud" ? (
               <p className="rounded-lg bg-muted px-3 py-2 text-sm leading-relaxed text-muted-foreground">
-                Cloud notes need an entitlement on this computer. Local notes still work.
+                {settings.groqApiKey.trim()
+                  ? "Groq transcribes this recording. Llama writes the study notes."
+                  : `${MISSING_GROQ_KEY} Paste it under Cloud in the sidebar. Local notes still work.`}
               </p>
             ) : localStatus && !localStatus.ready ? (
               <p className="text-sm text-muted-foreground">
@@ -181,7 +183,13 @@ export function MakeNotesDialog({
               <p className="text-xs leading-relaxed text-muted-foreground sm:max-w-[16rem]">
                 You can close this window. Writing the notes and PDF keeps going.
               </p>
-              <Button type="submit" disabled={settings.provider === "local" && localStatus?.ready !== true}>
+              <Button
+                type="submit"
+                disabled={
+                  (settings.provider === "local" && localStatus?.ready !== true) ||
+                  (settings.provider === "cloud" && settings.groqApiKey.trim().length === 0)
+                }
+              >
                 Make notes
               </Button>
             </DialogFooter>

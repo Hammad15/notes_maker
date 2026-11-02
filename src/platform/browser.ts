@@ -34,14 +34,14 @@ export function createBrowserHost(): Host {
     openPath: async () => {
       throw new Error(DESKTOP_WINDOW_REQUIRED)
     },
-    setupLocal: async (onProgress) => {
+    setupLocal: async (pace, onProgress) => {
       onProgress?.({
         phase: "model",
         label: "Setting up local notes…",
         received: 0,
         total: null,
       })
-      return store.setupLocal()
+      return store.setupLocal(pace)
     },
   }
 }

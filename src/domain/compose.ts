@@ -108,6 +108,20 @@ function heading(content: NoteContent): string {
 
 const NOT_A_TRANSCRIPT = "These are chapter markers from the file, not a transcript."
 
+export function withNoteHeader(content: NoteContent, body: string): string {
+  const cleaned = body
+    .replace(/^\uFEFF/, "")
+    .trim()
+    .replace(/^```(?:markdown|md)?\s*/i, "")
+    .replace(/\s*```$/, "")
+    .replace(/\n## Transcript\b[\s\S]*$/i, "")
+    .trim()
+    .replace(/^# .+(?:\n+|$)/, "")
+    .trim()
+  if (!cleaned) throw new StudyError("Groq did not return study notes.", "NOTES")
+  return `${heading(content)}\n\n${metaLine(content)}\n\n${cleaned}\n`
+}
+
 export function renderFull(content: NoteContent): string {
   const lines = [heading(content), "", metaLine(content), ""]
   if (hasTranscript(content)) {

@@ -2,9 +2,14 @@ import { describe, expect, it } from "vitest"
 import {
   assertHeardRecording,
   FFMPEG_BUNDLE,
+  formatRemaining,
   localJobMessage,
   parseWhisperJson,
+  remainingSeconds,
+  sameSavedRecording,
   SPEECH_MODEL,
+  speechModel,
+  TINY_MODEL,
   WHISPER_ENGINE,
   forwardProgress,
   parseProcessSnapshot,
@@ -91,6 +96,21 @@ describe("transcription stays usable", () => {
     expect(whisperThreadCount(4)).toBeLessThan(4)
   })
 
+  it("uses every processor and the tiny model when the pace is faster", () => {
+    expect(whisperThreadCount(1, "faster")).toBe(1)
+    expect(whisperThreadCount(4, "faster")).toBe(4)
+    expect(whisperThreadCount(8, "faster")).toBe(8)
+    expect(speechModel("faster")).toBe(TINY_MODEL)
+    expect(speechModel("clearer")).toBe(SPEECH_MODEL)
+    expect(TINY_MODEL).toMatchObject({
+      name: "ggml-tiny.en",
+      file: "ggml-tiny.en.bin",
+      bytes: 77_704_715,
+      sha256: "921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f",
+    })
+    expect(TINY_MODEL.url).toContain("ggml-tiny.en.bin")
+  })
+
   it("shows reading, percent, and the notes write", () => {
     expect(localJobMessage("ISC 102 U01.mp3", null)).toBe("Transcribing ISC 102 U01.mp3…")
     expect(localJobMessage("ISC 102 U01.mp3", { phase: "reading", label: "Reading the recording", percent: null })).toBe(
@@ -102,6 +122,66 @@ describe("transcription stays usable", () => {
     expect(
       localJobMessage("ISC 102 U01.mp3", { phase: "writing", label: "Writing the notes and PDF", percent: null }),
     ).toBe("Writing the notes and PDF for ISC 102 U01.mp3…")
+    const started = 1_700_000_000_000
+    expect(remainingSeconds(started, 25, started + 60_000)).toBe(180)
+    expect(remainingSeconds(started, 0, started + 60_000)).toBeNull()
+    expect(remainingSeconds(started, 100, started + 60_000)).toBeNull()
+    expect(remainingSeconds(started, 40, started + 400)).toBeNull()
+    expect(formatRemaining(30)).toBe("less than a minute left")
+    expect(formatRemaining(90)).toBe("about 2 min left")
+    expect(formatRemaining(3600)).toBe("about 1 hour left")
+    expect(formatRemaining(5400)).toBe("about 1 hr 30 min left")
+    const underway = Date.now() - 60_000
+    expect(
+      localJobMessage("ISC 102 U01.mp3", {
+        phase: "transcribing",
+        label: "Transcribing the recording",
+        percent: 25,
+        startedMs: underway,
+      }),
+    ).toBe("Transcribing ISC 102 U01.mp3… 25% · about 3 min left")
+  })
+})
+
+describe("saved transcripts", () => {
+  const source = {
+    mediaPath: "D:\\Lectures\\ISC 102 U01.mp3",
+    courseId: "isc-102",
+    moduleId: null as string | null,
+  }
+
+  it("matches the same recording, course, and module", () => {
+    expect(
+      sameSavedRecording(source, {
+        mediaPath: "d:/lectures/isc 102 u01.mp3",
+        courseId: "isc-102",
+        moduleId: null,
+        newModuleName: null,
+      }),
+    ).toBe(true)
+    expect(
+      sameSavedRecording(source, {
+        ...source,
+        moduleId: null,
+        newModuleName: "Cells",
+      }),
+    ).toBe(false)
+    expect(
+      sameSavedRecording(
+        { ...source, moduleId: "module-1" },
+        { ...source, moduleId: "module-1", newModuleName: null },
+      ),
+    ).toBe(true)
+    expect(
+      sameSavedRecording(source, { ...source, courseId: "other", newModuleName: null }),
+    ).toBe(false)
+    expect(
+      sameSavedRecording(source, {
+        ...source,
+        mediaPath: "D:\\Lectures\\ISC 102 U02.mp3",
+        newModuleName: null,
+      }),
+    ).toBe(false)
   })
 })
 

@@ -185,7 +185,9 @@ export function NoteScreen() {
         <h2 className="font-serif text-2xl">Restyle these notes</h2>
         <p className="mt-2 text-sm text-muted-foreground">
           {settings.provider === "cloud"
-            ? "Cloud notes need an entitlement on this computer."
+            ? settings.groqApiKey.trim()
+              ? "Restyle asks Groq to rewrite these notes. One previous copy is kept."
+              : "The Groq API key is missing. Paste it under Cloud in the sidebar."
             : "Restyle uses local notes. One previous copy is kept."}
         </p>
         <div className="mt-4 flex flex-wrap gap-2">

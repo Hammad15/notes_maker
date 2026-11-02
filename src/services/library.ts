@@ -1,9 +1,24 @@
+import { renderFull, renderRestyle, withNoteHeader } from "../domain/compose"
 import { renderPdf } from "../domain/pdf"
 import { parseNoteFile, writeFrontmatter, type NoteMeta } from "../domain/frontmatter"
-import { LocalSetupError, StudyError } from "../domain/errors"
+import { GroqKeyError, LocalSetupError, StudyError } from "../domain/errors"
+import {
+  completeChat,
+  GROQ_WHISPER_MODEL,
+  restyleInstruction,
+  studyNotesInstruction,
+  transcribeChunk,
+  type PreparedAudio,
+} from "../domain/groq"
+import { localLanguageSupported, notesLanguage } from "../domain/language"
+import {
+  sameSavedRecording,
+  speechPace,
+  type SpeechPace,
+  type TranscriptionProgress,
+} from "../domain/localSpeech"
 import { assertUsableFolderName, folderNameFromDisplay, isReservedFolder } from "../domain/names"
 import { fileName, joinPath } from "../domain/paths"
-import { createProvider, type Entitlement } from "../domain/providers"
 import { isMediaFile, titleFromMediaPath } from "../domain/text"
 import type {
   ChapterMark,
@@ -21,6 +36,10 @@ export interface Settings {
   homeDirectory: string | null
   provider: ProviderId
   lastMediaDirectory: string | null
+  speechPace: SpeechPace
+  /** Temporary developer setting. Not written into a course. */
+  groqApiKey: string
+  languageCode: string
 }
 
 export interface CourseSummary {
@@ -101,14 +120,15 @@ const EMPTY_SETTINGS: Settings = {
   homeDirectory: null,
   provider: "local",
   lastMediaDirectory: null,
+  speechPace: "clearer",
+  groqApiKey: "",
+  languageCode: "en",
 }
+
+let pendingSettingsWrite: Promise<void> = Promise.resolve()
 
 function settingsPath(appData: string): string {
   return joinPath(appData, "settings.json")
-}
-
-function licensePath(appData: string): string {
-  return joinPath(appData, "license.json")
 }
 
 async function writeJson(store: FileStore, path: string, value: unknown): Promise<void> {
@@ -125,6 +145,9 @@ export async function loadSettings(store: FileStore): Promise<Settings> {
       provider: json.provider === "cloud" ? "cloud" : "local",
       lastMediaDirectory:
         typeof json.lastMediaDirectory === "string" ? json.lastMediaDirectory : null,
+      speechPace: speechPace(json.speechPace),
+      groqApiKey: typeof json.groqApiKey === "string" ? json.groqApiKey : "",
+      languageCode: typeof json.languageCode === "string" && json.languageCode.trim() ? json.languageCode.trim() : "en",
     }
   } catch {
     return { ...EMPTY_SETTINGS }
@@ -132,18 +155,27 @@ export async function loadSettings(store: FileStore): Promise<Settings> {
 }
 
 export async function saveSettings(store: FileStore, settings: Settings): Promise<void> {
-  await writeJson(store, settingsPath(await store.appDataDir()), settings)
+  const run = pendingSettingsWrite.then(
+    async () => writeJson(store, settingsPath(await store.appDataDir()), settings),
+    async () => writeJson(store, settingsPath(await store.appDataDir()), settings),
+  )
+  pendingSettingsWrite = run.then(
+    () => undefined,
+    () => undefined,
+  )
+  await run
 }
 
-export async function readEntitlement(store: FileStore): Promise<Entitlement> {
-  const text = await store.readText(licensePath(await store.appDataDir()))
-  if (!text) return { entitled: false, source: "missing" }
-  try {
-    const json = JSON.parse(text) as { entitled?: unknown }
-    return { entitled: json.entitled === true, source: "license" }
-  } catch {
-    return { entitled: false, source: "license" }
-  }
+/**
+ * The only read of the Groq key. This build uses the developer setting stored
+ * in Study Notes settings on this computer. A later build can supply the key
+ * from the environment or a provisioned secret in this function, instead of
+ * asking the student. Do not read the key anywhere else.
+ */
+export async function readGroqKey(store: FileStore): Promise<string> {
+  await pendingSettingsWrite
+  const settings = await loadSettings(store)
+  return settings.groqApiKey.trim()
 }
 
 export async function assertWritableDirectory(store: FileStore, dir: string): Promise<void> {
@@ -502,78 +534,237 @@ function contentFrom(
   }
 }
 
+async function findSavedTranscript(
+  store: FileStore,
+  course: CourseDetail,
+  input: MakeNotesInput,
+): Promise<{ transcript: Transcript; note: NoteInfo | null } | null> {
+  const dir = joinPath(course.path, ".study", "sources")
+  if (!(await store.exists(dir))) return null
+  const entries = await store.list(dir)
+  let best: { transcript: Transcript; note: NoteInfo | null; createdAt: string; live: number } | null = null
+  for (const entry of entries) {
+    if (entry.kind !== "file" || !entry.name.toLowerCase().endsWith(".json")) continue
+    const noteId = entry.name.replace(/\.json$/i, "")
+    const source = await loadSource(store, course.path, noteId)
+    if (
+      !source ||
+      !sameSavedRecording(source, {
+        mediaPath: input.mediaPath,
+        courseId: course.id,
+        moduleId: input.moduleId,
+        newModuleName: input.newModuleName,
+      })
+    ) {
+      continue
+    }
+    const transcript = await loadTranscript(store, course.path, noteId)
+    if (!transcript?.transcribed || !transcript.segments.some((segment) => segment.text.trim())) continue
+    const note = course.notes.find((item) => item.id === noteId) ?? null
+    const candidate = {
+      transcript,
+      note,
+      createdAt: transcript.createdAt,
+      live: note ? 1 : 0,
+    }
+    if (
+      !best ||
+      candidate.live > best.live ||
+      (candidate.live === best.live && candidate.createdAt > best.createdAt)
+    ) {
+      best = candidate
+    }
+  }
+  return best ? { transcript: best.transcript, note: best.note } : null
+}
+
+async function transcribeWithGroq(
+  store: FileStore,
+  mediaPath: string,
+  key: string,
+  languageCode: string,
+  onProgress?: (progress: TranscriptionProgress) => void,
+): Promise<TranscriptSegment[]> {
+  const prepared: PreparedAudio = await store.prepareCloudAudio(mediaPath)
+  const language = notesLanguage(languageCode)
+  const startedMs = Date.now()
+  const segments: TranscriptSegment[] = []
+  try {
+    const chunks = prepared.chunks
+    if (chunks.length === 0) throw new StudyError("Could not prepare that recording.", "MEDIA")
+    for (let index = 0; index < chunks.length; index += 1) {
+      onProgress?.({
+        phase: "transcribing",
+        label: "Transcribing the recording",
+        percent: chunks.length === 1 ? null : Math.round((index / chunks.length) * 100),
+        startedMs,
+      })
+      const chunk = chunks[index]
+      const bytes = await store.readBytes(chunk.path)
+      const filename = chunk.path.split(/[\\/]/).pop() || "audio.wav"
+      segments.push(...(await transcribeChunk(key, bytes, filename, language, chunk.startSeconds)))
+      onProgress?.({
+        phase: "transcribing",
+        label: "Transcribing the recording",
+        percent: Math.round(((index + 1) / chunks.length) * 100),
+        startedMs,
+      })
+    }
+  } finally {
+    for (const chunk of prepared.chunks) {
+      if (prepared.temporaryDirectory && chunk.path.startsWith(prepared.temporaryDirectory)) {
+        try {
+          await store.remove(chunk.path)
+        } catch {
+          // The prepared audio is in app data, not the course.
+        }
+      }
+    }
+  }
+  if (!segments.some((segment) => segment.text.trim())) {
+    throw new StudyError("No speech was found in that recording.", "TRANSCRIPT")
+  }
+  return segments
+}
+
+async function notesFromGroq(
+  key: string,
+  languageCode: string,
+  content: NoteContent,
+): Promise<string> {
+  const language = notesLanguage(languageCode)
+  const transcript = content.segments
+    .map((segment) => segment.text.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .join("\n")
+  const where = content.moduleName ? `${content.courseName}, ${content.moduleName}` : content.courseName
+  const text = await completeChat(key, [
+    { role: "system", content: studyNotesInstruction(language) },
+    {
+      role: "user",
+      content: `Course: ${where}\nTitle: ${content.title}\n\nTranscript:\n${transcript}`,
+    },
+  ])
+  return withNoteHeader(content, text)
+}
+
 export async function makeNotes(
   store: FileStore,
   input: MakeNotesInput,
-  hooks?: { onWriting?: () => void },
+  hooks?: { onWriting?: () => void; onProgress?: (progress: TranscriptionProgress) => void },
 ): Promise<NoteInfo> {
   const course = await findCourse(store, input.home, input.courseId)
-  if (input.provider === "local") {
-    const runtime = await store.localStatus()
-    if (!runtime.ready) throw new LocalSetupError()
-  }
+  const settings = await loadSettings(store)
+  const pace = speechPace(settings.speechPace)
+  const language = notesLanguage(settings.languageCode)
+  const groqKey = input.provider === "cloud" ? await readGroqKey(store) : ""
+  if (input.provider === "cloud" && !groqKey) throw new GroqKeyError()
   const stat = await store.stat(input.mediaPath)
   if (!stat || stat.isDir || !isMediaFile(input.mediaPath)) {
     throw new StudyError("Choose a video or audio file.", "MEDIA")
   }
-  const entitlement = await readEntitlement(store)
-  const provider = createProvider(input.provider, entitlement)
+  const saved = await findSavedTranscript(store, course, input)
   const probe = await store.probeMedia(input.mediaPath)
-  const noteId = crypto.randomUUID()
   const title = titleFromMediaPath(input.mediaPath)
-  const transcript =
-    provider.id === "local"
-      ? await transcribeLocal(store, input.mediaPath, { noteId, title, probe }, {
-          jobId: input.jobId || noteId,
-          home: input.home,
-          courseId: input.courseId,
-          moduleId: input.moduleId,
-          moduleName: input.moduleName,
-          newModuleName: input.newModuleName,
-          mediaPath: input.mediaPath,
-        })
-      : provider.transcribe({ noteId, title, probe })
+  let transcript: Transcript
+  let existingNote: NoteInfo | null = null
+  if (saved) {
+    transcript = saved.transcript
+    existingNote = saved.note
+  } else if (input.provider === "cloud") {
+    const segments = await transcribeWithGroq(store, input.mediaPath, groqKey, language.code, hooks?.onProgress)
+    transcript = {
+      noteId: "",
+      provider: "cloud",
+      createdAt: new Date().toISOString(),
+      durationSeconds: probe.durationSeconds,
+      transcribed: true,
+      segments,
+      chapters: probe.chapters.filter(
+        (chapter) => Number.isFinite(chapter.start) && Number.isFinite(chapter.end),
+      ),
+      model: GROQ_WHISPER_MODEL,
+    }
+  } else {
+    if (!localLanguageSupported(language)) {
+      throw new StudyError(
+        "Local notes in this build use the English speech models. Cloud can transcribe another language.",
+        "LANGUAGE",
+      )
+    }
+    const runtime = await store.localStatus(pace)
+    if (!runtime.ready) throw new LocalSetupError()
+    const noteId = crypto.randomUUID()
+    transcript = await transcribeLocal(store, input.mediaPath, { noteId, title, probe }, {
+      jobId: input.jobId || noteId,
+      home: input.home,
+      courseId: input.courseId,
+      moduleId: input.moduleId,
+      moduleName: input.moduleName,
+      newModuleName: input.newModuleName,
+      mediaPath: input.mediaPath,
+      pace,
+      language: language.code,
+    })
+  }
   hooks?.onWriting?.()
 
-  let moduleId: string | null = null
-  let moduleName: string | null = null
+  let moduleId: string | null = existingNote?.moduleId ?? null
+  let moduleName: string | null = existingNote?.moduleName ?? null
   let notesDir = joinPath(course.path, "notes")
-  if (input.newModuleName !== null) {
+  if (!existingNote && input.newModuleName !== null) {
     const created = await createModule(store, input.home, input.courseId, input.newModuleName)
     moduleId = created.id
     moduleName = created.name
     notesDir = joinPath(created.path, "notes")
-  } else if (input.moduleId) {
+  } else if (!existingNote && input.moduleId) {
     const existing = course.modules.find((item) => item.id === input.moduleId)
     if (!existing) throw new StudyError("That module is not in this course.", "MODULE")
     moduleId = existing.id
     moduleName = existing.name
     notesDir = joinPath(existing.path, "notes")
+  } else if (existingNote?.moduleId) {
+    const existing = course.modules.find((item) => item.id === existingNote.moduleId)
+    if (existing) notesDir = joinPath(existing.path, "notes")
   }
 
-  const filedAt = new Date().toISOString()
-  const body = provider.compose(
-    contentFrom(
-      title,
-      course.name,
-      moduleName,
-      filedAt,
-      transcript.durationSeconds,
-      transcript.segments,
-      transcript.chapters,
-      transcript.transcribed,
-    ),
+  const filedAt = existingNote?.createdAt || new Date().toISOString()
+  const updatedAt = new Date().toISOString()
+  const content = contentFrom(
+    existingNote?.title || title,
+    course.name,
+    moduleName,
+    filedAt,
+    transcript.durationSeconds ?? probe.durationSeconds,
+    transcript.segments,
+    transcript.chapters,
+    transcript.transcribed,
   )
+  const body =
+    input.provider === "cloud" ? await notesFromGroq(groqKey, language.code, content) : renderFull(content)
+  const noteId = existingNote?.id || transcript.noteId || crypto.randomUUID()
   const meta: NoteMeta = {
     id: noteId,
-    title,
+    title: content.title,
     courseId: course.id,
     moduleId,
     createdAt: filedAt,
-    updatedAt: filedAt,
-    provider: provider.id,
+    updatedAt,
+    provider: input.provider,
   }
-  const stemBase = folderNameFromDisplay(title) || "Notes"
+  if (existingNote) {
+    await store.writeText(existingNote.markdownPath, writeFrontmatter(meta, body))
+    await store.writeBytes(existingNote.pdfPath, await renderPdf(body))
+    await touchCourse(store, course, updatedAt)
+    return {
+      ...existingNote,
+      title: content.title,
+      updatedAt,
+      provider: input.provider,
+      pdfExists: true,
+    }
+  }
+  const stemBase = folderNameFromDisplay(content.title) || "Notes"
   const stem = await uniqueFileStem(store, notesDir, stemBase)
   const markdownPath = joinPath(notesDir, `${stem}.md`)
   const pdfPath = joinPath(notesDir, `${stem}.pdf`)
@@ -583,9 +774,10 @@ export async function makeNotes(
   await store.mkdir(joinPath(study, "sources"))
   await store.mkdir(joinPath(study, "history"))
   await store.setHidden(study)
+  const storedTranscript: Transcript = { ...transcript, noteId }
   await store.writeText(
     joinPath(study, "transcripts", `${noteId}.json`),
-    `${JSON.stringify(transcript, null, 2)}\n`,
+    `${JSON.stringify(storedTranscript, null, 2)}\n`,
   )
   const source: SourceRecord = {
     noteId,
@@ -596,10 +788,10 @@ export async function makeNotes(
   await store.writeText(joinPath(study, "sources", `${noteId}.json`), `${JSON.stringify(source, null, 2)}\n`)
   await store.writeText(markdownPath, writeFrontmatter(meta, body))
   await store.writeBytes(pdfPath, await renderPdf(body))
-  await touchCourse(store, course, filedAt)
+  await touchCourse(store, course, updatedAt)
   return {
     id: noteId,
-    title,
+    title: content.title,
     fileStem: stem,
     markdownPath,
     pdfPath,
@@ -607,8 +799,8 @@ export async function makeNotes(
     moduleId,
     moduleName,
     createdAt: filedAt,
-    updatedAt: filedAt,
-    provider: provider.id,
+    updatedAt,
+    provider: input.provider,
     hasHistory: false,
   }
 }
@@ -709,22 +901,30 @@ export async function restyleNote(
 ): Promise<NoteDocument> {
   const note = await readNote(store, input.home, input.courseId, input.noteId)
   const course = await findCourse(store, input.home, input.courseId)
-  const entitlement = await readEntitlement(store)
-  const provider = createProvider(input.provider, entitlement)
-  const body = provider.restyle(
-    contentFrom(
-      note.title,
-      note.courseName,
-      note.moduleName,
-      note.createdAt,
-      note.durationSeconds,
-      note.segments,
-      note.chapters,
-      note.transcriptProduced,
-    ),
-    input.preset,
-    input.prompt,
+  const settings = await loadSettings(store)
+  const content = contentFrom(
+    note.title,
+    note.courseName,
+    note.moduleName,
+    note.createdAt,
+    note.durationSeconds,
+    note.segments,
+    note.chapters,
+    note.transcriptProduced,
   )
+  let body: string
+  if (input.provider === "cloud") {
+    const key = await readGroqKey(store)
+    if (!key) throw new GroqKeyError()
+    const language = notesLanguage(settings.languageCode)
+    const text = await completeChat(key, [
+      { role: "system", content: restyleInstruction(language, input.preset, input.prompt) },
+      { role: "user", content: note.body },
+    ])
+    body = withNoteHeader(content, text)
+  } else {
+    body = renderRestyle(content, input.preset, input.prompt)
+  }
   const current = await store.readText(note.markdownPath)
   if (!current) throw new StudyError("That note could not be read.", "NOTE")
   const historyPath = joinPath(course.path, ".study", "history", `${note.id}.md`)
@@ -739,7 +939,7 @@ export async function restyleNote(
     moduleId: note.moduleId,
     createdAt: note.createdAt,
     updatedAt: now,
-    provider: provider.id,
+    provider: input.provider,
   }
   await store.writeText(note.markdownPath, writeFrontmatter(meta, body))
   await store.writeBytes(note.pdfPath, await renderPdf(body))

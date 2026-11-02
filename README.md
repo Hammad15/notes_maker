@@ -4,7 +4,13 @@ Desktop app for one student on a computer. Pick a home folder, create a course, 
 
 This build is the course library and Make Notes. The theme is dark. There is no login and no payment screen.
 
-Press **Set up local notes** once in the sidebar. That button downloads the speech model, the speech engine, and ffmpeg and ffprobe when those programs are missing. It does not ask for an API key. After it finishes, Make Notes transcribes the recording and writes Markdown plus a PDF. A long recording takes longer than a minute. Cloud notes stay off until an entitlement is present.
+Press **Set up local notes** once in the sidebar. That button downloads the speech model for the speed you chose, the speech engine, and ffmpeg and ffprobe when those programs are missing. Local notes do not ask for an API key. After setup finishes, Make Notes transcribes the recording and writes Markdown plus a PDF. While it transcribes, the window shows a percent and an estimate of the time remaining.
+
+**Speed** is chosen once, under Local. Faster uses the tiny English model and every processor core. Clearer uses the base English model and half the cores. Switching speed shows setup again only when that model file is missing. Both model files can sit next to each other.
+
+If a transcript already exists for the same recording and the same course or module, Make Notes does not run speech recognition again. It rewrites the study notes from that saved transcript. The raw transcript stays in the hidden `.study` folder. The Markdown note and the PDF are study notes.
+
+Cloud uses Groq. Choose **Cloud** in the sidebar and paste a key in the password field labeled **Groq API key**. That field is a temporary developer setting. The key is stored in Study Notes settings on this computer, not in the course folder. This build reads the key from that one setting. A later build can supply it from the environment or a provisioned secret instead of asking for it. That provisioning is not in this build. Without a key, Cloud says the Groq API key is missing. Local notes still work. Notes in this build are English. The language is a setting so another language can be added later.
 
 ## Run on Windows
 
@@ -19,13 +25,13 @@ npm run tauri dev
 
 That opens the Study Notes window. The file dialogs come from the Tauri dialog plugin. Use that window. Do not pick files from a browser tab pointed at the dev server. The `.study` folder inside a course is marked hidden.
 
-**Set up local notes** is the only setup step inside the app. It downloads:
+**Set up local notes** downloads the local speech files:
 
 - whisper.cpp 1.9.2 for Windows (`whisper-cli.exe` and the DLLs next to it), from `whisper-bin-x64.zip`
-- the English speech model `ggml-base.en.bin` (147,964,211 bytes)
+- the English speech model for the selected speed: `ggml-base.en.bin` (147,964,211 bytes) for Clearer, or `ggml-tiny.en.bin` (77,704,715 bytes) for Faster
 - FFmpeg 9.0.2 `ffmpeg.exe` and `ffprobe.exe`, when they are not already on the computer
 
-Those files land in `%LOCALAPPDATA%\Study Notes`, and the button writes `models\local.json`. There is no terminal step and no API key.
+Those files land in `%LOCALAPPDATA%\Study Notes`, and the button writes `models\local.json`. There is no terminal step. Local notes do not use an API key.
 
 `npm run dev` only serves the UI at http://127.0.0.1:43127. Tauri starts it for you. Opening that address in a browser cannot show the Windows file dialog.
 
@@ -35,7 +41,7 @@ Settings live outside the home folder:
 - Linux: `~/.local/share/Study Notes/settings.json`
 - macOS: `~/Library/Application Support/Study Notes/settings.json`
 
-Cloud notes run only when `license.json` in that same folder contains `{ "entitled": true }`.
+The Groq API key, when you paste one, is the `groqApiKey` field in that `settings.json` file. It is not written into `course.json`, notes, transcripts, or `.study`.
 
 ## Run the desktop window on Linux or macOS
 

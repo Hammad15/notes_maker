@@ -2,7 +2,7 @@ import { PDFDocument } from "pdf-lib"
 import { describe, expect, it } from "vitest"
 import { renderFull, renderRestyle } from "./compose"
 import { renderTranscript, studySections } from "./studyNotes"
-import { EntitlementError, LocalSetupError, StudyError, messageOf } from "./errors"
+import { GroqKeyError, LocalSetupError, StudyError, messageOf } from "./errors"
 import { parseNoteFile, writeFrontmatter } from "./frontmatter"
 import { assertUsableFolderName, folderNameFromDisplay } from "./names"
 import { parentPath } from "./paths"
@@ -225,22 +225,14 @@ describe("study notes", () => {
 })
 
 describe("providers", () => {
-  it("refuses cloud notes until an entitlement exists", () => {
-    const cloud = createProvider("cloud", { entitled: false, source: "missing" })
-    expect(() =>
-      cloud.transcribe({
-        noteId: "n",
-        title: "Lecture 3",
-        probe: { size: 1, durationSeconds: 1, title: null, chapters: [] },
-      }),
-    ).toThrow(EntitlementError)
-    const entitled = createProvider("cloud", { entitled: true, source: "license" })
-    expect(entitled.transcribe({
-      noteId: "n",
-      title: "Lecture 3",
-      probe: { size: 1, durationSeconds: 1, title: null, chapters: [] },
-    }).provider).toBe("cloud")
-    const local = createProvider("local", { entitled: false, source: "missing" })
+  it("keeps cloud work behind the Groq key", () => {
+    const cloud = createProvider("cloud")
+    const probe = { size: 1, durationSeconds: 1, title: null, chapters: [] }
+    expect(new GroqKeyError().message).toBe("The Groq API key is missing.")
+    expect(() => cloud.transcribe({ noteId: "n", title: "Lecture 3", probe })).toThrow(GroqKeyError)
+    expect(() => cloud.compose(content)).toThrow(GroqKeyError)
+    expect(() => cloud.restyle(content, "bullets", "")).toThrow(GroqKeyError)
+    const local = createProvider("local")
     expect(() =>
       local.transcribe({
         noteId: "n",

@@ -506,6 +506,7 @@ fn emit_transcribe(
     phase: &str,
     label: &str,
     percent: Option<u8>,
+    started_ms: Option<u64>,
 ) {
     let _ = app.emit(
         "local-transcribe-progress",
@@ -514,8 +515,26 @@ fn emit_transcribe(
             "phase": phase,
             "label": label,
             "percent": percent,
+            "startedMs": started_ms,
         }),
     );
+}
+
+fn pace_of(request: &Value) -> String {
+    match request.get("pace").and_then(Value::as_str) {
+        Some("faster") => "faster".into(),
+        _ => "clearer".into(),
+    }
+}
+
+fn language_of(request: &Value) -> String {
+    request
+        .get("language")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("en")
+        .to_string()
 }
 
 fn emit_setup(app: &tauri::AppHandle, phase: &str, label: &str, received: u64, total: Option<u64>) {
@@ -555,6 +574,8 @@ async fn desktop_call(app: tauri::AppHandle, request: Value) -> Result<Value, St
                 module_id: optional_string(&request, "moduleId"),
                 module_name: optional_string(&request, "moduleName"),
                 new_module_name: optional_string(&request, "newModuleName"),
+                pace: pace_of(&request),
+                language: language_of(&request),
             };
             let app_data = app_data_dir();
             let handle = app.clone();
@@ -564,8 +585,8 @@ async fn desktop_call(app: tauri::AppHandle, request: Value) -> Result<Value, St
                     &app_data,
                     &media,
                     &transcribe,
-                    &mut |phase, label, percent| {
-                        emit_transcribe(&handle, &job_id, phase, label, percent);
+                    &mut |phase, label, percent, started_ms| {
+                        emit_transcribe(&handle, &job_id, phase, label, percent, started_ms);
                     },
                 )
             })
@@ -575,6 +596,19 @@ async fn desktop_call(app: tauri::AppHandle, request: Value) -> Result<Value, St
                 Err(_) => {
                     Err("Could not transcribe that recording. The worker thread stopped.".into())
                 }
+            };
+        }
+        // ffmpeg can run for a long recording. Keep that off the window thread.
+        "prepareCloudAudio" => {
+            let media = require_str(&request, "path")?.to_string();
+            let app_data = app_data_dir();
+            return match tauri::async_runtime::spawn_blocking(move || {
+                local_runtime::prepare_cloud_audio(&app_data, &media)
+            })
+            .await
+            {
+                Ok(result) => result,
+                Err(_) => Err("Could not prepare that recording. The worker thread stopped.".into()),
             };
         }
         _ => {}
@@ -632,7 +666,11 @@ fn desktop_request(app: tauri::AppHandle, request: Value) -> Result<Value, Strin
             Ok(Value::Null)
         }
         "probeMedia" => probe_media(require_str(&request, "path")?),
-        "localStatus" => local_runtime::status_json(&app_data_dir()),
+        "readBytes" => {
+            let bytes = fs::read(require_str(&request, "path")?).map_err(|error| error.to_string())?;
+            Ok(Value::String(STANDARD.encode(bytes)))
+        }
+        "localStatus" => local_runtime::status_json(&app_data_dir(), &pace_of(&request)),
         "activeTranscription" => Ok(local_runtime::active_job_json(&app_data_dir())),
         "clearTranscription" => {
             local_runtime::clear_job(&app_data_dir(), require_str(&request, "id")?)?;
@@ -640,7 +678,8 @@ fn desktop_request(app: tauri::AppHandle, request: Value) -> Result<Value, Strin
         }
         "setupLocal" => {
             let handle = app.clone();
-            local_runtime::setup_local(&app_data_dir(), &mut |phase, label, received, total| {
+            let pace = pace_of(&request);
+            local_runtime::setup_local(&app_data_dir(), &pace, &mut |phase, label, received, total| {
                 emit_setup(&handle, phase, label, received, total);
             })
         }
@@ -799,6 +838,18 @@ mod duration_tests {
         assert!(
             blocking < call,
             "whisper starts only after the worker is spawned, not on the window thread"
+        );
+        assert!(
+            transcribe.contains("\"prepareCloudAudio\""),
+            "Cloud notes prepare audio through the desktop command"
+        );
+        let prepare = transcribe
+            .find("prepare_cloud_audio")
+            .expect("the worker prepares cloud audio");
+        let prepare_blocking = transcribe.rfind("spawn_blocking").unwrap_or(0);
+        assert!(
+            prepare_blocking < prepare,
+            "ffmpeg preparation starts on a worker thread"
         );
     }
 

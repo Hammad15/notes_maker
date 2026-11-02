@@ -73,7 +73,7 @@ export function createTauriHost(): Host {
         stop()
       }
     },
-    setupLocal: async (onProgress) => {
+    setupLocal: async (pace, onProgress) => {
       let unlisten = () => {}
       if (onProgress) {
         const { listen } = await import("@tauri-apps/api/event")
@@ -85,7 +85,7 @@ export function createTauriHost(): Host {
         }
       }
       try {
-        return await store.setupLocal()
+        return await store.setupLocal(pace)
       } finally {
         unlisten()
       }

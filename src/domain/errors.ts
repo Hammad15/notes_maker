@@ -8,13 +8,12 @@ export class StudyError extends Error {
   }
 }
 
-export class EntitlementError extends StudyError {
+export const MISSING_GROQ_KEY = "The Groq API key is missing."
+
+export class GroqKeyError extends StudyError {
   constructor() {
-    super(
-      "Cloud notes need an entitlement on this computer.",
-      "ENTITLEMENT_REQUIRED",
-    )
-    this.name = "EntitlementError"
+    super(MISSING_GROQ_KEY, "GROQ_KEY")
+    this.name = "GroqKeyError"
   }
 }
 

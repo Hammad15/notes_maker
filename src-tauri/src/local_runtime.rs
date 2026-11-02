@@ -18,6 +18,45 @@ const MODEL_SHA256: &str = "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb89
 const MODEL_URL: &str =
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin";
 
+const TINY_NAME: &str = "ggml-tiny.en";
+const TINY_FILE: &str = "ggml-tiny.en.bin";
+const TINY_BYTES: u64 = 77_704_715;
+const TINY_SHA256: &str = "921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f";
+const TINY_URL: &str =
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin";
+
+struct ModelSpec {
+    name: &'static str,
+    file: &'static str,
+    bytes: u64,
+    sha256: &'static str,
+    url: &'static str,
+}
+
+fn pace_name(pace: &str) -> &'static str {
+    if pace == "faster" { "faster" } else { "clearer" }
+}
+
+fn model_spec(pace: &str) -> ModelSpec {
+    if pace_name(pace) == "faster" {
+        ModelSpec {
+            name: TINY_NAME,
+            file: TINY_FILE,
+            bytes: TINY_BYTES,
+            sha256: TINY_SHA256,
+            url: TINY_URL,
+        }
+    } else {
+        ModelSpec {
+            name: MODEL_NAME,
+            file: MODEL_FILE,
+            bytes: MODEL_BYTES,
+            sha256: MODEL_SHA256,
+            url: MODEL_URL,
+        }
+    }
+}
+
 const ENGINE_VERSION: &str = "1.9.2";
 const ENGINE_EXE: &str = "whisper-cli.exe";
 const ENGINE_EXE_BYTES: u64 = 479_232;
@@ -81,8 +120,8 @@ fn bin_dir(app_data: &Path) -> PathBuf {
     app_data.join("bin")
 }
 
-fn model_path(app_data: &Path) -> PathBuf {
-    app_data.join("models").join(MODEL_FILE)
+fn model_path(app_data: &Path, pace: &str) -> PathBuf {
+    app_data.join("models").join(model_spec(pace).file)
 }
 
 fn config_path(app_data: &Path) -> PathBuf {
@@ -268,11 +307,10 @@ fn config_ready(app_data: &Path) -> bool {
         return false;
     };
     json.get("ready").and_then(Value::as_bool) == Some(true)
-        && json.get("model").and_then(Value::as_str) == Some(MODEL_NAME)
-        && json.get("modelBytes").and_then(Value::as_u64) == Some(MODEL_BYTES)
 }
 
-fn collect_status(app_data: &Path) -> Result<RuntimeStatus, String> {
+fn collect_status(app_data: &Path, pace: &str) -> Result<RuntimeStatus, String> {
+    let spec = model_spec(pace);
     let mut missing = Vec::new();
     if tool_path(app_data, "ffmpeg").is_none() {
         missing.push("ffmpeg");
@@ -283,7 +321,7 @@ fn collect_status(app_data: &Path) -> Result<RuntimeStatus, String> {
     if !engine_ready(&bin_dir(app_data)) {
         missing.push("engine");
     }
-    if !file_matches(&model_path(app_data), MODEL_BYTES, MODEL_SHA256)? {
+    if !file_matches(&model_path(app_data, pace), spec.bytes, spec.sha256)? {
         missing.push("model");
     }
     if !config_ready(app_data) {
@@ -293,20 +331,21 @@ fn collect_status(app_data: &Path) -> Result<RuntimeStatus, String> {
     Ok(RuntimeStatus { ready, missing })
 }
 
-fn status_value(status: &RuntimeStatus) -> Value {
+fn status_value(status: &RuntimeStatus, pace: &str) -> Value {
     json!({
         "ready": status.ready,
-        "model": MODEL_NAME,
+        "model": model_spec(pace).name,
         "missing": status.missing,
     })
 }
 
-pub(crate) fn status_json(app_data: &Path) -> Result<Value, String> {
-    Ok(status_value(&collect_status(app_data)?))
+pub(crate) fn status_json(app_data: &Path, pace: &str) -> Result<Value, String> {
+    Ok(status_value(&collect_status(app_data, pace)?, pace))
 }
 
 pub(crate) fn setup_local(
     app_data: &Path,
+    pace: &str,
     progress: &mut dyn FnMut(&str, &str, u64, Option<u64>),
 ) -> Result<Value, String> {
     if !cfg!(windows) {
@@ -369,13 +408,18 @@ pub(crate) fn setup_local(
         }
     }
 
-    let label = "Downloading the speech model";
-    progress("model", label, 0, Some(MODEL_BYTES));
+    let spec = model_spec(pace);
+    let label = if pace_name(pace) == "faster" {
+        "Downloading the tiny English model"
+    } else {
+        "Downloading the speech model"
+    };
+    progress("model", label, 0, Some(spec.bytes));
     download_verified(
-        MODEL_URL,
-        &model_path(app_data),
-        MODEL_BYTES,
-        MODEL_SHA256,
+        spec.url,
+        &model_path(app_data, pace),
+        spec.bytes,
+        spec.sha256,
         &mut |received, total| {
             progress("model", label, received, Some(total));
         },
@@ -390,23 +434,24 @@ pub(crate) fn setup_local(
     };
     let config = json!({
         "ready": true,
-        "model": MODEL_NAME,
-        "modelFile": MODEL_FILE,
-        "modelBytes": MODEL_BYTES,
+        "pace": pace_name(pace),
+        "model": spec.name,
+        "modelFile": spec.file,
+        "modelBytes": spec.bytes,
         "engine": "whisper.cpp",
         "engineVersion": ENGINE_VERSION,
         "ffmpeg": ffmpeg_source,
     });
     let pretty = serde_json::to_string_pretty(&config).map_err(|error| error.to_string())?;
     fs::write(config_path(app_data), format!("{pretty}\n")).map_err(|error| error.to_string())?;
-    let status = collect_status(app_data)?;
+    let status = collect_status(app_data, pace)?;
     if !status.ready {
         return Err(format!(
             "Local notes are still missing pieces after setup: {}.",
             status.missing.join(", ")
         ));
     }
-    Ok(status_value(&status))
+    Ok(status_value(&status, pace))
 }
 
 fn run_command(command: Command, timeout: Duration, what: &str) -> Result<(), String> {
@@ -607,14 +652,17 @@ fn wav_seconds(size: u64) -> Option<f64> {
     }
 }
 
-/// Half the logical processors, and at least one. The speech engine's own
-/// default uses every processor on a 4-core laptop and holds the machine at
-/// 100% for the whole recording. Half still finishes the file.
-pub(crate) fn whisper_thread_count(logical_cpus: usize) -> usize {
-    if logical_cpus <= 1 {
+/// Clearer uses half the logical processors, at least one.
+/// Faster uses every logical processor.
+pub(crate) fn whisper_thread_count(logical_cpus: usize, pace: &str) -> usize {
+    let cpus = logical_cpus.max(1);
+    if pace_name(pace) == "faster" {
+        return cpus;
+    }
+    if cpus <= 1 {
         1
     } else {
-        (logical_cpus / 2).max(1)
+        (cpus / 2).max(1)
     }
 }
 
@@ -878,6 +926,14 @@ struct SavedJob {
     started_ms: u64,
     #[serde(default)]
     duration_seconds: Option<f64>,
+    #[serde(default)]
+    pace: String,
+    #[serde(default)]
+    language: String,
+    #[serde(default)]
+    transcribe_started_ms: u64,
+    #[serde(default)]
+    model: String,
 }
 
 fn saved_target(job: &SavedJob) -> Target {
@@ -943,6 +999,9 @@ fn public_job(job: &SavedJob) -> Value {
         "phase": job.phase,
         "label": job.label,
         "percent": job.percent,
+        "pace": if job.pace.is_empty() { "clearer" } else { job.pace.as_str() },
+        "language": if job.language.is_empty() { "en" } else { job.language.as_str() },
+        "transcribeStartedMs": if job.transcribe_started_ms == 0 { Value::Null } else { json!(job.transcribe_started_ms) },
     })
 }
 
@@ -1192,7 +1251,7 @@ fn pull_progress(path: &Path, offset: u64, mut last: Option<u8>) -> (u64, Option
     (offset + usable as u64, last, emitted)
 }
 
-fn transcript_value(duration: Option<f64>, elapsed_ms: u128, segments: &[Segment]) -> Value {
+fn transcript_value(duration: Option<f64>, elapsed_ms: u128, segments: &[Segment], model: &str) -> Value {
     json!({
         "segments": segments.iter().map(|segment| json!({
             "start": segment.start,
@@ -1201,7 +1260,7 @@ fn transcript_value(duration: Option<f64>, elapsed_ms: u128, segments: &[Segment
         })).collect::<Vec<_>>(),
         "durationSeconds": duration,
         "elapsedMs": elapsed_ms as u64,
-        "model": MODEL_NAME,
+        "model": model,
     })
 }
 
@@ -1211,7 +1270,12 @@ fn finish_transcript(job: &SavedJob) -> Result<Value, String> {
     let segments = parse_whisper_json(&raw)?;
     let elapsed_ms = now_ms().saturating_sub(job.started_ms) as u128;
     assert_heard(job.duration_seconds, elapsed_ms, &segments)?;
-    Ok(transcript_value(job.duration_seconds, elapsed_ms, &segments))
+    let model = if job.model.is_empty() {
+        model_spec(if job.pace.is_empty() { "clearer" } else { job.pace.as_str() }).name
+    } else {
+        job.model.as_str()
+    };
+    Ok(transcript_value(job.duration_seconds, elapsed_ms, &segments, model))
 }
 
 fn stopped(flight: &Flight) -> Result<(), String> {
@@ -1229,15 +1293,17 @@ pub(crate) struct TranscribeRequest {
     pub module_id: Option<String>,
     pub module_name: Option<String>,
     pub new_module_name: Option<String>,
+    pub pace: String,
+    pub language: String,
 }
 
 pub(crate) fn transcribe_json(
     app_data: &Path,
     media: &str,
     request: &TranscribeRequest,
-    progress: &mut dyn FnMut(&str, &str, Option<u8>),
+    progress: &mut dyn FnMut(&str, &str, Option<u8>, Option<u64>),
 ) -> Result<Value, String> {
-    let status = collect_status(app_data)?;
+    let status = collect_status(app_data, &request.pace)?;
     if !status.ready {
         return Err(SETUP_REQUIRED.into());
     }
@@ -1282,7 +1348,7 @@ fn run_owned(
     media: &str,
     request: &TranscribeRequest,
     flight: &Arc<Flight>,
-    progress: &mut dyn FnMut(&str, &str, Option<u8>),
+    progress: &mut dyn FnMut(&str, &str, Option<u8>, Option<u64>),
 ) -> Result<Value, String> {
     stopped(flight)?;
     let snapshot = process_snapshot()?;
@@ -1303,11 +1369,16 @@ fn run_owned(
             let mut job = job;
             job.id = flight.job_id.clone();
             write_saved(app_data, &job)?;
+            let started = if job.transcribe_started_ms > 0 {
+                Some(job.transcribe_started_ms)
+            } else {
+                None
+            };
             if let Some(percent) = job.percent {
-                progress("transcribing", "Transcribing the recording", Some(percent));
+                progress("transcribing", "Transcribing the recording", Some(percent), started);
             }
             wait_for_pid(pid, Path::new(&job.stderr_path), flight, job.percent, |percent| {
-                progress("transcribing", "Transcribing the recording", Some(percent));
+                progress("transcribing", "Transcribing the recording", Some(percent), started);
                 update_saved(app_data, &job.id, |saved| {
                     saved.phase = "transcribing".into();
                     saved.label = "Transcribing the recording".into();
@@ -1320,7 +1391,12 @@ fn run_owned(
             done.phase = "writing".into();
             done.percent = Some(100);
             write_saved(app_data, &done)?;
-            progress("transcribing", "Transcribing the recording", Some(100));
+            progress(
+                "transcribing",
+                "Transcribing the recording",
+                Some(100),
+                started,
+            );
             finish_transcript(&done)
         }
         ResumePlan::Reuse(mut job) => {
@@ -1336,7 +1412,7 @@ fn run_owned(
             job.phase = "writing".into();
             job.percent = Some(100);
             write_saved(app_data, &job)?;
-            progress("transcribing", "Transcribing the recording", Some(100));
+            progress("transcribing", "Transcribing the recording", Some(100), None);
             finish_transcript(&job)
         }
         ResumePlan::Start => {
@@ -1362,7 +1438,7 @@ fn start_fresh(
     media: &str,
     request: &TranscribeRequest,
     flight: &Arc<Flight>,
-    progress: &mut dyn FnMut(&str, &str, Option<u8>),
+    progress: &mut dyn FnMut(&str, &str, Option<u8>, Option<u64>),
 ) -> Result<Value, String> {
     stopped(flight)?;
     let ffmpeg = tool_path(app_data, "ffmpeg").ok_or_else(|| SETUP_REQUIRED.to_string())?;
@@ -1393,9 +1469,16 @@ fn start_fresh(
         wav_path: wav.to_string_lossy().into_owned(),
         started_ms: now_ms(),
         duration_seconds: None,
+        pace: pace_name(&request.pace).to_string(),
+        language: {
+            let code = request.language.trim();
+            if code.is_empty() { "en".to_string() } else { code.to_string() }
+        },
+        transcribe_started_ms: 0,
+        model: model_spec(&request.pace).name.to_string(),
     };
     write_saved(app_data, &job)?;
-    progress("reading", "Reading the recording", None);
+    progress("reading", "Reading the recording", None, None);
     let mut convert = Command::new(&ffmpeg);
     convert.args([
         "-hide_banner",
@@ -1469,13 +1552,13 @@ fn start_fresh(
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
         .arg("-m")
-        .arg(model_path(app_data))
+        .arg(model_path(app_data, &request.pace))
         .arg("-f")
         .arg(&wav)
         .arg("-l")
-        .arg("en")
+        .arg(if request.language.trim().is_empty() { "en" } else { request.language.trim() })
         .arg("-t")
-        .arg(whisper_thread_count(logical_cpus()).to_string())
+        .arg(whisper_thread_count(logical_cpus(), &request.pace).to_string())
         .arg("-oj")
         .arg("-of")
         .arg(&json_base)
@@ -1488,15 +1571,27 @@ fn start_fresh(
     })?;
     let pid = child.id();
     flight.set_pid(pid);
+    let transcribe_started = now_ms();
     update_saved(app_data, &flight.job_id, |saved| {
         saved.phase = "transcribing".into();
         saved.label = "Transcribing the recording".into();
         saved.pid = Some(pid);
         saved.duration_seconds = duration;
+        saved.transcribe_started_ms = transcribe_started;
     });
-    progress("transcribing", "Transcribing the recording", Some(0));
+    progress(
+        "transcribing",
+        "Transcribing the recording",
+        Some(0),
+        Some(transcribe_started),
+    );
     let waited = wait_child(&mut child, &stderr_path, flight, |percent| {
-        progress("transcribing", "Transcribing the recording", Some(percent));
+        progress(
+            "transcribing",
+            "Transcribing the recording",
+            Some(percent),
+            Some(transcribe_started),
+        );
         update_saved(app_data, &flight.job_id, |saved| {
             saved.percent = forward_percent(saved.percent, percent);
         });
@@ -1510,7 +1605,12 @@ fn start_fresh(
     done.percent = Some(100);
     done.duration_seconds = duration;
     write_saved(app_data, &done)?;
-    progress("transcribing", "Transcribing the recording", Some(100));
+    progress(
+        "transcribing",
+        "Transcribing the recording",
+        Some(100),
+        Some(transcribe_started),
+    );
     finish_transcript(&done)
 }
 
@@ -1731,6 +1831,93 @@ fn assert_heard(
     Ok(())
 }
 
+const CLOUD_CHUNK_BYTES: u64 = 20 * 1024 * 1024;
+const CLOUD_CHUNK_SECONDS: u64 = 540;
+
+fn direct_cloud_audio(path: &Path) -> bool {
+    let ext = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    matches!(
+        ext.as_str(),
+        "mp3" | "m4a" | "wav" | "flac" | "ogg" | "opus" | "webm" | "mp4" | "mpeg" | "mpg" | "mpga" | "aac"
+    )
+}
+
+pub(crate) fn prepare_cloud_audio(app_data: &Path, media: &str) -> Result<Value, String> {
+    let path = Path::new(media);
+    let meta = fs::metadata(path).map_err(|error| error.to_string())?;
+    if meta.is_file() && meta.len() > 0 && meta.len() <= CLOUD_CHUNK_BYTES && direct_cloud_audio(path) {
+        return Ok(json!({
+            "temporaryDirectory": null,
+            "chunks": [{ "path": media, "startSeconds": 0 }],
+        }));
+    }
+    let ffmpeg = tool_path(app_data, "ffmpeg").ok_or_else(|| {
+        "This recording has to be prepared with ffmpeg. Press Set up local notes once, then try Cloud again."
+            .to_string()
+    })?;
+    let directory = app_data
+        .join("tmp")
+        .join(format!("groq-{}-{}", std::process::id(), now_ms()));
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    let pattern = directory.join("chunk_%03d.wav");
+    let mut command = Command::new(ffmpeg);
+    quiet(&mut command);
+    command.args([
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        media,
+        "-ar",
+        "16000",
+        "-ac",
+        "1",
+        "-c:a",
+        "pcm_s16le",
+        "-f",
+        "segment",
+        "-segment_time",
+        &CLOUD_CHUNK_SECONDS.to_string(),
+        "-reset_timestamps",
+        "1",
+    ]);
+    command.arg(&pattern);
+    let output = command.output().map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Could not prepare that recording. {}", detail.trim()));
+    }
+    let mut names = fs::read_dir(&directory)
+        .map_err(|error| error.to_string())?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.to_ascii_lowercase().ends_with(".wav"))
+        .collect::<Vec<_>>();
+    names.sort();
+    if names.is_empty() {
+        return Err("Could not prepare that recording for Groq.".into());
+    }
+    let chunks = names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            json!({
+                "path": directory.join(name).to_string_lossy(),
+                "startSeconds": index as u64 * CLOUD_CHUNK_SECONDS,
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "temporaryDirectory": directory.to_string_lossy(),
+        "chunks": chunks,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1764,11 +1951,14 @@ mod tests {
 
     #[test]
     fn whisper_threads_leave_processors_free() {
-        assert_eq!(whisper_thread_count(1), 1);
-        assert_eq!(whisper_thread_count(2), 1);
-        assert_eq!(whisper_thread_count(4), 2);
-        assert_eq!(whisper_thread_count(8), 4);
-        assert!(whisper_thread_count(4) < 4);
+        assert_eq!(whisper_thread_count(1, "clearer"), 1);
+        assert_eq!(whisper_thread_count(2, "clearer"), 1);
+        assert_eq!(whisper_thread_count(4, "clearer"), 2);
+        assert_eq!(whisper_thread_count(8, "clearer"), 4);
+        assert!(whisper_thread_count(4, "clearer") < 4);
+        assert_eq!(whisper_thread_count(4, "faster"), 4);
+        assert_eq!(whisper_thread_count(8, "faster"), 8);
+        assert!(whisper_thread_count(8, "faster") > whisper_thread_count(8, "clearer"));
     }
 
     fn lecture() -> Target {
@@ -1839,6 +2029,10 @@ mod tests {
             wav_path: "audio.wav".into(),
             started_ms: 1,
             duration_seconds: Some(57.0 * 60.0),
+            pace: "clearer".into(),
+            language: "en".into(),
+            transcribe_started_ms: 1,
+            model: "ggml-base.en".into(),
         };
         assert!(matches!(
             plan_resume(Some(&saved), &lecture(), &snapshot, own),
@@ -1891,7 +2085,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("study notes runtime {}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        let status = super::setup_local(&root, &mut |phase, label, received, total| {
+        let status = super::setup_local(&root, "clearer", &mut |phase, label, received, total| {
             if received == 0 || total.map(|value| received >= value).unwrap_or(false) {
                 eprintln!("{phase} {label} {received}/{total:?}");
             }
@@ -1908,9 +2102,11 @@ mod tests {
             module_id: None,
             module_name: None,
             new_module_name: None,
+            pace: "clearer".into(),
+            language: "en".into(),
         };
         let transcript =
-            super::transcribe_json(&root, wav.to_str().unwrap(), &request, &mut |_, _, _| {})
+            super::transcribe_json(&root, wav.to_str().unwrap(), &request, &mut |_, _, _, _| {})
                 .unwrap();
         let text = transcript["segments"]
             .as_array()

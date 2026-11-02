@@ -10,7 +10,7 @@ import {
 } from "react"
 import { StudyError, messageOf } from "../domain/errors"
 import type { LocalRuntimeStatus, SetupProgress, TranscriptionProgress, TranscriptionTarget } from "../domain/localSpeech"
-import { forwardProgress, sameTranscriptionJob, SPEECH_MODEL, transcriptionWasReplaced } from "../domain/localSpeech"
+import { forwardProgress, sameTranscriptionJob, speechModel, speechPace, transcriptionWasReplaced, type SpeechPace } from "../domain/localSpeech"
 import { parentPath } from "../domain/paths"
 import type { ProviderId } from "../domain/types"
 import { useHost } from "../platform/host"
@@ -61,7 +61,14 @@ function mergeProgress(job: Job, progress: TranscriptionProgress): Job {
   if (progress.jobId && progress.jobId !== job.id) return job
   if (progress.phase === "reading") return { ...job, progress: { ...progress, percent: null } }
   const current = job.progress?.phase === "transcribing" ? (job.progress.percent ?? null) : null
-  return { ...job, progress: { ...progress, percent: forwardProgress(current, progress.percent) } }
+  return {
+    ...job,
+    progress: {
+      ...progress,
+      percent: forwardProgress(current, progress.percent),
+      startedMs: progress.startedMs ?? job.progress?.startedMs ?? null,
+    },
+  }
 }
 
 interface LibraryState {
@@ -80,6 +87,8 @@ interface LibraryState {
   refreshLibrary: () => Promise<void>
   chooseHome: (path: string) => Promise<void>
   setProvider: (provider: ProviderId) => Promise<void>
+  setSpeechPace: (pace: SpeechPace) => Promise<void>
+  setGroqKey: (groqApiKey: string) => Promise<void>
   addCourse: (name: string) => Promise<CourseSummary>
   startMakeNotes: (input: MakeNotesInput) => void
   dismissJob: (id: string) => void
@@ -91,12 +100,17 @@ const EMPTY_SETTINGS: Settings = {
   homeDirectory: null,
   provider: "local",
   lastMediaDirectory: null,
+  speechPace: "clearer",
+  groqApiKey: "",
+  languageCode: "en",
 }
 
-const NOT_READY: LocalRuntimeStatus = {
-  ready: false,
-  model: SPEECH_MODEL.name,
-  missing: ["ffmpeg", "ffprobe", "engine", "model", "config"],
+function notReady(pace: SpeechPace): LocalRuntimeStatus {
+  return {
+    ready: false,
+    model: speechModel(pace).name,
+    missing: ["ffmpeg", "ffprobe", "engine", "model", "config"],
+  }
 }
 
 export function LibraryProvider({ children }: { children: ReactNode }) {
@@ -130,9 +144,9 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     settingsRef.current = loaded
     setSettings(loaded)
     try {
-      setLocalStatus(await store.localStatus())
+      setLocalStatus(await store.localStatus(speechPace(loaded.speechPace)))
     } catch {
-      setLocalStatus(NOT_READY)
+      setLocalStatus(notReady(speechPace(loaded.speechPace)))
     }
     if (!loaded.homeDirectory) {
       setHomeMissing(false)
@@ -193,6 +207,31 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     [refreshCourses, store],
   )
 
+  const setSpeechPace = useCallback(
+    async (pace: SpeechPace) => {
+      const next = { ...settingsRef.current, speechPace: pace }
+      settingsRef.current = next
+      setSettings(next)
+      await saveSettings(store, next)
+      try {
+        setLocalStatus(await store.localStatus(pace))
+      } catch {
+        setLocalStatus(notReady(pace))
+      }
+    },
+    [store],
+  )
+
+  const setGroqKey = useCallback(
+    async (groqApiKey: string) => {
+      const next = { ...settingsRef.current, groqApiKey }
+      settingsRef.current = next
+      setSettings(next)
+      await saveSettings(store, next)
+    },
+    [store],
+  )
+
   const setProvider = useCallback(
     async (provider: ProviderId) => {
       const next = { ...settingsRef.current, provider }
@@ -232,7 +271,13 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
             if (saved && sameTranscriptionJob(saved, target)) {
               id = saved.id
               pipeline.id = saved.id
-              initial = { phase: saved.phase, label: saved.label, percent: saved.percent, jobId: saved.id }
+              initial = {
+                phase: saved.phase,
+                label: saved.label,
+                percent: saved.percent,
+                jobId: saved.id,
+                startedMs: saved.transcribeStartedMs || null,
+              }
             }
           } catch {
             // The banner can still show the new request.
@@ -281,6 +326,9 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
             })
           }
           await makeNotes(store, { ...input, jobId: id }, {
+            onProgress: (progress) => {
+              setJobs((current) => current.map((job) => (job.id === id ? mergeProgress(job, progress) : job)))
+            },
             onWriting: () => {
               setJobs((current) =>
                 current.map((job) =>
@@ -377,15 +425,17 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       total: null,
     })
     try {
-      const status = await host.setupLocal((progress) => setSetupProgress(progress))
+      const status = await host.setupLocal(speechPace(settingsRef.current.speechPace), (progress) =>
+        setSetupProgress(progress),
+      )
       setLocalStatus(status)
       if (!status.ready) setSetupError("Local notes are not ready yet.")
     } catch (err) {
       setSetupError(messageOf(err))
       try {
-        setLocalStatus(await store.localStatus())
+        setLocalStatus(await store.localStatus(speechPace(settingsRef.current.speechPace)))
       } catch {
-        setLocalStatus(NOT_READY)
+        setLocalStatus(notReady(speechPace(settingsRef.current.speechPace)))
       }
     } finally {
       setSetupProgress(null)
@@ -409,6 +459,8 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       refreshLibrary,
       chooseHome,
       setProvider,
+      setSpeechPace,
+      setGroqKey,
       addCourse,
       startMakeNotes,
       dismissJob,
@@ -429,6 +481,8 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       refreshLibrary,
       chooseHome,
       setProvider,
+      setSpeechPace,
+      setGroqKey,
       addCourse,
       startMakeNotes,
       dismissJob,

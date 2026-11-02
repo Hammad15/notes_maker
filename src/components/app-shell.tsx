@@ -1,10 +1,13 @@
 import { NavLink } from "react-router-dom"
-import { localJobMessage } from "../domain/localSpeech"
+import { MISSING_GROQ_KEY } from "../domain/errors"
+import { localJobMessage, speechModel, type SpeechPace } from "../domain/localSpeech"
 import { truncateMiddle } from "../domain/paths"
 import { WINDOWS_DIALOG_REQUIRED } from "../platform/dialogs"
 import { useHost } from "../platform/host"
 import { useLibrary } from "../state/library-context"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { useState } from "react"
 
 function setupPercent(received: number, total: number | null): string {
@@ -13,9 +16,12 @@ function setupPercent(received: number, total: number | null): string {
 }
 
 function ProviderSwitch() {
-  const { settings, setProvider, localStatus, setupProgress, setupError, setupLocal } = useLibrary()
+  const { settings, setProvider, setSpeechPace, setGroqKey, localStatus, setupProgress, setupError, setupLocal } =
+    useLibrary()
   const [error, setError] = useState<string | null>(null)
   const localReady = localStatus?.ready === true
+  const keyMissing = settings.groqApiKey.trim().length === 0
+  const pace = settings.speechPace
   return (
     <fieldset className="grid gap-2">
       <legend className="text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase">
@@ -43,13 +49,69 @@ function ProviderSwitch() {
           </button>
         ))}
       </div>
-      <p className="text-xs leading-relaxed text-muted-foreground">
-        {settings.provider === "local"
-          ? localReady
-            ? "On this computer. The speech model transcribes the recording, then those words become study notes."
-            : "On this computer. One button downloads the speech model and finishes setup."
-          : "Waiting for an entitlement."}
-      </p>
+      {settings.provider === "local" ? (
+        <>
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            {localReady
+              ? `On this computer, using ${speechModel(pace).name}. Those words become study notes.`
+              : "On this computer. One button downloads the speech model for the speed you choose."}
+          </p>
+          <div className="grid gap-1">
+            <p className="text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase">Speed</p>
+            <div className="grid grid-cols-2 gap-1 rounded-lg bg-muted p-1">
+              {(["faster", "clearer"] as const satisfies readonly SpeechPace[]).map((id) => (
+                <button
+                  key={id}
+                  type="button"
+                  aria-pressed={pace === id}
+                  disabled={setupProgress !== null}
+                  className={`rounded-md px-2 py-1.5 text-sm ${
+                    pace === id ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
+                  }`}
+                  onClick={() => {
+                    setError(null)
+                    void setSpeechPace(id).catch((err: unknown) => {
+                      setError(err instanceof Error ? err.message : "Could not save the speed.")
+                    })
+                  }}
+                >
+                  {id === "faster" ? "Faster" : "Clearer"}
+                </button>
+              ))}
+            </div>
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              Chosen once. Faster uses the tiny English model and more processor cores. Clearer keeps the base English
+              model and fewer cores.
+            </p>
+          </div>
+        </>
+      ) : (
+        <div className="grid gap-2">
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            Groq transcribes the recording. Llama writes the study notes. This developer setting is temporary.
+          </p>
+          <Label htmlFor="groq-api-key">Groq API key</Label>
+          <Input
+            id="groq-api-key"
+            type="password"
+            autoComplete="off"
+            spellCheck={false}
+            value={settings.groqApiKey}
+            placeholder="Paste a Groq key"
+            onChange={(event) => {
+              setError(null)
+              void setGroqKey(event.target.value).catch((err: unknown) => {
+                setError(err instanceof Error ? err.message : "Could not save the key.")
+              })
+            }}
+          />
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            {keyMissing
+              ? MISSING_GROQ_KEY
+              : "The key stays in Study Notes settings on this computer. It is not saved in the course."}
+          </p>
+        </div>
+      )}
       {settings.provider === "local" && localStatus && !localReady ? (
         <Button
           type="button"
@@ -89,12 +151,8 @@ function JobBanner() {
             aria-live="polite"
             className="rounded-lg border border-border bg-card px-4 py-3 text-sm"
           >
-            <p>
-              {job.provider === "local"
-                ? localJobMessage(job.label, job.progress)
-                : `Writing notes and PDF for ${job.label}…`}
-            </p>
-            {job.provider === "local" ? (
+            <p>{localJobMessage(job.label, job.progress)}</p>
+            {job.progress?.phase !== "writing" ? (
               <>
                 <div className="mt-2 h-1 overflow-hidden rounded-full bg-muted">
                   <div
@@ -109,7 +167,7 @@ function JobBanner() {
                   />
                 </div>
                 <p className="mt-2 text-xs text-muted-foreground">
-                  This window stays open while the speech model works.
+                  This window stays open while the recording is transcribed.
                 </p>
               </>
             ) : null}

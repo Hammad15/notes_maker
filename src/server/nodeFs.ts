@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { promisify } from "node:util"
+import { speechPace } from "../domain/localSpeech.ts"
 import { durationFromHeader } from "../domain/media.ts"
 import type { DirEntry, FileStat, MediaProbe } from "../domain/types.ts"
 import { WINDOWS_DIALOG_REQUIRED } from "../platform/dialogs.ts"
@@ -11,6 +12,7 @@ import type { FileStore } from "../platform/types.ts"
 import {
   clearTranscriptionJob,
   localRuntimeStatus,
+  prepareCloudAudio,
   readActiveTranscription,
   reconcileTranscriptionOnLaunch,
   setupLocalRuntime,
@@ -233,11 +235,17 @@ export function createNodeFileStore(appData = resolveAppDataDir(process.platform
       if (info.isDirectory()) throw new Error("That recording is not there anymore.")
       return readProbe(target, info.size, await toolPath(appData, "ffprobe"))
     },
-    localStatus() {
-      return localRuntimeStatus(appData)
+    localStatus(pace) {
+      return localRuntimeStatus(appData, speechPace(pace))
     },
-    setupLocal() {
-      return setupLocalRuntime(appData)
+    setupLocal(pace) {
+      return setupLocalRuntime(appData, speechPace(pace))
+    },
+    prepareCloudAudio(target) {
+      return prepareCloudAudio(appData, target)
+    },
+    async readBytes(target) {
+      return new Uint8Array(await fs.readFile(target))
     },
     transcribeMedia(target, request) {
       return transcribeWithRuntime(appData, target, request)
@@ -329,9 +337,15 @@ export async function dispatchDesktop(
     case Ops.probeMedia:
       return store.probeMedia(requiredString(body, "path"))
     case Ops.localStatus:
-      return store.localStatus()
+      return store.localStatus(speechPace(body.pace))
     case Ops.setupLocal:
-      return store.setupLocal()
+      return store.setupLocal(speechPace(body.pace))
+    case Ops.prepareCloudAudio:
+      return store.prepareCloudAudio(requiredString(body, "path"))
+    case Ops.readBytes: {
+      const bytes = await store.readBytes(requiredString(body, "path"))
+      return Buffer.from(bytes).toString("base64")
+    }
     case Ops.transcribeMedia:
       return store.transcribeMedia(requiredString(body, "path"), {
         jobId: optionalString(body, "jobId") ?? "",
@@ -341,6 +355,8 @@ export async function dispatchDesktop(
         moduleId: optionalString(body, "moduleId"),
         moduleName: optionalString(body, "moduleName"),
         newModuleName: optionalString(body, "newModuleName"),
+        pace: speechPace(body.pace),
+        language: optionalString(body, "language") ?? "en",
       })
     case Ops.activeTranscription:
       return store.activeTranscription()
