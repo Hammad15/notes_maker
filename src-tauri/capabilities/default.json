@@ -1,16 +1,770 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
-  "windows": ["main"],
+  "description": "Capability for the main window. Open PDF allows the real note path, including the Windows canonical \\\\?\\ form.",
+  "windows": [
+    "main"
+  ],
+  "local": true,
+  "remote": {
+    "urls": [
+      "http://127.0.0.1:43127",
+      "http://127.0.0.1:43127/*",
+      "http://localhost:43127",
+      "http://localhost:43127/*"
+    ]
+  },
   "permissions": [
     "core:default",
     "opener:default",
+    "opener:allow-open-path",
     {
       "identifier": "opener:allow-open-path",
       "allow": [
-        { "path": "**/notes/*.md" },
-        { "path": "**/notes/*.pdf" }
+        {
+          "path": "**/*.pdf"
+        },
+        {
+          "path": "**/*.md"
+        },
+        {
+          "path": "**/notes/*.pdf"
+        },
+        {
+          "path": "**/notes/*.md"
+        },
+        {
+          "path": "A:/**/*.pdf"
+        },
+        {
+          "path": "A:/**/notes/*.pdf"
+        },
+        {
+          "path": "//?/A:/**/*.pdf"
+        },
+        {
+          "path": "//?/A:/**/notes/*.pdf"
+        },
+        {
+          "path": "A:/**/*.md"
+        },
+        {
+          "path": "A:/**/notes/*.md"
+        },
+        {
+          "path": "//?/A:/**/*.md"
+        },
+        {
+          "path": "//?/A:/**/notes/*.md"
+        },
+        {
+          "path": "B:/**/*.pdf"
+        },
+        {
+          "path": "B:/**/notes/*.pdf"
+        },
+        {
+          "path": "//?/B:/**/*.pdf"
+        },
+        {
+          "path": "//?/B:/**/notes/*.pdf"
+        },
+        {
+          "path": "B:/**/*.md"
+        },
+        {
+          "path": "B:/**/notes/*.md"
+        },
+        {
+          "path": "//?/B:/**/*.md"
+        },
+        {
+          "path": "//?/B:/**/notes/*.md"
+        },
+        {
+          "path": "C:/**/*.pdf"
+        },
+        {
+          "path": "C:/**/notes/*.pdf"
+        },
+        {
+          "path": "//?/C:/**/*.pdf"
+        },
+        {
+          "path": "//?/C:/**/notes/*.pdf"
+        },
+        {
+          "path": "C:/**/*.md"
+        },
+        {
+          "path": "C:/**/notes/*.md"
+        },
+        {
+          "path": "//?/C:/**/*.md"
+        },
+        {
+          "path": "//?/C:/**/notes/*.md"
+        },
+        {
+          "path": "D:/**/*.pdf"
+        },
+        {
+          "path": "D:/**/notes/*.pdf"
+        },
+        {
+          "path": "//?/D:/**/*.pdf"
+        },
+        {
+          "path": "//?/D:/**/notes/*.pdf"
+        },
+        {
+          "path": "D:/**/*.md"
+        },
+        {
+          "path": "D:/**/notes/*.md"
+        },
+        {
+          "path": "//?/D:/**/*.md"
+        },
+        {
+          "path": "//?/D:/**/notes/*.md"
+        },
+        {
+          "path": "E:/**/*.pdf"
+        },
+        {
+          "path": "E:/**/notes/*.pdf"
+        },
+        {
+          "path": "//?/E:/**/*.pdf"
+        },
+        {
+          "path": "//?/E:/**/notes/*.pdf"
+        },
+        {
+          "path": "E:/**/*.md"
+        },
+        {
+          "path": "E:/**/notes/*.md"
+        },
+        {
+          "path": "//?/E:/**/*.md"
+        },
+        {
+          "path": "//?/E:/**/notes/*.md"
+        },
+        {
+          "path": "F:/**/*.pdf"
+        },
+        {
+          "path": "F:/**/notes/*.pdf"
+        },
+        {
+          "path": "//?/F:/**/*.pdf"
+        },
+        {
+          "path": "//?/F:/**/notes/*.pdf"
+        },
+        {
+          "path": "F:/**/*.md"
+        },
+        {
+          "path": "F:/**/notes/*.md"
+        },
+        {
+          "path": "//?/F:/**/*.md"
+        },
+        {
+          "path": "//?/F:/**/notes/*.md"
+        },
+        {
+          "path": "G:/**/*.pdf"
+        },
+        {
+          "path": "G:/**/notes/*.pdf"
+        },
+        {
+          "path": "//?/G:/**/*.pdf"
+        },
+        {
+          "path": "//?/G:/**/notes/*.pdf"
+        },
+        {
+          "path": "G:/**/*.md"
+        },
+        {
+          "path": "G:/**/notes/*.md"
+        },
+        {
+          "path": "//?/G:/**/*.md"
+        },
+        {
+          "path": "//?/G:/**/notes/*.md"
+        },
+        {
+          "path": "H:/**/*.pdf"
+        },
+        {
+          "path": "H:/**/notes/*.pdf"
+        },
+        {
+          "path": "//?/H:/**/*.pdf"
+        },
+        {
+          "path": "//?/H:/**/notes/*.pdf"
+        },
+        {
+          "path": "H:/**/*.md"
+        },
+        {
+          "path": "H:/**/notes/*.md"
+        },
+        {
+          "path": "//?/H:/**/*.md"
+        },
+        {
+          "path": "//?/H:/**/notes/*.md"
+        },
+        {
+          "path": "I:/**/*.pdf"
+        },
+        {
+          "path": "I:/**/notes/*.pdf"
+        },
+        {
+          "path": "//?/I:/**/*.pdf"
+        },
+        {
+          "path": "//?/I:/**/notes/*.pdf"
+        },
+        {
+          "path": "I:/**/*.md"
+        },
+        {
+          "path": "I:/**/notes/*.md"
+        },
+        {
+          "path": "//?/I:/**/*.md"
+        },
+        {
+          "path": "//?/I:/**/notes/*.md"
+        },
+        {
+          "path": "J:/**/*.pdf"
+        },
+        {
+          "path": "J:/**/notes/*.pdf"
+        },
+        {
+          "path": "//?/J:/**/*.pdf"
+        },
+        {
+          "path": "//?/J:/**/notes/*.pdf"
+        },
+        {
+          "path": "J:/**/*.md"
+        },
+        {
+          "path": "J:/**/notes/*.md"
+        },
+        {
+          "path": "//?/J:/**/*.md"
+        },
+        {
+          "path": "//?/J:/**/notes/*.md"
+        },
+        {
+          "path": "K:/**/*.pdf"
+        },
+        {
+          "path": "K:/**/notes/*.pdf"
+        },
+        {
+          "path": "//?/K:/**/*.pdf"
+        },
+        {
+          "path": "//?/K:/**/notes/*.pdf"
+        },
+        {
+          "path": "K:/**/*.md"
+        },
+        {
+          "path": "K:/**/notes/*.md"
+        },
+        {
+          "path": "//?/K:/**/*.md"
+        },
+        {
+          "path": "//?/K:/**/notes/*.md"
+        },
+        {
+          "path": "L:/**/*.pdf"
+        },
+        {
+          "path": "L:/**/notes/*.pdf"
+        },
+        {
+          "path": "//?/L:/**/*.pdf"
+        },
+        {
+          "path": "//?/L:/**/notes/*.pdf"
+        },
+        {
+          "path": "L:/**/*.md"
+        },
+        {
+          "path": "L:/**/notes/*.md"
+        },
+        {
+          "path": "//?/L:/**/*.md"
+        },
+        {
+          "path": "//?/L:/**/notes/*.md"
+        },
+        {
+          "path": "M:/**/*.pdf"
+        },
+        {
+          "path": "M:/**/notes/*.pdf"
+        },
+        {
+          "path": "//?/M:/**/*.pdf"
+        },
+        {
+          "path": "//?/M:/**/notes/*.pdf"
+        },
+        {
+          "path": "M:/**/*.md"
+        },
+        {
+          "path": "M:/**/notes/*.md"
+        },
+        {
+          "path": "//?/M:/**/*.md"
+        },
+        {
+          "path": "//?/M:/**/notes/*.md"
+        },
+        {
+          "path": "N:/**/*.pdf"
+        },
+        {
+          "path": "N:/**/notes/*.pdf"
+        },
+        {
+          "path": "//?/N:/**/*.pdf"
+        },
+        {
+          "path": "//?/N:/**/notes/*.pdf"
+        },
+        {
+          "path": "N:/**/*.md"
+        },
+        {
+          "path": "N:/**/notes/*.md"
+        },
+        {
+          "path": "//?/N:/**/*.md"
+        },
+        {
+          "path": "//?/N:/**/notes/*.md"
+        },
+        {
+          "path": "O:/**/*.pdf"
+        },
+        {
+          "path": "O:/**/notes/*.pdf"
+        },
+        {
+          "path": "//?/O:/**/*.pdf"
+        },
+        {
+          "path": "//?/O:/**/notes/*.pdf"
+        },
+        {
+          "path": "O:/**/*.md"
+        },
+        {
+          "path": "O:/**/notes/*.md"
+        },
+        {
+          "path": "//?/O:/**/*.md"
+        },
+        {
+          "path": "//?/O:/**/notes/*.md"
+        },
+        {
+          "path": "P:/**/*.pdf"
+        },
+        {
+          "path": "P:/**/notes/*.pdf"
+        },
+        {
+          "path": "//?/P:/**/*.pdf"
+        },
+        {
+          "path": "//?/P:/**/notes/*.pdf"
+        },
+        {
+          "path": "P:/**/*.md"
+        },
+        {
+          "path": "P:/**/notes/*.md"
+        },
+        {
+          "path": "//?/P:/**/*.md"
+        },
+        {
+          "path": "//?/P:/**/notes/*.md"
+        },
+        {
+          "path": "Q:/**/*.pdf"
+        },
+        {
+          "path": "Q:/**/notes/*.pdf"
+        },
+        {
+          "path": "//?/Q:/**/*.pdf"
+        },
+        {
+          "path": "//?/Q:/**/notes/*.pdf"
+        },
+        {
+          "path": "Q:/**/*.md"
+        },
+        {
+          "path": "Q:/**/notes/*.md"
+        },
+        {
+          "path": "//?/Q:/**/*.md"
+        },
+        {
+          "path": "//?/Q:/**/notes/*.md"
+        },
+        {
+          "path": "R:/**/*.pdf"
+        },
+        {
+          "path": "R:/**/notes/*.pdf"
+        },
+        {
+          "path": "//?/R:/**/*.pdf"
+        },
+        {
+          "path": "//?/R:/**/notes/*.pdf"
+        },
+        {
+          "path": "R:/**/*.md"
+        },
+        {
+          "path": "R:/**/notes/*.md"
+        },
+        {
+          "path": "//?/R:/**/*.md"
+        },
+        {
+          "path": "//?/R:/**/notes/*.md"
+        },
+        {
+          "path": "S:/**/*.pdf"
+        },
+        {
+          "path": "S:/**/notes/*.pdf"
+        },
+        {
+          "path": "//?/S:/**/*.pdf"
+        },
+        {
+          "path": "//?/S:/**/notes/*.pdf"
+        },
+        {
+          "path": "S:/**/*.md"
+        },
+        {
+          "path": "S:/**/notes/*.md"
+        },
+        {
+          "path": "//?/S:/**/*.md"
+        },
+        {
+          "path": "//?/S:/**/notes/*.md"
+        },
+        {
+          "path": "T:/**/*.pdf"
+        },
+        {
+          "path": "T:/**/notes/*.pdf"
+        },
+        {
+          "path": "//?/T:/**/*.pdf"
+        },
+        {
+          "path": "//?/T:/**/notes/*.pdf"
+        },
+        {
+          "path": "T:/**/*.md"
+        },
+        {
+          "path": "T:/**/notes/*.md"
+        },
+        {
+          "path": "//?/T:/**/*.md"
+        },
+        {
+          "path": "//?/T:/**/notes/*.md"
+        },
+        {
+          "path": "U:/**/*.pdf"
+        },
+        {
+          "path": "U:/**/notes/*.pdf"
+        },
+        {
+          "path": "//?/U:/**/*.pdf"
+        },
+        {
+          "path": "//?/U:/**/notes/*.pdf"
+        },
+        {
+          "path": "U:/**/*.md"
+        },
+        {
+          "path": "U:/**/notes/*.md"
+        },
+        {
+          "path": "//?/U:/**/*.md"
+        },
+        {
+          "path": "//?/U:/**/notes/*.md"
+        },
+        {
+          "path": "V:/**/*.pdf"
+        },
+        {
+          "path": "V:/**/notes/*.pdf"
+        },
+        {
+          "path": "//?/V:/**/*.pdf"
+        },
+        {
+          "path": "//?/V:/**/notes/*.pdf"
+        },
+        {
+          "path": "V:/**/*.md"
+        },
+        {
+          "path": "V:/**/notes/*.md"
+        },
+        {
+          "path": "//?/V:/**/*.md"
+        },
+        {
+          "path": "//?/V:/**/notes/*.md"
+        },
+        {
+          "path": "W:/**/*.pdf"
+        },
+        {
+          "path": "W:/**/notes/*.pdf"
+        },
+        {
+          "path": "//?/W:/**/*.pdf"
+        },
+        {
+          "path": "//?/W:/**/notes/*.pdf"
+        },
+        {
+          "path": "W:/**/*.md"
+        },
+        {
+          "path": "W:/**/notes/*.md"
+        },
+        {
+          "path": "//?/W:/**/*.md"
+        },
+        {
+          "path": "//?/W:/**/notes/*.md"
+        },
+        {
+          "path": "X:/**/*.pdf"
+        },
+        {
+          "path": "X:/**/notes/*.pdf"
+        },
+        {
+          "path": "//?/X:/**/*.pdf"
+        },
+        {
+          "path": "//?/X:/**/notes/*.pdf"
+        },
+        {
+          "path": "X:/**/*.md"
+        },
+        {
+          "path": "X:/**/notes/*.md"
+        },
+        {
+          "path": "//?/X:/**/*.md"
+        },
+        {
+          "path": "//?/X:/**/notes/*.md"
+        },
+        {
+          "path": "Y:/**/*.pdf"
+        },
+        {
+          "path": "Y:/**/notes/*.pdf"
+        },
+        {
+          "path": "//?/Y:/**/*.pdf"
+        },
+        {
+          "path": "//?/Y:/**/notes/*.pdf"
+        },
+        {
+          "path": "Y:/**/*.md"
+        },
+        {
+          "path": "Y:/**/notes/*.md"
+        },
+        {
+          "path": "//?/Y:/**/*.md"
+        },
+        {
+          "path": "//?/Y:/**/notes/*.md"
+        },
+        {
+          "path": "Z:/**/*.pdf"
+        },
+        {
+          "path": "Z:/**/notes/*.pdf"
+        },
+        {
+          "path": "//?/Z:/**/*.pdf"
+        },
+        {
+          "path": "//?/Z:/**/notes/*.pdf"
+        },
+        {
+          "path": "Z:/**/*.md"
+        },
+        {
+          "path": "Z:/**/notes/*.md"
+        },
+        {
+          "path": "//?/Z:/**/*.md"
+        },
+        {
+          "path": "//?/Z:/**/notes/*.md"
+        },
+        {
+          "path": "//?/UNC/**/*.pdf"
+        },
+        {
+          "path": "//?/UNC/**/notes/*.pdf"
+        },
+        {
+          "path": "//?/UNC/**/*.md"
+        },
+        {
+          "path": "//?/UNC/**/notes/*.md"
+        },
+        {
+          "path": "$HOME/**/*.pdf"
+        },
+        {
+          "path": "$HOME/**/notes/*.pdf"
+        },
+        {
+          "path": "$HOME/**/*.md"
+        },
+        {
+          "path": "$HOME/**/notes/*.md"
+        },
+        {
+          "path": "$DOCUMENT/**/*.pdf"
+        },
+        {
+          "path": "$DOCUMENT/**/notes/*.pdf"
+        },
+        {
+          "path": "$DOCUMENT/**/*.md"
+        },
+        {
+          "path": "$DOCUMENT/**/notes/*.md"
+        },
+        {
+          "path": "$DOWNLOAD/**/*.pdf"
+        },
+        {
+          "path": "$DOWNLOAD/**/notes/*.pdf"
+        },
+        {
+          "path": "$DOWNLOAD/**/*.md"
+        },
+        {
+          "path": "$DOWNLOAD/**/notes/*.md"
+        },
+        {
+          "path": "$DESKTOP/**/*.pdf"
+        },
+        {
+          "path": "$DESKTOP/**/notes/*.pdf"
+        },
+        {
+          "path": "$DESKTOP/**/*.md"
+        },
+        {
+          "path": "$DESKTOP/**/notes/*.md"
+        },
+        {
+          "path": "$VIDEO/**/*.pdf"
+        },
+        {
+          "path": "$VIDEO/**/notes/*.pdf"
+        },
+        {
+          "path": "$VIDEO/**/*.md"
+        },
+        {
+          "path": "$VIDEO/**/notes/*.md"
+        },
+        {
+          "path": "$AUDIO/**/*.pdf"
+        },
+        {
+          "path": "$AUDIO/**/notes/*.pdf"
+        },
+        {
+          "path": "$AUDIO/**/*.md"
+        },
+        {
+          "path": "$AUDIO/**/notes/*.md"
+        },
+        {
+          "path": "$PICTURE/**/*.pdf"
+        },
+        {
+          "path": "$PICTURE/**/notes/*.pdf"
+        },
+        {
+          "path": "$PICTURE/**/*.md"
+        },
+        {
+          "path": "$PICTURE/**/notes/*.md"
+        },
+        {
+          "path": "$PUBLIC/**/*.pdf"
+        },
+        {
+          "path": "$PUBLIC/**/notes/*.pdf"
+        },
+        {
+          "path": "$PUBLIC/**/*.md"
+        },
+        {
+          "path": "$PUBLIC/**/notes/*.md"
+        }
       ]
     },
     "dialog:default"

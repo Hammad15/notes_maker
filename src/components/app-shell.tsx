@@ -46,7 +46,7 @@ function ProviderSwitch() {
       <p className="text-xs leading-relaxed text-muted-foreground">
         {settings.provider === "local"
           ? localReady
-            ? "On this computer. The speech model transcribes the recording."
+            ? "On this computer. The speech model transcribes the recording, then those words become study notes."
             : "On this computer. One button downloads the speech model and finishes setup."
           : "Waiting for an entitlement."}
       </p>

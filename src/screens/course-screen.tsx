@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { Link, useParams } from "react-router-dom"
+import { Link, useParams, useSearchParams } from "react-router-dom"
 import { messageOf } from "../domain/errors"
 import { formatWhen } from "../domain/text"
 import { useHost } from "../platform/host"
@@ -23,7 +23,8 @@ export function CourseScreen() {
   const [course, setCourse] = useState<CourseDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [filter, setFilter] = useState<string>("all")
+  const [params, setParams] = useSearchParams()
+  const requestedModule = params.get("module")
   const [makeOpen, setMakeOpen] = useState(false)
   const [renameOpen, setRenameOpen] = useState(false)
   const [moduleOpen, setModuleOpen] = useState(false)
@@ -72,8 +73,17 @@ export function CourseScreen() {
   }
   if (!course || !settings.homeDirectory) return null
 
+  const filter =
+    requestedModule && course.modules.some((module) => module.id === requestedModule)
+      ? requestedModule
+      : "all"
   const visible = course.notes.filter((note) => filter === "all" || note.moduleId === filter)
   const activeModule = course.modules.find((module) => module.id === filter)
+
+  function showModule(moduleId: string | null) {
+    if (!moduleId) setParams({})
+    else setParams({ module: moduleId })
+  }
   const renaming = course.modules.find((module) => module.id === moduleRename) ?? null
 
   return (
@@ -105,7 +115,7 @@ export function CourseScreen() {
               <button
                 type="button"
                 className="text-sm text-muted-foreground hover:text-foreground"
-                onClick={() => setFilter("all")}
+                onClick={() => showModule(null)}
               >
                 All notes
               </button>
@@ -171,7 +181,7 @@ export function CourseScreen() {
                   <button
                     type="button"
                     className={`block text-left text-sm ${filter === module.id ? "text-primary" : "hover:text-primary"}`}
-                    onClick={() => setFilter(module.id)}
+                    onClick={() => showModule(module.id)}
                   >
                     {module.name}
                   </button>

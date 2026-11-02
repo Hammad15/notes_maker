@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { messageOf } from "../domain/errors"
 import { fileName } from "../domain/paths"
+import { formatRange } from "../domain/text"
 import type { Preset } from "../domain/types"
 import { useHost } from "../platform/host"
 import { readNote, restyleNote, undoRestyle, type NoteDocument } from "../services/library"
@@ -73,6 +74,10 @@ export function NoteScreen() {
   }
 
   const home = settings.homeDirectory
+  const backTo = note.moduleId
+    ? `/courses/${courseId}?module=${encodeURIComponent(note.moduleId)}`
+    : `/courses/${courseId}`
+  const backLabel = note.moduleName ?? note.courseName
 
   async function onRestyle(event: FormEvent) {
     event.preventDefault()
@@ -113,11 +118,8 @@ export function NoteScreen() {
 
   return (
     <div className="pb-10">
-      <Link
-        to={`/courses/${courseId}`}
-        className="text-sm text-muted-foreground hover:text-foreground"
-      >
-        {note.courseName}
+      <Link to={backTo} className="text-sm text-muted-foreground hover:text-foreground">
+        ← Back to {backLabel}
       </Link>
       <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-sm text-muted-foreground">
@@ -157,6 +159,25 @@ export function NoteScreen() {
           {note.body}
         </ReactMarkdown>
       </article>
+      {note.transcriptProduced && note.segments.some((segment) => segment.text.trim()) ? (
+        <details className="mt-10 max-w-2xl border-t border-border pt-6">
+          <summary className="cursor-pointer text-sm text-muted-foreground hover:text-foreground">
+            Transcript
+          </summary>
+          <ul className="mt-4 space-y-3">
+            {note.segments
+              .filter((segment) => segment.text.trim())
+              .map((segment, index) => (
+                <li key={`${segment.start}-${index}`} className="text-sm leading-relaxed">
+                  <span className="mr-2 font-mono text-xs text-muted-foreground">
+                    {formatRange(segment.start, segment.end)}
+                  </span>
+                  {segment.text}
+                </li>
+              ))}
+          </ul>
+        </details>
+      ) : null}
       <form
         onSubmit={(event) => void onRestyle(event)}
         className="mt-12 max-w-2xl border-t border-border pt-6"

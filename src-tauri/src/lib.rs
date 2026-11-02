@@ -655,6 +655,24 @@ fn desktop_request(app: tauri::AppHandle, request: Value) -> Result<Value, Strin
                 None => Ok(Value::Null),
             }
         }
+        "openPath" => {
+            let path = require_str(&request, "path")?;
+            let file = Path::new(path);
+            if !file.is_file() {
+                return Err("That PDF is not on this computer.".into());
+            }
+            let name = file
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("");
+            let lower = name.to_ascii_lowercase();
+            if !lower.ends_with(".pdf") && !lower.ends_with(".md") {
+                return Err("That file cannot be opened from Study Notes.".into());
+            }
+            tauri_plugin_opener::open_path(path, None::<&str>)
+                .map_err(|error| error.to_string())?;
+            Ok(Value::Null)
+        }
         "pickMedia" => {
             let mut dialog = app
                 .dialog()
@@ -758,6 +776,14 @@ mod duration_tests {
         assert!(
             source.contains("reconcile_on_launch"),
             "launch has to stop leftover whisper-cli processes"
+        );
+        assert!(
+            source.contains("\"openPath\""),
+            "Open PDF has to reach the desktop command when the plugin scope refuses the path"
+        );
+        assert!(
+            source.contains("tauri_plugin_opener::open_path"),
+            "the desktop command opens the file without the plugin IPC scope"
         );
         let transcribe = source
             .split("async fn desktop_call")

@@ -172,7 +172,9 @@ export function MakeNotesDialog({
                 Press Set up local notes in the sidebar. That downloads the speech model and finishes setup.
               </p>
             ) : (
-              <p className="text-sm text-muted-foreground">Using the speech model on this computer.</p>
+              <p className="text-sm text-muted-foreground">
+                Using the speech model on this computer. The note is the study notes.
+              </p>
             )}
             {error ? <p className="text-sm text-destructive">{error}</p> : null}
             <DialogFooter className="sm:items-center sm:justify-between">

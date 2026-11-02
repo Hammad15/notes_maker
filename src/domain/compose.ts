@@ -1,4 +1,5 @@
 import { StudyError } from "./errors"
+import { formatStudyBody, studySections, type StudySection } from "./studyNotes"
 import { formatDurationWords, formatFiledDate, formatRange } from "./text"
 import type { NoteContent, Preset, TranscriptSegment } from "./types"
 
@@ -61,11 +62,20 @@ function escapeCell(text: string): string {
   return text.replace(/\|/g, "/").replace(/\s+/g, " ").trim()
 }
 
-function tableRows(content: NoteContent): string[] {
-  return transcriptSegments(content).map(
-    (segment) =>
-      `| ${formatRange(segment.start, segment.end)} | ${escapeCell(segment.text)} |`,
-  )
+function studyBody(content: NoteContent): string {
+  return formatStudyBody(studySections(transcriptSegments(content)))
+}
+
+function studyTable(sections: StudySection[]): string[] {
+  const rows = sections
+    .filter((section) => section.level === 3 || section.bullets.length > 0)
+    .map((section) => {
+      const points = section.bullets.flatMap((bullet) => [bullet.text, ...bullet.children])
+      return `| ${escapeCell(section.title)} | ${escapeCell(points.join(" "))} |`
+    })
+    .filter((row) => !row.endsWith("|  |"))
+  if (rows.length === 0) return ["No lecture points were found in this recording."]
+  return ["| Topic | Points |", "| --- | --- |", ...rows]
 }
 
 function chapterRows(content: NoteContent): string[] {
@@ -99,50 +109,43 @@ function heading(content: NoteContent): string {
 const NOT_A_TRANSCRIPT = "These are chapter markers from the file, not a transcript."
 
 export function renderFull(content: NoteContent): string {
-  const lines = [
-    heading(content),
-    "",
-    metaLine(content),
-    "",
-    "## Summary",
-    "",
-    summarySentence(content),
-    "",
-  ]
+  const lines = [heading(content), "", metaLine(content), ""]
   if (hasTranscript(content)) {
+    lines.push(studyBody(content).trimEnd(), "")
+  } else if (content.chapters.length > 0) {
     lines.push(
-      "## Outline",
+      "## Summary",
+      "",
+      summarySentence(content),
+      "",
+      "## Chapters",
       "",
       ...outlineLines(content),
       "",
-      "## Transcript",
-      "",
-      "| Time | Notes |",
-      "| --- | --- |",
-      ...tableRows(content),
+      NOT_A_TRANSCRIPT,
       "",
     )
-  } else if (content.chapters.length > 0) {
-    lines.push("## Chapters", "", ...outlineLines(content), "", NOT_A_TRANSCRIPT, "")
   } else {
-    lines.push("## Outline", "", ...outlineLines(content), "")
+    lines.push("## Summary", "", summarySentence(content), "", "## Outline", "", ...outlineLines(content), "")
   }
   return lines.join("\n")
 }
 
 function renderConcise(content: NoteContent): string {
+  if (hasTranscript(content)) {
+    const sections = studySections(transcriptSegments(content)).filter(
+      (section) => section.bullets.length > 0 || section.level === 2,
+    )
+    const shown = sections.slice(0, 3)
+    const extra = sections.length - shown.length
+    const parts = [heading(content), "", metaLine(content), "", formatStudyBody(shown).trimEnd()]
+    if (extra > 0) parts.push("", `- ${extra} later ${extra === 1 ? "topic" : "topics"}.`)
+    return `${parts.join("\n")}\n`
+  }
   const lines = outlineLines(content)
   const shown = lines.slice(0, 5)
   const extra = lines.length - shown.length
-  const parts = [
-    heading(content),
-    "",
-    metaLine(content),
-    "",
-    summarySentence(content),
-    "",
-    ...shown,
-  ]
+  const parts = [heading(content), "", metaLine(content), "", summarySentence(content), "", ...shown]
   if (extra > 0) {
     parts.push(`- ${extra} later ${extra === 1 ? "section" : "sections"}.`)
   }
@@ -150,6 +153,9 @@ function renderConcise(content: NoteContent): string {
 }
 
 function renderBullets(content: NoteContent): string {
+  if (hasTranscript(content)) {
+    return `${heading(content)}\n\n${metaLine(content)}\n\n${studyBody(content)}`
+  }
   const items = [`- Course: ${content.courseName}`]
   if (content.moduleName) items.push(`- Module: ${content.moduleName}`)
   const duration = formatDurationWords(content.durationSeconds)
@@ -160,7 +166,17 @@ function renderBullets(content: NoteContent): string {
 }
 
 function renderParagraphs(content: NoteContent): string {
-  return `${heading(content)}\n\n${metaLine(content)}\n\n${proseBody(content)}\n`
+  if (!hasTranscript(content)) {
+    return `${heading(content)}\n\n${metaLine(content)}\n\n${proseBody(content)}\n`
+  }
+  const sections = studySections(transcriptSegments(content))
+  const prose = sections
+    .map((section) => {
+      const points = section.bullets.flatMap((bullet) => [bullet.text, ...bullet.children])
+      return points.length > 0 ? `${section.title}. ${points.join(" ")}` : section.title
+    })
+    .join("\n\n")
+  return `${heading(content)}\n\n${metaLine(content)}\n\n${prose || "No lecture points were found in this recording."}\n`
 }
 
 function renderTable(content: NoteContent): string {
@@ -171,16 +187,9 @@ function renderTable(content: NoteContent): string {
     }
     return lines.join("\n")
   }
-  return [
-    heading(content),
-    "",
-    metaLine(content),
-    "",
-    "| Time | Notes |",
-    "| --- | --- |",
-    ...tableRows(content),
-    "",
-  ].join("\n")
+  return [heading(content), "", metaLine(content), "", ...studyTable(studySections(transcriptSegments(content))), ""].join(
+    "\n",
+  )
 }
 
 function promptHeading(prompt: string): string {
@@ -191,7 +200,8 @@ function promptHeading(prompt: string): string {
 }
 
 function renderPrompt(content: NoteContent, prompt: string): string {
-  return `${heading(content)}\n\n${metaLine(content)}\n\n## ${promptHeading(prompt)}\n\n${proseBody(content)}\n`
+  const body = hasTranscript(content) ? studyBody(content) : `${proseBody(content)}\n`
+  return `${heading(content)}\n\n${metaLine(content)}\n\n## ${promptHeading(prompt)}\n\n${body}`
 }
 
 function insertFocus(markdown: string, prompt: string): string {

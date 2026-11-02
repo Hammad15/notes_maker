@@ -1,6 +1,7 @@
 import { PDFDocument } from "pdf-lib"
 import { describe, expect, it } from "vitest"
 import { renderFull, renderRestyle } from "./compose"
+import { renderTranscript, studySections } from "./studyNotes"
 import { EntitlementError, LocalSetupError, StudyError, messageOf } from "./errors"
 import { parseNoteFile, writeFrontmatter } from "./frontmatter"
 import { assertUsableFolderName, folderNameFromDisplay } from "./names"
@@ -102,19 +103,26 @@ describe("notes", () => {
   it("writes a study note and restyles it", () => {
     const full = renderFull(content)
     expect(full).toContain("# Lecture 3")
-    expect(full).toContain("Mitosis begins")
-    expect(full).toContain("| Time | Notes |")
+    expect(full).toContain("## Mitosis begins")
+    expect(full).toContain("The cell divides")
+    expect(full).not.toContain("| Time | Notes |")
+    expect(full).not.toContain("## Transcript")
+    expect(full).not.toContain("0:00")
 
     const bullets = renderRestyle(content, "bullets", "")
-    expect(bullets).toContain("- Course: Biology 101")
+    expect(bullets).toContain("Biology 101")
+    expect(bullets).toContain("- The cell divides.")
     expect(bullets).not.toContain("## Transcript")
 
     const focused = renderRestyle(content, "table", "exam review")
     expect(focused).toContain("Focus: exam review")
-    expect(focused).toContain("| 0:00–1:00 | Mitosis begins |")
+    expect(focused).toContain("| Topic | Points |")
+    expect(focused).toContain("The cell divides")
+    expect(focused).not.toContain("0:00")
 
     const prompted = renderRestyle(content, null, "Keep the sequence")
     expect(prompted).toContain("## Keep the sequence")
+    expect(prompted).toContain("The cell divides")
     expect(() => renderRestyle(content, null, "  ")).toThrow(/preset or write a prompt/)
   })
 
@@ -152,7 +160,7 @@ describe("notes", () => {
     const segments = Array.from({ length: 228 }, (_, index) => ({
       start: index * 15,
       end: index * 15 + 14,
-      text: "The lecture continues with the next point about the cell and how it divides.",
+      text: `Point ${index + 1} explains a distinct idea about how the cell divides and what to remember for the exam.`,
     }))
     const bytes = await renderPdf(
       renderFull({
@@ -165,6 +173,54 @@ describe("notes", () => {
     expect(Buffer.from(bytes).subarray(0, 5).toString()).toBe("%PDF-")
     const loaded = await PDFDocument.load(bytes)
     expect(loaded.getPageCount()).toBeGreaterThan(1)
+  })
+})
+
+describe("study notes", () => {
+  const lecture: NoteContent = {
+    ...content,
+    title: "Cell biology",
+    segments: [
+      { start: 0, end: 8, text: "Um so, today we're going to talk about cell division." },
+      { start: 8, end: 20, text: "Mitosis, mitosis is the process where the cell divides." },
+      { start: 20, end: 32, text: "Uh the cell divides. The cell divides into two daughter cells." },
+      { start: 32, end: 40, text: "[Music] na na na la la la" },
+      { start: 40, end: 55, text: "Next, photosynthesis. Plants convert light into chemical energy." },
+      { start: 55, end: 70, text: "Chlorophyll absorbs that light." },
+      { start: 70, end: 78, text: "Thank you. Thanks for watching." },
+    ],
+  }
+
+  it("turns a transcript into topics, subtopics, and nested points", () => {
+    const note = renderFull(lecture)
+    expect(note).toContain("## Cell division")
+    expect(note).toContain("### Mitosis")
+    expect(note).toContain("- Mitosis is the process where the cell divides.")
+    expect(note).toContain("  - The cell divides into two daughter cells.")
+    expect(note).toContain("### Photosynthesis")
+    expect(note).toContain("- Plants convert light into chemical energy.")
+    expect(note).toContain("  - Chlorophyll absorbs that light.")
+    expect(note.toLowerCase()).not.toContain("um ")
+    expect(note.toLowerCase()).not.toContain("na na")
+    expect(note.toLowerCase()).not.toContain("thanks for watching")
+    expect(note).not.toContain("| Time |")
+    expect(studySections(lecture.segments).some((section) => section.level === 3)).toBe(true)
+  })
+
+  it("drops vocals-only gibberish and keeps the transcript separate", () => {
+    const music: NoteContent = {
+      ...content,
+      segments: [
+        { start: 0, end: 12, text: "na na na la la la [Music]" },
+        { start: 12, end: 20, text: "Thanks for watching." },
+      ],
+    }
+    const note = renderFull(music)
+    expect(note).toContain("No lecture points were found in this recording.")
+    expect(note.toLowerCase()).not.toContain("na na")
+    expect(note).not.toContain("## Transcript")
+    expect(renderTranscript(music.segments)).toContain("na na na")
+    expect(renderTranscript(lecture.segments)).toContain("Mitosis, mitosis is")
   })
 })
 
@@ -193,6 +249,7 @@ describe("providers", () => {
       }),
     ).toThrow(LocalSetupError)
     expect(local.compose({ ...filedOnly, durationSeconds: 3420 })).not.toContain("## Transcript")
-    expect(local.compose(content)).toContain("## Transcript")
+    expect(local.compose(content)).toContain("## Mitosis begins")
+    expect(local.compose(content)).not.toContain("## Transcript")
   })
 })

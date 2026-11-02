@@ -51,7 +51,18 @@ export function createTauriHost(): Host {
     },
     openPath: async (path) => {
       const { openPath } = await import("@tauri-apps/plugin-opener")
-      await openPath(path)
+      try {
+        await openPath(path)
+      } catch (error) {
+        // The plugin refuses a canonical Windows path, or the command is missing
+        // from the window capability. The desktop command opens that same file.
+        try {
+          await tauriCall({ op: "openPath", path })
+        } catch (fallback) {
+          if (/not allowed/i.test(messageOf(error))) throw fallback
+          throw error
+        }
+      }
     },
     watchTranscription: async (onProgress) => {
       const { listen } = await import("@tauri-apps/api/event")
