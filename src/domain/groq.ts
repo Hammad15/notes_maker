@@ -9,7 +9,14 @@ export const GROQ_TRANSCRIPTIONS_URL = `${GROQ_ORIGIN}/openai/v1/audio/transcrip
 export const GROQ_CHAT_URL = `${GROQ_ORIGIN}/openai/v1/chat/completions`
 
 export const GROQ_WHISPER_MODEL = "whisper-large-v3-turbo"
-export const GROQ_NOTES_MODEL = "llama-3.3-70b-versatile"
+/**
+ * Production chat model on Groq's developer tier.
+ * `llama-3.3-70b-versatile` was shut down for this tier on 2026-08-16.
+ * Groq's model list names this id as its replacement, and the API serves it.
+ */
+export const GROQ_NOTES_MODEL = "openai/gpt-oss-120b"
+/** Moves the bar during one speech request. A finished chunk still sets the real slice. */
+export const CLOUD_WHISPER_SPEED = 10
 
 export const CLOUD_CHUNK_BYTES = 20 * 1024 * 1024
 export const CLOUD_CHUNK_SECONDS = 540
@@ -81,7 +88,8 @@ export function chatText(payload: unknown): string {
   const choices = (payload as { choices?: unknown }).choices
   if (!Array.isArray(choices) || !choices[0] || typeof choices[0] !== "object") return ""
   const message = (choices[0] as { message?: { content?: unknown } }).message
-  return typeof message?.content === "string" ? message.content.trim() : ""
+  if (typeof message?.content !== "string") return ""
+  return message.content.replace(/<think>[\s\S]*?<\/think>/gi, "").trim()
 }
 
 function groqErrorMessage(payload: unknown, key: string): string | null {
@@ -159,6 +167,8 @@ export async function completeChat(
     JSON.stringify({
       model: GROQ_NOTES_MODEL,
       temperature: 0.2,
+      reasoning_effort: "low",
+      reasoning_format: "parsed",
       messages,
     }),
     true,

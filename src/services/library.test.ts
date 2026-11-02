@@ -96,7 +96,8 @@ function groqFetch(calls: string[]): typeof fetch {
     }
     const body = JSON.parse(String(init?.body)) as { model?: string }
     expect(body.model).toBe(GROQ_NOTES_MODEL)
-    expect(body.model).not.toMatch(/gpt|whisper-1/)
+    expect(body.model).not.toBe("llama-3.3-70b-versatile")
+    expect(body.model).not.toMatch(/whisper-1/)
     return Response.json({
       choices: [
         {
@@ -242,6 +243,68 @@ describe("course files", () => {
     ).rejects.toThrow(/Set up local notes/)
     expect(await store.exists(path.join(course.path, "notes"))).toBe(false)
     expect(await store.exists(path.join(course.path, ".study"))).toBe(false)
+  })
+
+  it("keeps the transcript when Groq notes fail and does not transcribe again", async () => {
+    const home = path.join(root, "home")
+    const store = createNodeFileStore(path.join(root, "appdata"))
+    await store.mkdir(home)
+    const course = await createCourse(store, home, "ISC 102")
+    const media = path.join(root, "ISC 102 U06.mp3")
+    await writeFile(media, wav(2))
+    await saveSettings(store, {
+      homeDirectory: home,
+      provider: "cloud",
+      lastMediaDirectory: null,
+      speechPace: "clearer",
+      groqApiKey: DEV_KEY,
+      languageCode: "en",
+    })
+    let chats = 0
+    const calls: string[] = []
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push(url)
+      const auth = new Headers(init?.headers).get("authorization") ?? ""
+      if (auth !== `Bearer ${DEV_KEY}`) return Response.json({ error: { message: "unauthorized" } }, { status: 401 })
+      if (url.includes("/audio/transcriptions")) {
+        return Response.json({
+          segments: [{ start: 0, end: 4, text: "Supply and demand." }],
+        })
+      }
+      chats += 1
+      if (chats === 1) {
+        return Response.json(
+          { error: { message: "The model `llama-3.3-70b-versatile` does not exist or you do not have access to it." } },
+          { status: 400 },
+        )
+      }
+      const posted = JSON.parse(String(init?.body)) as { model?: string }
+      expect(posted.model).toBe(GROQ_NOTES_MODEL)
+      return Response.json({ choices: [{ message: { content: "## Supply\n\n- Demand meets supply." } }] })
+    })
+    const request = {
+      home,
+      courseId: course.id,
+      mediaPath: media,
+      provider: "cloud" as const,
+      moduleId: null,
+      moduleName: null,
+      newModuleName: null,
+    }
+    await expect(makeNotes(store, request)).rejects.toThrow(/llama-3\.3-70b-versatile/)
+    const transcriptDir = path.join(course.path, ".study", "transcripts")
+    const transcriptFiles = (await readdir(transcriptDir)).filter((name) => name.endsWith(".json"))
+    expect(transcriptFiles).toHaveLength(1)
+    expect(await store.readText(path.join(transcriptDir, transcriptFiles[0]))).toContain("Supply and demand.")
+    expect(await store.exists(path.join(course.path, "notes"))).toBe(false)
+    const filed = await makeNotes(store, request)
+    expect(calls.filter((url) => url.includes("/audio/transcriptions"))).toHaveLength(1)
+    expect(calls.filter((url) => url.includes("/chat/completions"))).toHaveLength(2)
+    const markdown = await store.readText(filed.markdownPath)
+    expect(markdown).toContain("Demand meets supply.")
+    expect(markdown).not.toContain("## Transcript")
+    vi.unstubAllGlobals()
   })
 
   it("refuses cloud notes without a key, even when a license file says entitled", async () => {

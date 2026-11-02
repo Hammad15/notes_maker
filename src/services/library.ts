@@ -3,6 +3,8 @@ import { renderPdf } from "../domain/pdf"
 import { parseNoteFile, writeFrontmatter, type NoteMeta } from "../domain/frontmatter"
 import { GroqKeyError, LocalSetupError, StudyError } from "../domain/errors"
 import {
+  CLOUD_CHUNK_SECONDS,
+  CLOUD_WHISPER_SPEED,
   completeChat,
   GROQ_WHISPER_MODEL,
   restyleInstruction,
@@ -12,6 +14,8 @@ import {
 } from "../domain/groq"
 import { localLanguageSupported, notesLanguage } from "../domain/language"
 import {
+  chunkTranscriptionPercent,
+  notesRunPercent,
   sameSavedRecording,
   speechPace,
   type SpeechPace,
@@ -578,11 +582,21 @@ async function findSavedTranscript(
   return best ? { transcript: best.transcript, note: best.note } : null
 }
 
+function chunkBudgetMs(index: number, chunkCount: number, durationSeconds: number | null): number {
+  let seconds = CLOUD_CHUNK_SECONDS
+  if (chunkCount <= 1) seconds = durationSeconds && durationSeconds > 0 ? durationSeconds : 60
+  else if (index === chunkCount - 1 && durationSeconds != null && durationSeconds > index * CLOUD_CHUNK_SECONDS) {
+    seconds = durationSeconds - index * CLOUD_CHUNK_SECONDS
+  }
+  return Math.max(1000, Math.round((seconds * 1000) / CLOUD_WHISPER_SPEED))
+}
+
 async function transcribeWithGroq(
   store: FileStore,
   mediaPath: string,
   key: string,
   languageCode: string,
+  durationSeconds: number | null,
   onProgress?: (progress: TranscriptionProgress) => void,
 ): Promise<TranscriptSegment[]> {
   const prepared: PreparedAudio = await store.prepareCloudAudio(mediaPath)
@@ -593,22 +607,32 @@ async function transcribeWithGroq(
     const chunks = prepared.chunks
     if (chunks.length === 0) throw new StudyError("Could not prepare that recording.", "MEDIA")
     for (let index = 0; index < chunks.length; index += 1) {
-      onProgress?.({
-        phase: "transcribing",
-        label: "Transcribing the recording",
-        percent: chunks.length === 1 ? null : Math.round((index / chunks.length) * 100),
-        startedMs,
-      })
-      const chunk = chunks[index]
-      const bytes = await store.readBytes(chunk.path)
-      const filename = chunk.path.split(/[\\/]/).pop() || "audio.wav"
-      segments.push(...(await transcribeChunk(key, bytes, filename, language, chunk.startSeconds)))
-      onProgress?.({
-        phase: "transcribing",
-        label: "Transcribing the recording",
-        percent: Math.round(((index + 1) / chunks.length) * 100),
-        startedMs,
-      })
+      const budgetMs = chunkBudgetMs(index, chunks.length, durationSeconds)
+      const chunkStarted = Date.now()
+      const publish = (elapsedMs: number) => {
+        onProgress?.({
+          phase: "transcribing",
+          label: "Transcribing the recording",
+          percent: chunkTranscriptionPercent(index, chunks.length, elapsedMs, budgetMs),
+          startedMs,
+        })
+      }
+      publish(0)
+      const timer = setInterval(() => publish(Date.now() - chunkStarted), 1000)
+      try {
+        const chunk = chunks[index]
+        const bytes = await store.readBytes(chunk.path)
+        const filename = chunk.path.split(/[\\/]/).pop() || "audio.wav"
+        segments.push(...(await transcribeChunk(key, bytes, filename, language, chunk.startSeconds)))
+        onProgress?.({
+          phase: "transcribing",
+          label: "Transcribing the recording",
+          percent: Math.round(((index + 1) / chunks.length) * 100),
+          startedMs,
+        })
+      } finally {
+        clearInterval(timer)
+      }
     }
   } finally {
     for (const chunk of prepared.chunks) {
@@ -672,7 +696,14 @@ export async function makeNotes(
     transcript = saved.transcript
     existingNote = saved.note
   } else if (input.provider === "cloud") {
-    const segments = await transcribeWithGroq(store, input.mediaPath, groqKey, language.code, hooks?.onProgress)
+    const segments = await transcribeWithGroq(
+      store,
+      input.mediaPath,
+      groqKey,
+      language.code,
+      probe.durationSeconds,
+      hooks?.onProgress,
+    )
     transcript = {
       noteId: "",
       provider: "cloud",
@@ -740,9 +771,42 @@ export async function makeNotes(
     transcript.chapters,
     transcript.transcribed,
   )
-  const body =
-    input.provider === "cloud" ? await notesFromGroq(groqKey, language.code, content) : renderFull(content)
   const noteId = existingNote?.id || transcript.noteId || crypto.randomUUID()
+  const study = joinPath(course.path, ".study")
+  if (!existingNote) {
+    await store.mkdir(joinPath(study, "transcripts"))
+    await store.mkdir(joinPath(study, "sources"))
+    await store.mkdir(joinPath(study, "history"))
+    await store.setHidden(study)
+    const storedTranscript: Transcript = { ...transcript, noteId }
+    await store.writeText(
+      joinPath(study, "transcripts", `${noteId}.json`),
+      `${JSON.stringify(storedTranscript, null, 2)}\n`,
+    )
+    const source: SourceRecord = {
+      noteId,
+      mediaPath: input.mediaPath,
+      courseId: course.id,
+      moduleId,
+    }
+    await store.writeText(joinPath(study, "sources", `${noteId}.json`), `${JSON.stringify(source, null, 2)}\n`)
+  }
+  const notesStarted = Date.now()
+  const afterTranscription = saved == null
+  const notesTimer = setInterval(() => {
+    hooks?.onProgress?.({
+      phase: "writing",
+      label: "Writing the notes and PDF",
+      percent: notesRunPercent(Date.now() - notesStarted, afterTranscription),
+      jobId: input.jobId,
+    })
+  }, 1000)
+  let body: string
+  try {
+    body = input.provider === "cloud" ? await notesFromGroq(groqKey, language.code, content) : renderFull(content)
+  } finally {
+    clearInterval(notesTimer)
+  }
   const meta: NoteMeta = {
     id: noteId,
     title: content.title,
@@ -768,24 +832,7 @@ export async function makeNotes(
   const stem = await uniqueFileStem(store, notesDir, stemBase)
   const markdownPath = joinPath(notesDir, `${stem}.md`)
   const pdfPath = joinPath(notesDir, `${stem}.pdf`)
-  const study = joinPath(course.path, ".study")
   await store.mkdir(notesDir)
-  await store.mkdir(joinPath(study, "transcripts"))
-  await store.mkdir(joinPath(study, "sources"))
-  await store.mkdir(joinPath(study, "history"))
-  await store.setHidden(study)
-  const storedTranscript: Transcript = { ...transcript, noteId }
-  await store.writeText(
-    joinPath(study, "transcripts", `${noteId}.json`),
-    `${JSON.stringify(storedTranscript, null, 2)}\n`,
-  )
-  const source: SourceRecord = {
-    noteId,
-    mediaPath: input.mediaPath,
-    courseId: course.id,
-    moduleId,
-  }
-  await store.writeText(joinPath(study, "sources", `${noteId}.json`), `${JSON.stringify(source, null, 2)}\n`)
   await store.writeText(markdownPath, writeFrontmatter(meta, body))
   await store.writeBytes(pdfPath, await renderPdf(body))
   await touchCourse(store, course, updatedAt)

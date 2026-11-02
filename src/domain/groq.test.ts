@@ -22,9 +22,10 @@ describe("Groq speech and notes", () => {
     expect(GROQ_TRANSCRIPTIONS_URL).not.toContain("api.openai.com")
     expect(GROQ_CHAT_URL).not.toContain("api.openai.com")
     expect(GROQ_WHISPER_MODEL).toBe("whisper-large-v3-turbo")
-    expect(GROQ_NOTES_MODEL).toBe("llama-3.3-70b-versatile")
-    expect(GROQ_WHISPER_MODEL).not.toMatch(/gpt|whisper-1/)
-    expect(GROQ_NOTES_MODEL).not.toMatch(/gpt|whisper-1/)
+    expect(GROQ_NOTES_MODEL).toBe("openai/gpt-oss-120b")
+    expect(GROQ_NOTES_MODEL).not.toBe("llama-3.3-70b-versatile")
+    expect(GROQ_WHISPER_MODEL).not.toMatch(/whisper-1/)
+    expect(GROQ_NOTES_MODEL).not.toMatch(/whisper-1/)
   })
 
   it("shifts segment times and names the notes language", () => {
@@ -77,6 +78,9 @@ describe("Groq speech and notes", () => {
 
   it("reads the chat text", () => {
     expect(chatText({ choices: [{ message: { content: "  ## Cells\n" } }] })).toBe("## Cells")
+    expect(
+      chatText({ choices: [{ message: { content: "<think>draft</think>\n## Cells" } }] }),
+    ).toBe("## Cells")
     expect(() => {
       throw new StudyError("Cloud notes use Groq.", "GROQ")
     }).toThrow(StudyError)

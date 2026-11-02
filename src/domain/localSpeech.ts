@@ -200,6 +200,50 @@ export function sameTranscriptionJob(a: TranscriptionTarget, b: TranscriptionTar
   return aName.length > 0 && aName === bName
 }
 
+/** Transcription uses 0–90. Writing the notes uses 90–99, so 100 is only the finished file. */
+export const TRANSCRIPTION_PERCENT_END = 90
+
+export function scaleTranscriptionPercent(percent: number | null | undefined): number | null {
+  if (percent == null || !Number.isFinite(percent)) return null
+  const clamped = Math.min(100, Math.max(0, percent))
+  return Math.round((clamped / 100) * TRANSCRIPTION_PERCENT_END)
+}
+
+/**
+ * Raw 0–100 while a speech chunk is still running.
+ * The value stays inside this chunk's slice and does not reach the slice end early.
+ */
+export function chunkTranscriptionPercent(
+  doneChunks: number,
+  chunkCount: number,
+  elapsedMs: number,
+  budgetMs: number,
+): number {
+  if (chunkCount <= 0) return 0
+  const start = (doneChunks / chunkCount) * 100
+  const end = ((doneChunks + 1) / chunkCount) * 100
+  const fraction = Math.min(0.95, Math.max(0, elapsedMs / Math.max(1, budgetMs)))
+  return Math.max(0, Math.min(99, Math.round(start + (end - start) * fraction)))
+}
+
+/** Overall percent while the notes request is in flight. */
+export function notesRunPercent(elapsedMs: number, afterTranscription: boolean): number {
+  const budget = 20_000
+  const elapsed = Math.max(0, elapsedMs)
+  if (!afterTranscription) {
+    if (elapsed < 1000) return 0
+    return Math.min(95, Math.max(1, Math.round((elapsed / budget) * 95)))
+  }
+  return Math.min(99, TRANSCRIPTION_PERCENT_END + Math.round((elapsed / budget) * 9))
+}
+
+/** The bar may move only when both the percent and the time remaining are known. */
+export function barPercent(progress?: TranscriptionProgress | null, now = Date.now()): number | null {
+  if (progress?.percent == null) return null
+  if (remainingSeconds(progress.startedMs, progress.percent, now) == null) return null
+  return progress.percent
+}
+
 /** Keep the higher percent. Progress from the one running process must not go backward. */
 export function forwardProgress(current: number | null, next: number | null): number | null {
   if (next == null || !Number.isFinite(next)) return current
@@ -301,15 +345,18 @@ export function parseSavedTranscription(raw: string): SavedTranscription | null 
   }
 }
 
-export function localJobMessage(fileLabel: string, progress?: TranscriptionProgress | null): string {
+export function localJobMessage(
+  fileLabel: string,
+  progress?: TranscriptionProgress | null,
+  now = Date.now(),
+): string {
+  const measured = barPercent(progress, now)
+  const remaining = measured == null ? null : remainingSeconds(progress?.startedMs, measured, now)
+  const suffix =
+    measured == null || remaining == null ? "" : ` ${measured}% · ${formatRemaining(remaining)}`
   if (progress?.phase === "reading") return `Reading ${fileLabel}…`
-  if (progress?.phase === "writing") return `Writing the notes and PDF for ${fileLabel}…`
-  if (progress?.phase === "transcribing" && progress.percent != null) {
-    const remaining = remainingSeconds(progress.startedMs, progress.percent)
-    const time = remaining == null ? "" : ` · ${formatRemaining(remaining)}`
-    return `Transcribing ${fileLabel}… ${progress.percent}%${time}`
-  }
-  return `Transcribing ${fileLabel}…`
+  if (progress?.phase === "writing") return `Writing the notes and PDF for ${fileLabel}…${suffix}`
+  return `Transcribing ${fileLabel}…${suffix}`
 }
 
 export function cleanSpokenText(text: string): string {

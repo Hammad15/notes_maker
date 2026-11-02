@@ -5,7 +5,11 @@ import {
   formatRemaining,
   localJobMessage,
   parseWhisperJson,
+  barPercent,
+  chunkTranscriptionPercent,
+  notesRunPercent,
   remainingSeconds,
+  scaleTranscriptionPercent,
   sameSavedRecording,
   SPEECH_MODEL,
   speechModel,
@@ -118,10 +122,38 @@ describe("transcription stays usable", () => {
     )
     expect(
       localJobMessage("ISC 102 U01.mp3", { phase: "transcribing", label: "Transcribing the recording", percent: 40 }),
-    ).toBe("Transcribing ISC 102 U01.mp3… 40%")
+    ).toBe("Transcribing ISC 102 U01.mp3…")
+    expect(
+      barPercent({ phase: "transcribing", label: "Transcribing the recording", percent: 40 }),
+    ).toBeNull()
     expect(
       localJobMessage("ISC 102 U01.mp3", { phase: "writing", label: "Writing the notes and PDF", percent: null }),
     ).toBe("Writing the notes and PDF for ISC 102 U01.mp3…")
+    const writingStarted = Date.now() - 60_000
+    expect(
+      localJobMessage("ISC 102 U01.mp3", {
+        phase: "writing",
+        label: "Writing the notes and PDF",
+        percent: 92,
+        startedMs: writingStarted,
+      }),
+    ).toBe("Writing the notes and PDF for ISC 102 U01.mp3… 92% · less than a minute left")
+    expect(
+      barPercent({
+        phase: "writing",
+        label: "Writing the notes and PDF",
+        percent: 92,
+        startedMs: writingStarted,
+      }),
+    ).toBe(92)
+    expect(scaleTranscriptionPercent(40)).toBe(36)
+    expect(scaleTranscriptionPercent(100)).toBe(90)
+    expect(chunkTranscriptionPercent(0, 1, 0, 30_000)).toBe(0)
+    expect(chunkTranscriptionPercent(0, 1, 3_000, 30_000)).toBe(10)
+    expect(chunkTranscriptionPercent(0, 1, 120_000, 30_000)).toBeLessThan(100)
+    expect(notesRunPercent(0, false)).toBe(0)
+    expect(notesRunPercent(1_000, false)).toBe(5)
+    expect(notesRunPercent(0, true)).toBe(90)
     const started = 1_700_000_000_000
     expect(remainingSeconds(started, 25, started + 60_000)).toBe(180)
     expect(remainingSeconds(started, 0, started + 60_000)).toBeNull()

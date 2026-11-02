@@ -1,6 +1,6 @@
 import { NavLink } from "react-router-dom"
 import { MISSING_GROQ_KEY } from "../domain/errors"
-import { localJobMessage, speechModel, type SpeechPace } from "../domain/localSpeech"
+import { barPercent, localJobMessage, speechModel, type SpeechPace } from "../domain/localSpeech"
 import { truncateMiddle } from "../domain/paths"
 import { WINDOWS_DIALOG_REQUIRED } from "../platform/dialogs"
 import { useHost } from "../platform/host"
@@ -88,7 +88,7 @@ function ProviderSwitch() {
       ) : (
         <div className="grid gap-2">
           <p className="text-xs leading-relaxed text-muted-foreground">
-            Groq transcribes the recording. Llama writes the study notes. This developer setting is temporary.
+            Groq transcribes the recording and writes the study notes. This developer setting is temporary.
           </p>
           <Label htmlFor="groq-api-key">Groq API key</Label>
           <Input
@@ -152,25 +152,15 @@ function JobBanner() {
             className="rounded-lg border border-border bg-card px-4 py-3 text-sm"
           >
             <p>{localJobMessage(job.label, job.progress)}</p>
-            {job.progress?.phase !== "writing" ? (
-              <>
-                <div className="mt-2 h-1 overflow-hidden rounded-full bg-muted">
-                  <div
-                    className={`h-full bg-primary ${
-                      job.progress?.percent == null ? "w-1/3 animate-pulse" : ""
-                    }`}
-                    style={
-                      job.progress?.percent == null
-                        ? undefined
-                        : { width: `${Math.min(100, Math.max(0, job.progress.percent))}%` }
-                    }
-                  />
-                </div>
-                <p className="mt-2 text-xs text-muted-foreground">
-                  This window stays open while the recording is transcribed.
-                </p>
-              </>
-            ) : null}
+            <div className="mt-2 h-1 overflow-hidden rounded-full bg-muted">
+              <div
+                className="h-full bg-primary"
+                style={{ width: `${barPercent(job.progress) ?? 0}%` }}
+              />
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              This window stays open until the notes and PDF are saved.
+            </p>
           </div>
         ) : (
           <div

@@ -166,7 +166,7 @@ export function MakeNotesDialog({
             {settings.provider === "cloud" ? (
               <p className="rounded-lg bg-muted px-3 py-2 text-sm leading-relaxed text-muted-foreground">
                 {settings.groqApiKey.trim()
-                  ? "Groq transcribes this recording. Llama writes the study notes."
+                  ? "Groq transcribes this recording and writes the study notes."
                   : `${MISSING_GROQ_KEY} Paste it under Cloud in the sidebar. Local notes still work.`}
               </p>
             ) : localStatus && !localStatus.ready ? (

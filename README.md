@@ -4,13 +4,13 @@ Desktop app for one student on a computer. Pick a home folder, create a course, 
 
 This build is the course library and Make Notes. The theme is dark. There is no login and no payment screen.
 
-Press **Set up local notes** once in the sidebar. That button downloads the speech model for the speed you chose, the speech engine, and ffmpeg and ffprobe when those programs are missing. Local notes do not ask for an API key. After setup finishes, Make Notes transcribes the recording and writes Markdown plus a PDF. While it transcribes, the window shows a percent and an estimate of the time remaining.
+Press **Set up local notes** once in the sidebar. That button downloads the speech model for the speed you chose, the speech engine, and ffmpeg and ffprobe when those programs are missing. Local notes do not ask for an API key. After setup finishes, Make Notes transcribes the recording and writes Markdown plus a PDF. The window shows a percent and an estimate of the time remaining for the whole run, including writing the notes after transcription. The bar stays empty until both of those numbers are on screen.
 
 **Speed** is chosen once, under Local. Faster uses the tiny English model and every processor core. Clearer uses the base English model and half the cores. Switching speed shows setup again only when that model file is missing. Both model files can sit next to each other.
 
 If a transcript already exists for the same recording and the same course or module, Make Notes does not run speech recognition again. It rewrites the study notes from that saved transcript. The raw transcript stays in the hidden `.study` folder. The Markdown note and the PDF are study notes.
 
-Cloud uses Groq. Choose **Cloud** in the sidebar and paste a key in the password field labeled **Groq API key**. That field is a temporary developer setting. The key is stored in Study Notes settings on this computer, not in the course folder. This build reads the key from that one setting. A later build can supply it from the environment or a provisioned secret instead of asking for it. That provisioning is not in this build. Without a key, Cloud says the Groq API key is missing. Local notes still work. Notes in this build are English. The language is a setting so another language can be added later.
+Cloud uses Groq. Speech is `whisper-large-v3-turbo`. Study notes are written with `openai/gpt-oss-120b`, the production model Groq serves in place of `llama-3.3-70b-versatile`. Choose **Cloud** in the sidebar and paste a key in the password field labeled **Groq API key**. That field is a temporary developer setting. The key is stored in Study Notes settings on this computer, not in the course folder. This build reads the key from that one setting. A later build can supply it from the environment or a provisioned secret instead of asking for it. That provisioning is not in this build. Without a key, Cloud says the Groq API key is missing. Local notes still work. Notes in this build are English. The language is a setting so another language can be added later.
 
 ## Run on Windows
 

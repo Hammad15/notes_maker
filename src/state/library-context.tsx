@@ -10,7 +10,15 @@ import {
 } from "react"
 import { StudyError, messageOf } from "../domain/errors"
 import type { LocalRuntimeStatus, SetupProgress, TranscriptionProgress, TranscriptionTarget } from "../domain/localSpeech"
-import { forwardProgress, sameTranscriptionJob, speechModel, speechPace, transcriptionWasReplaced, type SpeechPace } from "../domain/localSpeech"
+import {
+  forwardProgress,
+  sameTranscriptionJob,
+  scaleTranscriptionPercent,
+  speechModel,
+  speechPace,
+  transcriptionWasReplaced,
+  type SpeechPace,
+} from "../domain/localSpeech"
 import { parentPath } from "../domain/paths"
 import type { ProviderId } from "../domain/types"
 import { useHost } from "../platform/host"
@@ -57,15 +65,26 @@ function targetOf(input: MakeNotesInput): TranscriptionTarget {
 }
 
 function mergeProgress(job: Job, progress: TranscriptionProgress): Job {
-  if (job.progress?.phase === "writing") return job
   if (progress.jobId && progress.jobId !== job.id) return job
-  if (progress.phase === "reading") return { ...job, progress: { ...progress, percent: null } }
-  const current = job.progress?.phase === "transcribing" ? (job.progress.percent ?? null) : null
+  if (job.progress?.phase === "writing" && progress.phase !== "writing") return job
+  if (progress.phase === "reading") {
+    return {
+      ...job,
+      progress: {
+        ...progress,
+        percent: null,
+        startedMs: progress.startedMs ?? job.progress?.startedMs ?? null,
+      },
+    }
+  }
+  const current = job.progress?.percent ?? null
+  const incoming =
+    progress.phase === "writing" ? progress.percent : scaleTranscriptionPercent(progress.percent)
   return {
     ...job,
     progress: {
       ...progress,
-      percent: forwardProgress(current, progress.percent),
+      percent: forwardProgress(current, incoming),
       startedMs: progress.startedMs ?? job.progress?.startedMs ?? null,
     },
   }
@@ -331,18 +350,21 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
             },
             onWriting: () => {
               setJobs((current) =>
-                current.map((job) =>
-                  job.id === id
-                    ? {
-                        ...job,
-                        progress: {
-                          phase: "writing",
-                          label: "Writing the notes and PDF",
-                          percent: null,
-                        },
-                      }
-                    : job,
-                ),
+                current.map((job) => {
+                  if (job.id !== id) return job
+                  const previous = job.progress?.percent ?? null
+                  const continued = previous != null && previous > 0
+                  return {
+                    ...job,
+                    progress: {
+                      phase: "writing",
+                      label: "Writing the notes and PDF",
+                      percent: continued ? Math.min(99, Math.max(previous, 90)) : null,
+                      startedMs: job.progress?.startedMs ?? Date.now(),
+                      jobId: id,
+                    },
+                  }
+                }),
               )
             },
           })
