@@ -66,7 +66,7 @@ export function InlineName({
         autoFocus
         value={draft}
         aria-label={label}
-        className={`name-edit w-full bg-transparent outline-none ${className}`}
+        className={`name-edit w-full ${className}`}
         onChange={(event) => {
           setDraft(event.target.value)
           setError(null)

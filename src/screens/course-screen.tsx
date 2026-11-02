@@ -226,7 +226,7 @@ function NoteList({
           <li key={note.id} className="flex items-center gap-3">
             <Link
               to={`/courses/${courseId}/notes/${note.id}`}
-              className="group block min-w-0 flex-1 py-4 hover:bg-accent/40"
+              className="group block min-w-0 flex-1 py-4"
             >
               <span className="block font-serif text-xl group-hover:text-primary">{title}</span>
             </Link>
