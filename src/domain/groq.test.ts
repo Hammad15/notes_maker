@@ -73,9 +73,19 @@ describe("Groq speech and notes", () => {
 
     const refused: typeof fetch = async () =>
       new Response(JSON.stringify({ error: { message: `bad ${key}` } }), { status: 400 })
-    await expect(completeChat(key, [{ role: "user", content: "notes" }], refused)).rejects.toThrow(
-      /Groq refused the request \(400\)/,
-    )
+    try {
+      await completeChat(key, [{ role: "user", content: "The lecture says Hijrah in 622." }], refused)
+      throw new Error("expected Groq to refuse")
+    } catch (error) {
+      expect(error).toBeInstanceOf(StudyError)
+      const failure = error as StudyError
+      expect(failure.message).toBe("Groq refused the request (400).")
+      expect(failure.detail).toContain(`model: ${GROQ_NOTES_MODEL}`)
+      expect(failure.detail).toContain("status: 400")
+      expect(failure.detail).toContain("body:")
+      expect(failure.detail).not.toContain(key)
+      expect(failure.detail).not.toContain("Hijrah")
+    }
     const denied: typeof fetch = async () => new Response("{}", { status: 401 })
     await expect(transcribeChunk(key, new Uint8Array([1]), "clip.wav", notesLanguage("en"), 0, denied)).rejects.toThrow(
       "Groq refused that API key.",
@@ -118,13 +128,61 @@ describe("Groq speech and notes", () => {
     )
   })
 
-  it("reads the chat text", () => {
+  it("reads the chat text and keeps notes Groq placed beside an empty content field", () => {
     expect(chatText({ choices: [{ message: { content: "  ## Cells\n" } }] })).toBe("## Cells")
     expect(
       chatText({ choices: [{ message: { content: "<think>draft</think>\n## Cells" } }] }),
     ).toBe("## Cells")
+    expect(
+      chatText({
+        choices: [{ message: { content: [{ type: "text", text: "## Cells\n\n- Mitosis." }] } }],
+      }),
+    ).toBe("## Cells\n\n- Mitosis.")
+    expect(
+      chatText({
+        choices: [
+          {
+            message: {
+              content: "",
+              reasoning: "The speech covers cell division.\n\n## Cells\n\n- Mitosis splits one cell.",
+            },
+          },
+        ],
+      }),
+    ).toBe("## Cells\n\n- Mitosis splits one cell.")
+    expect(chatText({ choices: [{ message: { content: "", reasoning: "Nothing to add." } }] })).toBe("")
     expect(() => {
       throw new StudyError("Cloud notes use Groq.", "GROQ")
     }).toThrow(StudyError)
+  })
+
+  it("logs an empty study-notes reply with the model, status, and body", async () => {
+    const key = "gsk_secret_value"
+    const fetchImpl: typeof fetch = async () =>
+      Response.json({
+        model: GROQ_NOTES_MODEL,
+        choices: [{ message: { content: null, reasoning: "This slice has no heading." } }],
+      })
+    await expect(
+      completeChat(key, [{ role: "user", content: "Transcript for this section:\n[00:00] The year 622 was spoken." }], fetchImpl),
+    ).rejects.toMatchObject({
+      message: "Groq did not return study notes.",
+      code: "NOTES",
+    })
+    try {
+      await completeChat(
+        key,
+        [{ role: "user", content: "Transcript for this section:\n[00:00] The year 622 was spoken." }],
+        fetchImpl,
+      )
+    } catch (error) {
+      expect(error).toBeInstanceOf(StudyError)
+      const detail = (error as StudyError).detail ?? ""
+      expect(detail).toContain(`model: ${GROQ_NOTES_MODEL}`)
+      expect(detail).toContain("status: 200")
+      expect(detail).toContain("This slice has no heading.")
+      expect(detail).not.toContain(key)
+      expect(detail).not.toContain("The year 622 was spoken")
+    }
   })
 })

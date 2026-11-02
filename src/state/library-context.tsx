@@ -19,6 +19,7 @@ import {
   transcriptionWasReplaced,
   type SpeechPace,
 } from "../domain/localSpeech"
+import { recordMakeNotesFailure } from "../domain/notesLog"
 import { parentPath } from "../domain/paths"
 import type { ProviderId } from "../domain/types"
 import { useHost } from "../platform/host"
@@ -374,6 +375,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
             setJobs((current) => current.filter((job) => job.id !== id))
             return
           }
+          await recordMakeNotesFailure(store, label, err)
           setJobs((current) =>
             current.map((job) =>
               job.id === id ? { ...job, status: "error", error: messageOf(err) } : job,

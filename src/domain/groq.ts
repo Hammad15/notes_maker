@@ -84,13 +84,57 @@ export function parseGroqSegments(payload: unknown, offsetSeconds = 0): Transcri
   return segments
 }
 
+function textOf(value: unknown): string {
+  if (typeof value === "string") return value
+  if (!Array.isArray(value)) return ""
+  return value
+    .map((part) => {
+      if (typeof part === "string") return part
+      if (part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string") {
+        return (part as { text: string }).text
+      }
+      return ""
+    })
+    .join("")
+}
+
+function stripThink(text: string): string {
+  return text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim()
+}
+
+/** The study notes or outline Groq returned, including a parsed reasoning field that holds them. */
 export function chatText(payload: unknown): string {
   if (!payload || typeof payload !== "object") return ""
   const choices = (payload as { choices?: unknown }).choices
   if (!Array.isArray(choices) || !choices[0] || typeof choices[0] !== "object") return ""
-  const message = (choices[0] as { message?: { content?: unknown } }).message
-  if (typeof message?.content !== "string") return ""
-  return message.content.replace(/<think>[\s\S]*?<\/think>/gi, "").trim()
+  const message = (choices[0] as { message?: unknown }).message
+  if (!message || typeof message !== "object") return ""
+  const record = message as { content?: unknown; reasoning?: unknown; reasoning_content?: unknown }
+  const content = stripThink(textOf(record.content))
+  if (content) return content
+  const reasoning = stripThink(textOf(record.reasoning ?? record.reasoning_content))
+  const heading = reasoning.search(/^##\s+\S/m)
+  if (heading >= 0) return reasoning.slice(heading).trim()
+  if (/"sections"\s*:/.test(reasoning)) return reasoning
+  return ""
+}
+
+const LOG_BODY_LIMIT = 8000
+
+export function redactLogText(text: string, secret = ""): string {
+  let out = text
+  if (secret) out = out.split(secret).join("[redacted]")
+  return out
+    .replace(/\bBearer\s+\S+/gi, "Bearer [redacted]")
+    .replace(/\bgsk_[A-Za-z0-9_-]+\b/g, "[redacted]")
+}
+
+/** Model, HTTP status, and response body for a Groq failure. The request is not included. */
+export function groqCallDetail(model: string, status: number | null, body: string, secret = ""): string {
+  const redacted = redactLogText(body, secret).trim().slice(0, LOG_BODY_LIMIT)
+  return [`model: ${model}`, `status: ${status == null ? "none" : String(status)}`, `body: ${redacted || "(empty)"}`].join(
+    "\n",
+  )
 }
 
 function groqErrorMessage(payload: unknown, key: string): string | null {
@@ -127,13 +171,20 @@ function wait(ms: number): Promise<void> {
   })
 }
 
+interface GroqHttpResult {
+  status: number
+  raw: string
+  payload: unknown
+}
+
 async function groqPost(
   url: string,
   key: string,
   body: BodyInit,
   jsonBody: boolean,
+  model: string,
   fetchImpl: typeof fetch,
-): Promise<unknown> {
+): Promise<GroqHttpResult> {
   const host = new URL(url).host
   if (host !== "api.groq.com") {
     throw new StudyError("Cloud notes use Groq.", "GROQ")
@@ -150,12 +201,18 @@ async function groqPost(
         body,
       })
     } catch {
-      throw new StudyError("Groq could not be reached.", "GROQ")
+      throw new StudyError("Groq could not be reached.", "GROQ", groqCallDetail(model, null, "", key))
     }
-    const payload = await response.json().catch(() => null)
-    if (response.ok) return payload
+    const raw = await response.text()
+    let payload: unknown = null
+    try {
+      payload = raw ? JSON.parse(raw) : null
+    } catch {
+      payload = null
+    }
+    if (response.ok) return { status: response.status, raw, payload }
     if (response.status === 401 || response.status === 403) {
-      throw new StudyError("Groq refused that API key.", "GROQ")
+      throw new StudyError("Groq refused that API key.", "GROQ", groqCallDetail(model, response.status, raw, key))
     }
     const detail = groqErrorMessage(payload, key)
     const tooLarge = /request too large/i.test(detail ?? "")
@@ -163,9 +220,10 @@ async function groqPost(
       await wait(retryWaitMs(detail, response))
       continue
     }
-    throw new StudyError(publicGroqMessage(detail ?? "") || `Groq refused the request (${response.status}).`, "GROQ")
+    const message = publicGroqMessage(detail ?? "") || `Groq refused the request (${response.status}).`
+    throw new StudyError(message, "GROQ", groqCallDetail(model, response.status, raw, key))
   }
-  throw new StudyError("Groq refused the request.", "GROQ")
+  throw new StudyError("Groq refused the request.", "GROQ", groqCallDetail(model, null, "", key))
 }
 
 export async function transcribeChunk(
@@ -184,8 +242,8 @@ export async function transcribeChunk(
   form.append("language", language.code)
   form.append("response_format", "verbose_json")
   form.append("temperature", "0")
-  const payload = await groqPost(GROQ_TRANSCRIPTIONS_URL, key, form, false, fetchImpl)
-  return parseGroqSegments(payload, offsetSeconds)
+  const result = await groqPost(GROQ_TRANSCRIPTIONS_URL, key, form, false, GROQ_WHISPER_MODEL, fetchImpl)
+  return parseGroqSegments(result.payload, offsetSeconds)
 }
 
 export async function completeChat(
@@ -194,7 +252,7 @@ export async function completeChat(
   fetchImpl: typeof fetch = globalThis.fetch,
   maxCompletionTokens = 1200,
 ): Promise<string> {
-  const payload = await groqPost(
+  const result = await groqPost(
     GROQ_CHAT_URL,
     key,
     JSON.stringify({
@@ -206,9 +264,16 @@ export async function completeChat(
       messages,
     }),
     true,
+    GROQ_NOTES_MODEL,
     fetchImpl,
   )
-  const text = chatText(payload)
-  if (!text) throw new StudyError("Groq did not return study notes.", "NOTES")
+  const text = chatText(result.payload)
+  if (!text) {
+    throw new StudyError(
+      "Groq did not return study notes.",
+      "NOTES",
+      groqCallDetail(GROQ_NOTES_MODEL, result.status, result.raw, key),
+    )
+  }
   return text
 }

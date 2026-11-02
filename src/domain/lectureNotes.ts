@@ -653,6 +653,7 @@ export async function writeLectureNotes(request: LectureNotesRequest): Promise<s
   plan(done + fillCount)
 
   const written: Array<{ markdown: string; title: string }> = []
+  let omitted: StudyError | null = null
   for (const piece of pieces) {
     for (const chunk of piece.chunks) {
       const transcript = timedTranscript(chunk)
@@ -661,19 +662,48 @@ export async function writeLectureNotes(request: LectureNotesRequest): Promise<s
         { role: "system", content: system },
         { role: "user", content: `${piece.header}\n${transcript}` },
       ]
-      const text = await completeWithinBudget(request.complete, messages, FILL_COMPLETION_TOKENS)
+      let text = ""
+      try {
+        text = (await completeWithinBudget(request.complete, messages, FILL_COMPLETION_TOKENS)).trim()
+      } catch (error) {
+        if (!omittedSection(error)) throw error
+        omitted = error
+        finish()
+        continue
+      }
+      if (!text) {
+        omitted = omitted ?? new StudyError("Groq did not return study notes.", "NOTES")
+        finish()
+        continue
+      }
       written.push({ markdown: text, title: piece.title })
       finish()
     }
   }
-  if (written.length === 0) throw new StudyError("Groq did not return study notes.", "NOTES")
+  if (written.length === 0) {
+    throw omitted ?? new StudyError("Groq did not return study notes.", "NOTES")
+  }
   const merged =
     request.style?.preset === "table"
       ? tableNote(written) || mergeMarkdownSections(written)
       : mergeMarkdownSections(written)
   const cleaned = withoutDisclaimers(merged.replace(/\n## Transcript\b[\s\S]*$/i, "")).trim()
-  if (!cleaned) throw new StudyError("Groq did not return study notes.", "NOTES")
+  if (!cleaned) {
+    const returned = written
+      .map((part) => part.markdown.trim())
+      .filter(Boolean)
+      .join("\n\n")
+    throw new StudyError(
+      "Groq did not return study notes.",
+      "NOTES",
+      omitted?.detail ?? (returned ? `body: ${returned.slice(0, 8000)}` : null),
+    )
+  }
   return cleaned
+}
+
+function omittedSection(error: unknown): error is StudyError {
+  return error instanceof StudyError && error.code === "NOTES" && error.message === "Groq did not return study notes."
 }
 
 interface Progress {

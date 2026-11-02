@@ -1,10 +1,13 @@
 export class StudyError extends Error {
   readonly code: string
+  /** Extra lines for the notes log. Never shown in the banner. */
+  readonly detail: string | null
 
-  constructor(message: string, code: string) {
+  constructor(message: string, code: string, detail: string | null = null) {
     super(message)
     this.name = "StudyError"
     this.code = code
+    this.detail = detail
   }
 }
 

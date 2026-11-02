@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { StudyError } from "./errors"
 import {
   estimateTokens,
   GROQ_REQUEST_TOKEN_BUDGET,
@@ -135,6 +136,39 @@ describe("one lecture outline", () => {
       { title: "Externalities", markdown: "## Externalities\n\nNot in the transcript.\n" },
       { title: "Elasticity", markdown: "## Elasticity\n\n- Demand stretches.\n" },
     ])).toBe("## Elasticity\n\n- Demand stretches.")
+  })
+
+  it("keeps the lecture when one section comes back empty", async () => {
+    const body = await writeLectureNotes({
+      language: { code: "en", name: "English" },
+      content: content([
+        { start: 0, end: 4, text: "Price responds to substitutes." },
+        { start: 6, end: 9, text: "Buyers and sellers meet in the market." },
+      ]),
+      complete: async (messages) => {
+        const system = messages[0]?.content ?? ""
+        const user = messages[1]?.content ?? ""
+        if (/outline of the whole lecture/i.test(system)) {
+          return JSON.stringify({
+            sections: [
+              { title: "Elasticity", start: 0, end: 4 },
+              { title: "Markets", start: 6, end: 9 },
+            ],
+          })
+        }
+        if (/Section: Markets/.test(user)) {
+          throw new StudyError(
+            "Groq did not return study notes.",
+            "NOTES",
+            "model: openai/gpt-oss-120b\nstatus: 200\nbody: {\"choices\":[{\"message\":{\"content\":null}}]}",
+          )
+        }
+        return "## Elasticity\n\n- Price responds to substitutes.\n"
+      },
+    })
+    expect(body).toContain("## Elasticity")
+    expect(body).toContain("Price responds to substitutes.")
+    expect(body).not.toContain("## Markets")
   })
 
   it("outlines a short lecture before writing its section", async () => {
