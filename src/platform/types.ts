@@ -1,6 +1,7 @@
 import type { PreparedAudio } from "../domain/groq"
 import type {
   ActiveTranscription,
+  LocalNotesMessage,
   LocalRuntimeStatus,
   SetupProgress,
   SpeechPace,
@@ -29,6 +30,7 @@ export interface FileStore {
   setupLocal(pace: SpeechPace): Promise<LocalRuntimeStatus>
   prepareCloudAudio(path: string): Promise<PreparedAudio>
   readBytes(path: string): Promise<Uint8Array>
+  completeLocal(messages: LocalNotesMessage[], maxCompletionTokens: number): Promise<string>
   transcribeMedia(path: string, request: TranscriptionRequest): Promise<TranscriptionResult>
   activeTranscription(): Promise<ActiveTranscription | null>
   clearTranscription(id: string): Promise<void>

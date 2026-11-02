@@ -1,4 +1,3 @@
-import { renderFull, renderRestyle } from "./compose"
 import { GroqKeyError, LocalSetupError } from "./errors"
 import type { MediaProbe, NoteContent, Preset, ProviderId, Transcript } from "./types"
 
@@ -40,12 +39,12 @@ class LocalProvider implements NotesProvider {
     throw new LocalSetupError()
   }
 
-  compose(content: NoteContent): string {
-    return renderFull(content)
+  compose(_content: NoteContent): string {
+    throw new LocalSetupError()
   }
 
-  restyle(content: NoteContent, preset: Preset | null, prompt: string): string {
-    return renderRestyle(content, preset, prompt)
+  restyle(_content: NoteContent, _preset: Preset | null, _prompt: string): string {
+    throw new LocalSetupError()
   }
 }
 

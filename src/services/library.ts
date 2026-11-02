@@ -1,4 +1,4 @@
-import { renderFull, renderRestyle, withNoteHeader } from "../domain/compose"
+import { withNoteHeader } from "../domain/compose"
 import { renderPdf } from "../domain/pdf"
 import { parseNoteFile, writeFrontmatter, type NoteMeta } from "../domain/frontmatter"
 import { GroqKeyError, LocalSetupError, StudyError } from "../domain/errors"
@@ -690,7 +690,26 @@ async function notesFromGroq(
     content,
     style,
     onStep,
+    writer: "groq",
     complete: (messages, maxCompletionTokens) => completeChat(key, messages, globalThis.fetch, maxCompletionTokens),
+  })
+  return withNoteHeader(content, body)
+}
+
+async function notesFromLocal(
+  store: FileStore,
+  languageCode: string,
+  content: NoteContent,
+  style?: NoteStyle | null,
+  onStep?: (done: number, total: number) => void,
+): Promise<string> {
+  const body = await writeLectureNotes({
+    language: notesLanguage(languageCode),
+    content,
+    style,
+    onStep,
+    writer: "local",
+    complete: (messages, maxCompletionTokens) => store.completeLocal(messages, maxCompletionTokens),
   })
   return withNoteHeader(content, body)
 }
@@ -709,6 +728,10 @@ export async function makeNotes(
   const stat = await store.stat(input.mediaPath)
   if (!stat || stat.isDir || !isMediaFile(input.mediaPath)) {
     throw new StudyError("Choose a video or audio file.", "MEDIA")
+  }
+  if (input.provider === "local") {
+    const runtime = await store.localStatus(pace)
+    if (!runtime.ready) throw new LocalSetupError()
   }
   const saved = await findSavedTranscript(store, course, input)
   const addingBeside = input.noteChoice === "add" && saved?.note != null
@@ -747,8 +770,6 @@ export async function makeNotes(
         "LANGUAGE",
       )
     }
-    const runtime = await store.localStatus(pace)
-    if (!runtime.ready) throw new LocalSetupError()
     const noteId = crypto.randomUUID()
     transcript = await transcribeLocal(store, input.mediaPath, { noteId, title, probe }, {
       jobId: input.jobId || noteId,
@@ -851,7 +872,7 @@ export async function makeNotes(
     body =
       input.provider === "cloud"
         ? await notesFromGroq(groqKey, language.code, content, null, publishWriting)
-        : renderFull(content)
+        : await notesFromLocal(store, language.code, content, null, publishWriting)
   } finally {
     clearInterval(notesTimer)
   }
@@ -1045,7 +1066,25 @@ export async function restyleNote(
       body = withNoteHeader(content, text)
     }
   } else {
-    body = renderRestyle(content, input.preset, input.prompt)
+    const pace = speechPace(settings.speechPace)
+    const runtime = await store.localStatus(pace)
+    if (!runtime.ready) throw new LocalSetupError()
+    const language = notesLanguage(settings.languageCode)
+    if (content.transcriptProduced && content.segments.some((segment) => segment.text.trim())) {
+      body = await notesFromLocal(store, language.code, content, {
+        preset: input.preset,
+        prompt: input.prompt,
+      })
+    } else {
+      const text = await store.completeLocal(
+        [
+          { role: "system", content: restyleInstruction(language, input.preset, input.prompt) },
+          { role: "user", content: note.body },
+        ],
+        1500,
+      )
+      body = withNoteHeader(content, text)
+    }
   }
   const current = await store.readText(note.markdownPath)
   if (!current) throw new StudyError("That note could not be read.", "NOTE")

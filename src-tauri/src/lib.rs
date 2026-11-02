@@ -599,6 +599,22 @@ async fn desktop_call(app: tauri::AppHandle, request: Value) -> Result<Value, St
             };
         }
         // ffmpeg can run for a long recording. Keep that off the window thread.
+        "completeLocal" => {
+            let messages = request.get("messages").cloned().unwrap_or(Value::Null);
+            let max = request
+                .get("maxCompletionTokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(1200);
+            let app_data = app_data_dir();
+            return match tauri::async_runtime::spawn_blocking(move || {
+                local_runtime::complete_local_notes(&app_data, &messages, max)
+            })
+            .await
+            {
+                Ok(result) => result.map(Value::String),
+                Err(_) => Err("The notes model stopped before it finished the notes.".into()),
+            };
+        }
         "prepareCloudAudio" => {
             let media = require_str(&request, "path")?.to_string();
             let app_data = app_data_dir();
@@ -798,6 +814,10 @@ mod duration_tests {
         assert!(
             source.contains("\"transcribeMedia\" | \"transcribeLocal\""),
             "Make Notes sends op transcribeMedia"
+        );
+        assert!(
+            source.contains("\"completeLocal\""),
+            "Local notes send op completeLocal"
         );
     }
 

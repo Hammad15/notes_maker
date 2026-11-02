@@ -37,6 +37,8 @@ export interface LectureNotesRequest {
   style?: NoteStyle | null
   complete: (messages: ChatMessage[], maxCompletionTokens: number) => Promise<string>
   onStep?: (done: number, total: number) => void
+  /** Cloud names Groq in errors. Local names the notes model. */
+  writer?: "groq" | "local"
 }
 
 interface SpeechUnit {
@@ -620,7 +622,22 @@ function tableNote(parts: Array<{ markdown: string; title: string }>): string | 
   return ["| Topic | Points |", "| --- | --- |", ...rows].join("\n")
 }
 
+function notesWriter(request: LectureNotesRequest): "groq" | "local" {
+  return request.writer === "local" ? "local" : "groq"
+}
+
+function emptyNotesMessage(writer: "groq" | "local"): string {
+  return writer === "local" ? "The notes model did not return study notes." : "Groq did not return study notes."
+}
+
+function emptyOutlineMessage(writer: "groq" | "local"): string {
+  return writer === "local"
+    ? "The notes model did not return an outline of the lecture."
+    : "Groq did not return an outline of the lecture."
+}
+
 export async function writeLectureNotes(request: LectureNotesRequest): Promise<string> {
+  const writer = notesWriter(request)
   const segments = spokenSegments(request.content.segments)
   if (segments.length === 0) throw new StudyError("No speech was found in that recording.", "TRANSCRIPT")
   const where = whereLine(request.content)
@@ -639,9 +656,9 @@ export async function writeLectureNotes(request: LectureNotesRequest): Promise<s
   }
 
   const sections = await buildOutline(request, where, title, segments, { plan, finish })
-  if (sections.length === 0) throw new StudyError("Groq did not return an outline of the lecture.", "NOTES")
+  if (sections.length === 0) throw new StudyError(emptyOutlineMessage(writer), "NOTES")
   const covered = coverLecture(sections, segments).filter((section) => section.segments.length > 0)
-  if (covered.length === 0) throw new StudyError("Groq did not return an outline of the lecture.", "NOTES")
+  if (covered.length === 0) throw new StudyError(emptyOutlineMessage(writer), "NOTES")
 
   const system = fillSystem(request.language, request.style ?? null)
   const lectureOutline = outlineList(sections)
@@ -683,7 +700,7 @@ export async function writeLectureNotes(request: LectureNotesRequest): Promise<s
         continue
       }
       if (!text) {
-        omitted = omitted ?? new StudyError("Groq did not return study notes.", "NOTES")
+        omitted = omitted ?? new StudyError(emptyNotesMessage(writer), "NOTES")
         finish()
         continue
       }
@@ -692,7 +709,7 @@ export async function writeLectureNotes(request: LectureNotesRequest): Promise<s
     }
   }
   if (written.length === 0) {
-    throw omitted ?? new StudyError("Groq did not return study notes.", "NOTES")
+    throw omitted ?? new StudyError(emptyNotesMessage(writer), "NOTES")
   }
   const merged =
     request.style?.preset === "table"
@@ -705,7 +722,7 @@ export async function writeLectureNotes(request: LectureNotesRequest): Promise<s
       .filter(Boolean)
       .join("\n\n")
     throw new StudyError(
-      "Groq did not return study notes.",
+      emptyNotesMessage(writer),
       "NOTES",
       omitted?.detail ?? (returned ? `body: ${returned.slice(0, 8000)}` : null),
     )
@@ -714,7 +731,12 @@ export async function writeLectureNotes(request: LectureNotesRequest): Promise<s
 }
 
 function omittedSection(error: unknown): error is StudyError {
-  return error instanceof StudyError && error.code === "NOTES" && error.message === "Groq did not return study notes."
+  return (
+    error instanceof StudyError &&
+    error.code === "NOTES" &&
+    (error.message === "Groq did not return study notes." ||
+      error.message === "The notes model did not return study notes.")
+  )
 }
 
 interface Progress {

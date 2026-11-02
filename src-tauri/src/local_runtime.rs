@@ -71,6 +71,30 @@ const FFMPEG_ZIP_URL: &str =
 const FFMPEG_ZIP_BYTES: u64 = 114_768_076;
 const FFMPEG_ZIP_SHA256: &str = "60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba";
 
+const NOTES_MODEL_NAME: &str = "Qwen2.5-3B-Instruct";
+const NOTES_MODEL_FILE: &str = "qwen2.5-3b-instruct-q4_k_m.gguf";
+const NOTES_MODEL_BYTES: u64 = 2_104_932_768;
+const NOTES_MODEL_SHA256: &str = "626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d";
+const NOTES_MODEL_URL: &str = "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf";
+
+const NOTES_ENGINE_VERSION: &str = "b10599";
+const NOTES_ENGINE_EXE: &str = "llama-cli.exe";
+const NOTES_ENGINE_ZIP_URL: &str =
+    "https://github.com/ggml-org/llama.cpp/releases/download/b10599/llama-b10599-bin-win-cpu-x64.zip";
+const NOTES_ENGINE_ZIP_BYTES: u64 = 18_061_865;
+const NOTES_ENGINE_ZIP_SHA256: &str =
+    "d95eff420538b372273c5ee82258e238cc955ee3b5135443503d1fa4a38d8308";
+const NOTES_CONTEXT_TOKENS: u64 = 16_384;
+const NOTES_ENGINE_FILES: [(&str, u64); 7] = [
+    ("llama-cli.exe", 9_216),
+    ("llama-cli-impl.dll", 3_258_368),
+    ("llama.dll", 2_996_224),
+    ("llama-common.dll", 7_740_416),
+    ("ggml.dll", 86_016),
+    ("ggml-base.dll", 773_632),
+    ("ggml-cpu-x64.dll", 870_912),
+];
+
 const LONG_RECORDING_SECONDS: f64 = 30.0 * 60.0;
 const MIN_LONG_ELAPSED_MS: u128 = 60_000;
 const SETUP_REQUIRED: &str = "Press Set up local notes before making notes.";
@@ -126,6 +150,14 @@ fn model_path(app_data: &Path, pace: &str) -> PathBuf {
 
 fn config_path(app_data: &Path) -> PathBuf {
     app_data.join("models").join("local.json")
+}
+
+fn notes_bin(app_data: &Path) -> PathBuf {
+    bin_dir(app_data).join("notes")
+}
+
+fn notes_model_path(app_data: &Path) -> PathBuf {
+    app_data.join("models").join(NOTES_MODEL_FILE)
 }
 
 pub(crate) fn tool_path(app_data: &Path, name: &str) -> Option<PathBuf> {
@@ -255,6 +287,9 @@ fn keep_name(name: &str, kind: &str) -> bool {
     if kind == "ffmpeg" {
         return lower == "ffmpeg.exe" || lower == "ffprobe.exe";
     }
+    if kind == "notes" {
+        return lower == "llama-cli.exe" || lower.ends_with(".dll");
+    }
     lower == "whisper-cli.exe" || lower.ends_with(".dll")
 }
 
@@ -286,6 +321,35 @@ fn extract_named(zip_path: &Path, dest: &Path, kind: &str) -> Result<(), String>
         return Err("The download did not include the expected programs.".into());
     }
     Ok(())
+}
+
+fn sized_file(path: &Path, bytes: u64) -> bool {
+    fs::metadata(path)
+        .map(|meta| meta.is_file() && meta.len() == bytes)
+        .unwrap_or(false)
+}
+
+fn notes_engine_ready(dir: &Path) -> bool {
+    NOTES_ENGINE_FILES
+        .iter()
+        .all(|(name, bytes)| sized_file(&dir.join(name), *bytes))
+}
+
+fn notes_model_ready(app_data: &Path) -> Result<bool, String> {
+    static VERIFIED: Mutex<Option<PathBuf>> = Mutex::new(None);
+    let path = notes_model_path(app_data);
+    if let Ok(guard) = VERIFIED.lock() {
+        if guard.as_ref() == Some(&path) && sized_file(&path, NOTES_MODEL_BYTES) {
+            return Ok(true);
+        }
+    }
+    let ready = file_matches(&path, NOTES_MODEL_BYTES, NOTES_MODEL_SHA256)?;
+    if ready {
+        if let Ok(mut guard) = VERIFIED.lock() {
+            *guard = Some(path);
+        }
+    }
+    Ok(ready)
 }
 
 fn engine_ready(dir: &Path) -> bool {
@@ -323,6 +387,12 @@ fn collect_status(app_data: &Path, pace: &str) -> Result<RuntimeStatus, String> 
     }
     if !file_matches(&model_path(app_data, pace), spec.bytes, spec.sha256)? {
         missing.push("model");
+    }
+    if !notes_engine_ready(&notes_bin(app_data)) {
+        missing.push("notesEngine");
+    }
+    if !notes_model_ready(app_data)? {
+        missing.push("notes");
     }
     if !config_ready(app_data) {
         missing.push("config");
@@ -426,6 +496,41 @@ pub(crate) fn setup_local(
     )
     .map_err(|error| format!("Could not download the speech model. {error}"))?;
 
+    let notes_dir = notes_bin(app_data);
+    if !notes_engine_ready(&notes_dir) {
+        let label = "Downloading the notes engine";
+        progress("notesEngine", label, 0, Some(NOTES_ENGINE_ZIP_BYTES));
+        let zip = downloads.join("llama-bin-win-cpu-x64.zip");
+        download_verified(
+            NOTES_ENGINE_ZIP_URL,
+            &zip,
+            NOTES_ENGINE_ZIP_BYTES,
+            NOTES_ENGINE_ZIP_SHA256,
+            &mut |received, total| {
+                progress("notesEngine", label, received, Some(total));
+            },
+        )
+        .map_err(|error| format!("Could not download the notes engine. {error}"))?;
+        fs::create_dir_all(&notes_dir).map_err(|error| error.to_string())?;
+        extract_named(&zip, &notes_dir, "notes")?;
+        if !notes_engine_ready(&notes_dir) {
+            return Err("The notes engine download did not include llama-cli.".into());
+        }
+    }
+
+    let notes_label = "Downloading the notes model";
+    progress("notes", notes_label, 0, Some(NOTES_MODEL_BYTES));
+    download_verified(
+        NOTES_MODEL_URL,
+        &notes_model_path(app_data),
+        NOTES_MODEL_BYTES,
+        NOTES_MODEL_SHA256,
+        &mut |received, total| {
+            progress("notes", notes_label, received, Some(total));
+        },
+    )
+    .map_err(|error| format!("Could not download the notes model. {error}"))?;
+
     progress("config", "Saving local setup", 1, Some(1));
     let ffmpeg_source = if bin.join("ffmpeg.exe").is_file() {
         FFMPEG_VERSION
@@ -440,6 +545,11 @@ pub(crate) fn setup_local(
         "modelBytes": spec.bytes,
         "engine": "whisper.cpp",
         "engineVersion": ENGINE_VERSION,
+        "notesModel": NOTES_MODEL_NAME,
+        "notesFile": NOTES_MODEL_FILE,
+        "notesBytes": NOTES_MODEL_BYTES,
+        "notesEngine": "llama.cpp",
+        "notesEngineVersion": NOTES_ENGINE_VERSION,
         "ffmpeg": ffmpeg_source,
     });
     let pretty = serde_json::to_string_pretty(&config).map_err(|error| error.to_string())?;
@@ -452,6 +562,125 @@ pub(crate) fn setup_local(
         ));
     }
     Ok(status_value(&status, pace))
+}
+
+fn clean_notes_reply(raw: &str) -> String {
+    let stripped = raw
+        .replace('\u{0000}', "")
+        .replace("<|im_start|>assistant\n", "")
+        .replace("<|im_start|>assistant", "")
+        .replace("<|im_end|>", "");
+    let mut lines = Vec::new();
+    for line in stripped.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("llama_")
+            || trimmed.starts_with("ggml_")
+            || trimmed.starts_with("main:")
+            || trimmed.starts_with("build:")
+            || trimmed.starts_with("print_info:")
+            || trimmed.starts_with("load_backend:")
+        {
+            continue;
+        }
+        lines.push(line.trim_end());
+    }
+    while lines.first().is_some_and(|line| line.trim().is_empty()) {
+        lines.remove(0);
+    }
+    while lines.last().is_some_and(|line| line.trim().is_empty()) {
+        lines.pop();
+    }
+    lines.join("\n")
+}
+
+fn notes_prompt(messages: &Value) -> Result<(String, String), String> {
+    let rows = messages
+        .as_array()
+        .ok_or("The notes model did not return study notes.")?;
+    let mut system = Vec::new();
+    let mut user = Vec::new();
+    for row in rows {
+        let role = row.get("role").and_then(Value::as_str).unwrap_or("");
+        let content = row.get("content").and_then(Value::as_str).unwrap_or("");
+        if role == "system" {
+            system.push(content);
+        } else if role == "user" {
+            user.push(content);
+        }
+    }
+    let user_text = user.join("\n\n");
+    if user_text.trim().is_empty() {
+        return Err("The notes model did not return study notes.".into());
+    }
+    Ok((system.join("\n\n"), user_text))
+}
+
+pub(crate) fn complete_local_notes(
+    app_data: &Path,
+    messages: &Value,
+    max_tokens: u64,
+) -> Result<String, String> {
+    if !notes_engine_ready(&notes_bin(app_data)) || !notes_model_ready(app_data)? {
+        return Err(SETUP_REQUIRED.into());
+    }
+    let (system, user) = notes_prompt(messages)?;
+    let tmp = app_data.join("tmp");
+    fs::create_dir_all(&tmp).map_err(|error| error.to_string())?;
+    let id = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let system_path = tmp.join(format!("notes-{id}-system.txt"));
+    let user_path = tmp.join(format!("notes-{id}-user.txt"));
+    let out_path = tmp.join(format!("notes-{id}-out.txt"));
+    fs::write(&system_path, &system).map_err(|error| error.to_string())?;
+    fs::write(&user_path, &user).map_err(|error| error.to_string())?;
+    let predict = max_tokens.max(1);
+    let mut command = Command::new(notes_bin(app_data).join(NOTES_ENGINE_EXE));
+    command
+        .current_dir(notes_bin(app_data))
+        .arg("-m")
+        .arg(notes_model_path(app_data))
+        .arg("-c")
+        .arg(NOTES_CONTEXT_TOKENS.to_string())
+        .arg("-n")
+        .arg(predict.to_string())
+        .arg("--temp")
+        .arg("0.2")
+        .arg("-ngl")
+        .arg("0")
+        .arg("--jinja")
+        .arg("--reasoning")
+        .arg("off")
+        .arg("--no-display-prompt")
+        .arg("--no-show-timings")
+        .arg("--no-warmup")
+        .arg("--simple-io")
+        .arg("--log-disable")
+        .arg("-st")
+        .arg("-sysf")
+        .arg(&system_path)
+        .arg("-f")
+        .arg(&user_path)
+        .arg("--output-file")
+        .arg(&out_path);
+    let ran = run_command(
+        command,
+        Duration::from_secs(15 * 60),
+        "The notes model stopped before it finished the notes.",
+    );
+    let output = fs::read_to_string(&out_path).unwrap_or_default();
+    let _ = fs::remove_file(&system_path);
+    let _ = fs::remove_file(&user_path);
+    let _ = fs::remove_file(&out_path);
+    let cleaned = clean_notes_reply(&output);
+    if !cleaned.is_empty() {
+        return Ok(cleaned);
+    }
+    if ran.is_err() {
+        return Err("The notes model stopped before it finished the notes.".into());
+    }
+    Err("The notes model did not return study notes.".into())
 }
 
 fn run_command(command: Command, timeout: Duration, what: &str) -> Result<(), String> {
@@ -1921,10 +2150,28 @@ pub(crate) fn prepare_cloud_audio(app_data: &Path, media: &str) -> Result<Value,
 #[cfg(test)]
 mod tests {
     use super::{
-        assert_heard, forward_percent, owned_pids_to_stop, parse_whisper_json, plan_resume,
-        progress_percent, same_job, whisper_thread_count, whisper_wait_limit, ResumePlan, SavedJob,
-        Segment, Target,
+        assert_heard, clean_notes_reply, forward_percent, owned_pids_to_stop, parse_whisper_json,
+        plan_resume, progress_percent, same_job, whisper_thread_count, whisper_wait_limit,
+        NOTES_ENGINE_VERSION, NOTES_ENGINE_ZIP_BYTES, NOTES_MODEL_BYTES, NOTES_MODEL_FILE,
+        NOTES_MODEL_NAME, NOTES_MODEL_SHA256, ResumePlan, SavedJob, Segment, Target,
     };
+
+    #[test]
+    fn notes_model_is_qwen_and_replies_drop_engine_logs() {
+        assert_eq!(NOTES_MODEL_NAME, "Qwen2.5-3B-Instruct");
+        assert_eq!(NOTES_MODEL_FILE, "qwen2.5-3b-instruct-q4_k_m.gguf");
+        assert_eq!(NOTES_MODEL_BYTES, 2_104_932_768);
+        assert_eq!(
+            NOTES_MODEL_SHA256,
+            "626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d"
+        );
+        assert_eq!(NOTES_ENGINE_VERSION, "b10599");
+        assert_eq!(NOTES_ENGINE_ZIP_BYTES, 18_061_865);
+        assert_eq!(
+            clean_notes_reply("llama_print_timings: load\n## Cells\n\n- Mitosis.<|im_end|>\n"),
+            "## Cells\n\n- Mitosis."
+        );
+    }
 
     #[test]
     fn reads_timed_speech_and_drops_non_speech() {

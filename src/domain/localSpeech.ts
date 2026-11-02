@@ -51,6 +51,59 @@ export const FFMPEG_BUNDLE = {
   zipSha256: "60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba",
 } as const
 
+/**
+ * Local study notes. Qwen2.5-3B-Instruct Q4_K_M, run by llama.cpp b10599.
+ * The GGUF sha256 is the Hugging Face LFS oid. The engine lives in bin/notes
+ * so its ggml DLLs do not replace the speech engine.
+ * Keep the Rust copy in src-tauri/src/local_runtime.rs on these same bytes.
+ */
+export const NOTES_MODEL = {
+  name: "Qwen2.5-3B-Instruct",
+  file: "qwen2.5-3b-instruct-q4_k_m.gguf",
+  bytes: 2_104_932_768,
+  sha256: "626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d",
+  url: "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf",
+} as const
+
+export const LLAMA_ENGINE = {
+  version: "b10599",
+  file: "llama-cli.exe",
+  zipUrl: "https://github.com/ggml-org/llama.cpp/releases/download/b10599/llama-b10599-bin-win-cpu-x64.zip",
+  zipBytes: 18_061_865,
+  zipSha256: "d95eff420538b372273c5ee82258e238cc955ee3b5135443503d1fa4a38d8308",
+} as const
+
+/** llama-cli.exe is a stub. These sizes are the files that must sit beside it. */
+export const LLAMA_ENGINE_FILES = [
+  { file: "llama-cli.exe", bytes: 9_216 },
+  { file: "llama-cli-impl.dll", bytes: 3_258_368 },
+  { file: "llama.dll", bytes: 2_996_224 },
+  { file: "llama-common.dll", bytes: 7_740_416 },
+  { file: "ggml.dll", bytes: 86_016 },
+  { file: "ggml-base.dll", bytes: 773_632 },
+  { file: "ggml-cpu-x64.dll", bytes: 870_912 },
+] as const
+
+/** Prompt budget is 6000 tokens. This context also fits the completion. */
+export const NOTES_CONTEXT_TOKENS = 16_384
+
+export interface LocalNotesMessage {
+  role: "system" | "user"
+  content: string
+}
+
+const NOTES_LOG_LINE = /^(?:llama_|ggml_|main:|build:|print_info:|load_backend:)/
+
+/** Drop llama.cpp logs and ChatML end markers. Keep the study notes. */
+export function cleanNotesReply(raw: string): string {
+  const withoutTokens = raw
+    .replace(/\u0000/g, "")
+    .replace(/<\|im_start\|>assistant\n?/g, "")
+    .replace(/<\|im_end\|>/g, "")
+  const lines = withoutTokens.split(/\r?\n/).filter((line) => !NOTES_LOG_LINE.test(line.trim()))
+  return lines.join("\n").trim()
+}
+
 /** A recording this long must not come back in under a minute. 57 minutes qualifies. */
 export const LONG_RECORDING_SECONDS = 30 * 60
 export const MIN_LONG_ELAPSED_MS = 60_000
@@ -61,11 +114,11 @@ const NON_SPEECH =
 export interface LocalRuntimeStatus {
   ready: boolean
   model: string
-  missing: Array<"ffmpeg" | "ffprobe" | "engine" | "model" | "config">
+  missing: Array<"ffmpeg" | "ffprobe" | "engine" | "model" | "notesEngine" | "notes" | "config">
 }
 
 export interface SetupProgress {
-  phase: "ffmpeg" | "engine" | "model" | "config"
+  phase: "ffmpeg" | "engine" | "model" | "notesEngine" | "notes" | "config"
   label: string
   received: number
   total: number | null

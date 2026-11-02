@@ -1,7 +1,7 @@
 import { NavLink, useNavigate } from "react-router-dom"
 import { Plus } from "lucide-react"
 import { MISSING_GROQ_KEY } from "../domain/errors"
-import { barPercent, localJobMessage, speechModel, type SpeechPace } from "../domain/localSpeech"
+import { barPercent, localJobMessage, NOTES_MODEL, speechModel, type SpeechPace } from "../domain/localSpeech"
 import { truncateMiddle } from "../domain/paths"
 import { WINDOWS_DIALOG_REQUIRED } from "../platform/dialogs"
 import { useHost } from "../platform/host"
@@ -55,8 +55,8 @@ function ProviderSwitch() {
         <>
           <p className="text-xs leading-relaxed text-muted-foreground">
             {localReady
-              ? `On this computer, using ${speechModel(pace).name}. Those words become study notes.`
-              : "On this computer. One button downloads the speech model for the speed you choose."}
+              ? `On this computer, using ${speechModel(pace).name}. Study notes are written by ${NOTES_MODEL.name}.`
+              : "On this computer. One button downloads the speech model and the notes model."}
           </p>
           <div className="grid gap-1">
             <p className="text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase">Speed</p>

@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest"
 import {
   assertHeardRecording,
+  cleanNotesReply,
   FFMPEG_BUNDLE,
+  LLAMA_ENGINE,
+  NOTES_MODEL,
   formatRemaining,
   localJobMessage,
   parseWhisperJson,
@@ -307,6 +310,19 @@ describe("setup downloads", () => {
     expect(SPEECH_MODEL.url).toContain("ggml-base.en.bin")
     expect(WHISPER_ENGINE.version).toBe("1.9.2")
     expect(WHISPER_ENGINE.zipUrl).toContain("whisper-bin-x64.zip")
+    expect(NOTES_MODEL).toMatchObject({
+      name: "Qwen2.5-3B-Instruct",
+      file: "qwen2.5-3b-instruct-q4_k_m.gguf",
+      bytes: 2_104_932_768,
+      sha256: "626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d",
+    })
+    expect(NOTES_MODEL.url).toContain("qwen2.5-3b-instruct-q4_k_m.gguf")
+    expect(LLAMA_ENGINE.version).toBe("b10599")
+    expect(LLAMA_ENGINE.zipBytes).toBe(18_061_865)
+    expect(LLAMA_ENGINE.zipUrl).toContain("llama-b10599-bin-win-cpu-x64.zip")
+    expect(cleanNotesReply("llama_print_timings: load\n## Cells\n\n- Mitosis.<|im_end|>\n")).toBe(
+      "## Cells\n\n- Mitosis.",
+    )
     expect(FFMPEG_BUNDLE.version).toBe("9.0.2")
     expect(FFMPEG_BUNDLE.zipUrl).toContain("ffmpeg-9.0.2-essentials_build.zip")
   })

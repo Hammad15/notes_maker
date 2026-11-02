@@ -17,6 +17,7 @@ export const Ops = {
   setupLocal: "setupLocal",
   prepareCloudAudio: "prepareCloudAudio",
   readBytes: "readBytes",
+  completeLocal: "completeLocal",
   transcribeMedia: "transcribeMedia",
   activeTranscription: "activeTranscription",
   clearTranscription: "clearTranscription",

@@ -6,7 +6,7 @@ import path from "node:path"
 import { finished } from "node:stream/promises"
 import { execFile, spawn, type ChildProcess } from "node:child_process"
 import { promisify } from "node:util"
-import { LocalSetupError } from "../domain/errors.ts"
+import { LocalSetupError, StudyError } from "../domain/errors.ts"
 import { CLOUD_CHUNK_BYTES, CLOUD_CHUNK_SECONDS, type PreparedAudio } from "../domain/groq.ts"
 import {
   assertHeardRecording,
@@ -17,12 +17,18 @@ import {
   parseWhisperJson,
   planResume,
   sameTranscriptionJob,
+  cleanNotesReply,
+  LLAMA_ENGINE,
+  LLAMA_ENGINE_FILES,
+  NOTES_CONTEXT_TOKENS,
+  NOTES_MODEL,
   speechModel,
   speechPace,
   TRANSCRIPTION_REPLACED,
   WHISPER_ENGINE,
   whisperPidsToStop,
   whisperThreadCount,
+  type LocalNotesMessage,
   type SpeechPace,
   type ActiveTranscription,
   type LocalRuntimeStatus,
@@ -47,6 +53,14 @@ function binDir(appData: string): string {
 
 function modelPath(appData: string, pace: SpeechPace): string {
   return path.join(appData, "models", speechModel(pace).file)
+}
+
+function notesBin(appData: string): string {
+  return path.join(binDir(appData), "notes")
+}
+
+function notesModelPath(appData: string): string {
+  return path.join(appData, "models", NOTES_MODEL.file)
 }
 
 function configPath(appData: string): string {
@@ -99,6 +113,18 @@ export async function toolPath(appData: string, name: string): Promise<string | 
   return null
 }
 
+async function notesEngineReady(dir: string): Promise<boolean> {
+  for (const file of LLAMA_ENGINE_FILES) {
+    try {
+      const info = await fs.stat(path.join(dir, file.file))
+      if (info.size !== file.bytes) return false
+    } catch {
+      return false
+    }
+  }
+  return true
+}
+
 async function engineReady(dir: string): Promise<boolean> {
   const cli = path.join(dir, WHISPER_ENGINE.file)
   try {
@@ -111,6 +137,23 @@ async function engineReady(dir: string): Promise<boolean> {
     if (!(await exists(path.join(dir, dll)))) return false
   }
   return true
+}
+
+let verifiedNotesModel: string | null = null
+
+async function notesModelReady(appData: string): Promise<boolean> {
+  const model = notesModelPath(appData)
+  if (verifiedNotesModel === model) {
+    try {
+      const info = await fs.stat(model)
+      if (info.size === NOTES_MODEL.bytes) return true
+    } catch {
+      verifiedNotesModel = null
+    }
+  }
+  const ready = await fileMatches(model, NOTES_MODEL.bytes, NOTES_MODEL.sha256)
+  verifiedNotesModel = ready ? model : null
+  return ready
 }
 
 async function readConfig(appData: string): Promise<boolean> {
@@ -129,6 +172,8 @@ export async function localRuntimeStatus(appData: string, pace: SpeechPace = "cl
   if (!(await toolPath(appData, "ffprobe"))) missing.push("ffprobe")
   if (!(await engineReady(binDir(appData)))) missing.push("engine")
   if (!(await fileMatches(modelPath(appData, pace), model.bytes, model.sha256))) missing.push("model")
+  if (!(await notesEngineReady(notesBin(appData)))) missing.push("notesEngine")
+  if (!(await notesModelReady(appData))) missing.push("notes")
   if (!(await readConfig(appData))) missing.push("config")
   return { ready: missing.length === 0, model: model.name, missing }
 }
@@ -210,15 +255,20 @@ function keepEngineFile(name: string): boolean {
   return lower.endsWith(".dll")
 }
 
-async function flattenEngine(root: string, dest: string): Promise<void> {
+function keepNotesEngineFile(name: string): boolean {
+  const lower = name.toLowerCase()
+  return lower === LLAMA_ENGINE.file.toLowerCase() || lower.endsWith(".dll")
+}
+
+async function flattenKept(root: string, dest: string, keep: (name: string) => boolean): Promise<void> {
   const entries = await fs.readdir(root, { withFileTypes: true })
   for (const entry of entries) {
     const full = path.join(root, entry.name)
     if (entry.isDirectory()) {
-      await flattenEngine(full, dest)
+      await flattenKept(full, dest, keep)
       continue
     }
-    if (!keepEngineFile(entry.name)) continue
+    if (!keep(entry.name)) continue
     await fs.copyFile(full, path.join(dest, entry.name))
   }
 }
@@ -291,7 +341,7 @@ export async function setupLocalRuntime(
     }
     const extracted = path.join(downloads, "whisper-extract")
     await expandZip(zip, extracted)
-    await flattenEngine(extracted, bin)
+    await flattenKept(extracted, bin, keepEngineFile)
     await fs.rm(extracted, { recursive: true, force: true })
     if (!(await engineReady(bin))) throw new Error("The speech engine download did not include whisper-cli.")
   }
@@ -308,6 +358,38 @@ export async function setupLocalRuntime(
     throw new Error(`Could not download the speech model. ${detail}`)
   }
 
+  const notesDir = notesBin(appData)
+  if (!(await notesEngineReady(notesDir))) {
+    const label = "Downloading the notes engine"
+    report(onProgress, "notesEngine", label, 0, LLAMA_ENGINE.zipBytes)
+    const zip = path.join(downloads, "llama-bin-win-cpu-x64.zip")
+    try {
+      await downloadVerified(LLAMA_ENGINE.zipUrl, zip, LLAMA_ENGINE.zipBytes, LLAMA_ENGINE.zipSha256, (received, total) =>
+        report(onProgress, "notesEngine", label, received, total),
+      )
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "The download failed."
+      throw new Error(`Could not download the notes engine. ${detail}`)
+    }
+    const extracted = path.join(downloads, "llama-extract")
+    await expandZip(zip, extracted)
+    await fs.mkdir(notesDir, { recursive: true })
+    await flattenKept(extracted, notesDir, keepNotesEngineFile)
+    await fs.rm(extracted, { recursive: true, force: true })
+    if (!(await notesEngineReady(notesDir))) throw new Error("The notes engine download did not include llama-cli.")
+  }
+
+  const notesLabel = "Downloading the notes model"
+  report(onProgress, "notes", notesLabel, 0, NOTES_MODEL.bytes)
+  try {
+    await downloadVerified(NOTES_MODEL.url, notesModelPath(appData), NOTES_MODEL.bytes, NOTES_MODEL.sha256, (received, total) =>
+      report(onProgress, "notes", notesLabel, received, total),
+    )
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "The download failed."
+    throw new Error(`Could not download the notes model. ${detail}`)
+  }
+
   report(onProgress, "config", "Saving local setup", 1, 1)
   const ffmpegFromPath = !(await exists(path.join(bin, "ffmpeg.exe")))
   const config = {
@@ -318,12 +400,116 @@ export async function setupLocalRuntime(
     modelBytes: model.bytes,
     engine: "whisper.cpp",
     engineVersion: WHISPER_ENGINE.version,
+    notesModel: NOTES_MODEL.name,
+    notesFile: NOTES_MODEL.file,
+    notesBytes: NOTES_MODEL.bytes,
+    notesEngine: "llama.cpp",
+    notesEngineVersion: LLAMA_ENGINE.version,
     ffmpeg: ffmpegFromPath ? "path" : FFMPEG_BUNDLE.version,
   }
   await fs.writeFile(configPath(appData), `${JSON.stringify(config, null, 2)}\n`, "utf8")
   const status = await localRuntimeStatus(appData, pace)
   if (!status.ready) throw new Error("Local notes are still missing pieces after setup.")
   return status
+}
+
+function notesFailureDetail(error: unknown): string {
+  const stderr = error && typeof error === "object" && "stderr" in error ? String((error as { stderr?: unknown }).stderr ?? "") : ""
+  const lines = stderr
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => /error|failed|cannot|unable/i.test(line))
+    .slice(0, 8)
+  return [`model: ${NOTES_MODEL.name}`, ...lines].join("\n").slice(0, 1500)
+}
+
+/** One llama.cpp turn. The prompt stays in files so a long lecture fits on Windows. */
+export async function completeLocalNotes(
+  appData: string,
+  messages: LocalNotesMessage[],
+  maxCompletionTokens: number,
+): Promise<string> {
+  if (!(await notesEngineReady(notesBin(appData))) || !(await notesModelReady(appData))) throw new LocalSetupError()
+  const system = messages
+    .filter((message) => message.role === "system")
+    .map((message) => message.content)
+    .join("\n\n")
+  const user = messages
+    .filter((message) => message.role === "user")
+    .map((message) => message.content)
+    .join("\n\n")
+  if (!user.trim()) throw new StudyError("The notes model did not return study notes.", "NOTES", `model: ${NOTES_MODEL.name}`)
+  const dir = path.join(appData, "tmp")
+  await fs.mkdir(dir, { recursive: true })
+  const id = crypto.randomUUID()
+  const systemPath = path.join(dir, `notes-${id}-system.txt`)
+  const userPath = path.join(dir, `notes-${id}-user.txt`)
+  const outPath = path.join(dir, `notes-${id}-out.txt`)
+  await fs.writeFile(systemPath, system, "utf8")
+  await fs.writeFile(userPath, user, "utf8")
+  const predict = Math.max(1, Math.floor(maxCompletionTokens))
+  const cli = path.join(notesBin(appData), LLAMA_ENGINE.file)
+  let failed: unknown = null
+  try {
+    await execFileAsync(
+      cli,
+      [
+        "-m",
+        notesModelPath(appData),
+        "-c",
+        String(NOTES_CONTEXT_TOKENS),
+        "-n",
+        String(predict),
+        "--temp",
+        "0.2",
+        "-ngl",
+        "0",
+        "--jinja",
+        "--reasoning",
+        "off",
+        "--no-display-prompt",
+        "--no-show-timings",
+        "--no-warmup",
+        "--simple-io",
+        "--log-disable",
+        "-st",
+        "-sysf",
+        systemPath,
+        "-f",
+        userPath,
+        "--output-file",
+        outPath,
+      ],
+      {
+        windowsHide: true,
+        timeout: 15 * 60_000,
+        maxBuffer: 8 * 1024 * 1024,
+        cwd: notesBin(appData),
+      },
+    )
+  } catch (error) {
+    failed = error
+  } finally {
+    await fs.rm(systemPath, { force: true })
+    await fs.rm(userPath, { force: true })
+  }
+  let raw = ""
+  try {
+    raw = await fs.readFile(outPath, "utf8")
+  } catch {
+    raw = ""
+  }
+  await fs.rm(outPath, { force: true })
+  const text = cleanNotesReply(raw)
+  if (text) return text
+  if (failed) {
+    throw new StudyError(
+      "The notes model stopped before it finished the notes.",
+      "NOTES",
+      notesFailureDetail(failed),
+    )
+  }
+  throw new StudyError("The notes model did not return study notes.", "NOTES", `model: ${NOTES_MODEL.name}`)
 }
 
 async function probeDuration(ffprobe: string, media: string): Promise<number | null> {

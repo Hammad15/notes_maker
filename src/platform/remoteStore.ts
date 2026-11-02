@@ -1,4 +1,4 @@
-import type { SpeechPace, ActiveTranscription, LocalRuntimeStatus, TranscriptionRequest, TranscriptionResult } from "../domain/localSpeech"
+import type { SpeechPace, ActiveTranscription, LocalNotesMessage, LocalRuntimeStatus, TranscriptionRequest, TranscriptionResult } from "../domain/localSpeech"
 import type { PreparedAudio } from "../domain/groq"
 import type { DirEntry, FileStat, MediaProbe } from "../domain/types"
 import { Ops } from "./ops"
@@ -53,6 +53,8 @@ export function createRemoteStore(call: Caller): FileStore {
       for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
       return bytes
     },
+    completeLocal: (messages: LocalNotesMessage[], maxCompletionTokens: number) =>
+      call<string>({ op: Ops.completeLocal, messages, maxCompletionTokens }),
     transcribeMedia: (path, request: TranscriptionRequest) =>
       call<TranscriptionResult>({
         op: Ops.transcribeMedia,

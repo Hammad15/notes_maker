@@ -129,7 +129,7 @@ function notReady(pace: SpeechPace): LocalRuntimeStatus {
   return {
     ready: false,
     model: speechModel(pace).name,
-    missing: ["ffmpeg", "ffprobe", "engine", "model", "config"],
+    missing: ["ffmpeg", "ffprobe", "engine", "model", "notesEngine", "notes", "config"],
   }
 }
 

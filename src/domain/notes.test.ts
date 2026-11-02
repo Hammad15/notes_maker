@@ -240,8 +240,8 @@ describe("providers", () => {
         probe: { size: 57726700, durationSeconds: 3420, title: null, chapters: [] },
       }),
     ).toThrow(LocalSetupError)
-    expect(local.compose({ ...filedOnly, durationSeconds: 3420 })).not.toContain("## Transcript")
-    expect(local.compose(content)).toContain("## Mitosis begins")
-    expect(local.compose(content)).not.toContain("## Transcript")
+    expect(() => local.compose({ ...filedOnly, durationSeconds: 3420 })).toThrow(LocalSetupError)
+    expect(() => local.compose(content)).toThrow(LocalSetupError)
+    expect(() => local.restyle(content, "bullets", "")).toThrow(LocalSetupError)
   })
 })

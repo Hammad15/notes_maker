@@ -235,7 +235,7 @@ describe("course files", () => {
       home,
       courseId: course.id,
       noteId: filed.id,
-      provider: "local",
+      provider: "cloud",
       preset: "bullets",
       prompt: "",
     })
@@ -364,7 +364,7 @@ describe("course files", () => {
     expect(await store.exists(path.join(course.path, ".study"))).toBe(false)
   })
 
-  it("rewrites study notes from a saved transcript without local setup", async () => {
+  it("writes study notes from a saved transcript with the local notes model", async () => {
     const home = path.join(root, "home")
     const store = createNodeFileStore(path.join(root, "appdata"))
     await store.mkdir(home)
@@ -396,18 +396,40 @@ describe("course files", () => {
       path.join(study, "sources", `${noteId}.json`),
       `${JSON.stringify({ noteId, mediaPath: media, courseId: course.id, moduleId: null }, null, 2)}\n`,
     )
-    const filed = await makeNotes(store, {
+    const request = {
       home,
       courseId: course.id,
       mediaPath: media,
-      provider: "local",
+      provider: "local" as const,
       moduleId: null,
       moduleName: null,
       newModuleName: null,
+    }
+    await expect(makeNotes(store, request)).rejects.toThrow(/Set up local notes/)
+    expect(await store.exists(path.join(course.path, "notes"))).toBe(false)
+    let groqCalls = 0
+    vi.stubGlobal("fetch", async () => {
+      groqCalls += 1
+      return Response.json({ error: { message: "Groq must not run for local notes." } }, { status: 500 })
     })
+    store.localStatus = async () => ({ ready: true, model: "ggml-base.en", missing: [] })
+    store.completeLocal = async (messages) => {
+      const system = messages.find((message) => message.role === "system")?.content ?? ""
+      const user = messages.find((message) => message.role === "user")?.content ?? ""
+      expect(user).toContain("Mitosis")
+      if (/outline of the whole lecture/i.test(system)) {
+        return '{"sections":[{"title":"Cell division","ranges":[{"start":0,"end":80}]}]}'
+      }
+      expect(system).toContain("Do not invent dates.")
+      expect(system).toContain("Do not mention a transcript")
+      return "## Cell division\n\n- Mitosis splits one cell into two daughter cells."
+    }
+    const filed = await makeNotes(store, request)
+    expect(groqCalls).toBe(0)
     expect(filed.id).toBe(noteId)
     const markdown = await store.readText(filed.markdownPath)
-    expect(markdown).toContain("Mitosis")
+    expect(markdown).toContain("Mitosis splits one cell into two daughter cells.")
+    expect(markdown).not.toContain("Um so")
     expect(markdown?.toLowerCase()).not.toContain("na na")
     expect(markdown).not.toContain("## Transcript")
     const raw = await store.readText(transcriptPath)

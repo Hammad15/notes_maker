@@ -15,6 +15,7 @@ import {
   prepareCloudAudio,
   readActiveTranscription,
   reconcileTranscriptionOnLaunch,
+  completeLocalNotes,
   setupLocalRuntime,
   toolPath,
   transcribeWithRuntime,
@@ -241,6 +242,9 @@ export function createNodeFileStore(appData = resolveAppDataDir(process.platform
     setupLocal(pace) {
       return setupLocalRuntime(appData, speechPace(pace))
     },
+    completeLocal(messages, maxCompletionTokens) {
+      return completeLocalNotes(appData, messages, maxCompletionTokens)
+    },
     prepareCloudAudio(target) {
       return prepareCloudAudio(appData, target)
     },
@@ -272,6 +276,19 @@ function ioMessage(target: string, error: unknown): string {
   if (isNotFound(error)) return `That folder is not there: ${target}`
   if (error instanceof Error && error.message) return error.message
   return `Could not use ${target}.`
+}
+
+function localMessages(value: unknown): Array<{ role: "system" | "user"; content: string }> {
+  if (!Array.isArray(value)) return []
+  const parsed: Array<{ role: "system" | "user"; content: string }> = []
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue
+    const row = item as { role?: unknown; content?: unknown }
+    if ((row.role === "system" || row.role === "user") && typeof row.content === "string") {
+      parsed.push({ role: row.role, content: row.content })
+    }
+  }
+  return parsed
 }
 
 function asRecord(request: unknown): Record<string, unknown> {
@@ -340,6 +357,10 @@ export async function dispatchDesktop(
       return store.localStatus(speechPace(body.pace))
     case Ops.setupLocal:
       return store.setupLocal(speechPace(body.pace))
+    case Ops.completeLocal: {
+      const max = typeof body.maxCompletionTokens === "number" ? body.maxCompletionTokens : 1200
+      return store.completeLocal(localMessages(body.messages), max)
+    }
     case Ops.prepareCloudAudio:
       return store.prepareCloudAudio(requiredString(body, "path"))
     case Ops.readBytes: {
