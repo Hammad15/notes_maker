@@ -105,6 +105,10 @@ describe("one lecture outline", () => {
         }
         expect(system).toMatch(/Do not mention a transcript, a segment, a slice, or missing source material/)
         expect(system).toMatch(/return no heading and no text/)
+        expect(system).toMatch(
+          /When the lecture's context needs them, such as history, keep dates, years, and named time periods that were spoken/,
+        )
+        expect(system).toMatch(/Do not invent dates/)
         if (/Section: Market failure/.test(user)) {
           return [
             "## Market failure",

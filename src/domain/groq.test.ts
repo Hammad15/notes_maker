@@ -44,7 +44,13 @@ describe("Groq speech and notes", () => {
     expect(spanish).toContain("Spanish")
     expect(spanish).not.toContain("English")
     expect(notesLanguage("es")).toEqual({ code: "es", name: "es" })
-    expect(studyNotesInstruction(notesLanguage("en"))).toContain("English")
+    const english = studyNotesInstruction(notesLanguage("en"))
+    expect(english).toContain("English")
+    expect(english).toContain(
+      "When the lecture's context needs them, such as history, keep dates, years, and named time periods that were spoken.",
+    )
+    expect(english).toContain("Do not invent dates.")
+    expect(english).not.toMatch(/Hijrah|Biʿthah|Bi.thah|ISC\s*102/i)
   })
 
   it("sends one chunk and refuses a key echoed in an error", async () => {
