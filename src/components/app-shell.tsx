@@ -1,4 +1,5 @@
-import { NavLink } from "react-router-dom"
+import { NavLink, useNavigate } from "react-router-dom"
+import { Plus } from "lucide-react"
 import { MISSING_GROQ_KEY } from "../domain/errors"
 import { barPercent, localJobMessage, speechModel, type SpeechPace } from "../domain/localSpeech"
 import { truncateMiddle } from "../domain/paths"
@@ -9,6 +10,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { useState } from "react"
+import { NameDialog } from "./name-dialog"
 
 function setupPercent(received: number, total: number | null): string {
   if (!total || total <= 0) return ""
@@ -182,9 +184,11 @@ function JobBanner() {
 }
 
 export function AppShell({ children }: { children: React.ReactNode }) {
-  const { settings, chooseHome } = useLibrary()
+  const { settings, chooseHome, courses, addCourse } = useLibrary()
   const host = useHost()
+  const navigate = useNavigate()
   const [homeError, setHomeError] = useState<string | null>(null)
+  const [courseOpen, setCourseOpen] = useState(false)
   const home = settings.homeDirectory
 
   async function changeHome() {
@@ -204,25 +208,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen bg-background text-foreground">
-      <div className="h-1 bg-primary" />
-      <div className="md:grid md:grid-cols-[250px_minmax(0,1fr)]">
-        <aside className="flex flex-col gap-6 border-b border-sidebar-border bg-sidebar px-5 py-5 md:min-h-[calc(100vh-4px)] md:border-r md:border-b-0">
+      <div className="md:grid md:min-h-screen md:grid-cols-[250px_minmax(0,1fr)]">
+        <aside className="flex flex-col gap-6 border-b border-sidebar-border bg-sidebar px-5 py-5 md:border-r md:border-b-0">
           <div>
-            <div className="flex items-center gap-2">
-              <img src="/favicon.svg" alt="" width={28} height={28} className="size-7" />
-              <p className="font-serif text-xl tracking-tight">Study Notes</p>
-            </div>
+            <p className="font-serif text-xl tracking-tight">Study Notes</p>
             <p className="mt-1 text-xs text-muted-foreground">One computer, one student.</p>
           </div>
-          <NavLink
-            to="/"
-            end
-            className={({ isActive }) =>
-              `text-sm ${isActive ? "text-primary" : "text-foreground hover:text-primary"}`
-            }
-          >
-            Courses
-          </NavLink>
           <div className="grid gap-2">
             <p className="text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase">
               Home
@@ -239,6 +230,37 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </button>
             {homeError ? <p className="text-xs text-destructive">{homeError}</p> : null}
           </div>
+          <nav className="grid gap-2">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase">Courses</p>
+              <button
+                type="button"
+                aria-label="New course"
+                className="grid size-6 place-items-center rounded-md text-primary hover:bg-accent"
+                onClick={() => setCourseOpen(true)}
+              >
+                <Plus className="size-4" />
+              </button>
+            </div>
+            {courses.length === 0 ? (
+              <p className="text-xs leading-relaxed text-muted-foreground">No courses yet.</p>
+            ) : (
+              <ul className="grid gap-1">
+                {courses.map((course) => (
+                  <li key={course.id}>
+                    <NavLink
+                      to={`/courses/${course.id}`}
+                      className={({ isActive }) =>
+                        `block truncate text-sm ${isActive ? "text-primary" : "text-foreground hover:text-primary"}`
+                      }
+                    >
+                      {course.name}
+                    </NavLink>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </nav>
           <div className="md:mt-auto">
             <ProviderSwitch />
           </div>
@@ -248,6 +270,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div className="mx-auto w-full max-w-4xl px-5 py-8 md:px-10 md:py-10">{children}</div>
         </div>
       </div>
+      <NameDialog
+        open={courseOpen}
+        title="New course"
+        description="A course is a folder in your home directory."
+        initial=""
+        confirmLabel="Create course"
+        onOpenChange={setCourseOpen}
+        onSubmit={async (name) => {
+          const created = await addCourse(name)
+          navigate(`/courses/${created.id}`)
+        }}
+      />
     </div>
   )
 }

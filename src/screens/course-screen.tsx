@@ -23,7 +23,7 @@ export function CourseScreen() {
   const { courseId = "" } = useParams()
   const host = useHost()
   const { store } = host
-  const { settings, revision } = useLibrary()
+  const { settings, revision, refreshLibrary } = useLibrary()
   const [course, setCourse] = useState<CourseDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -66,9 +66,6 @@ export function CourseScreen() {
       <div className="mx-auto max-w-md">
         <h1 className="font-serif text-3xl">Course unavailable</h1>
         <p className="mt-3 text-muted-foreground">{error}</p>
-        <Button asChild variant="outline" className="mt-6">
-          <Link to="/">Back to courses</Link>
-        </Button>
       </div>
     )
   }
@@ -97,10 +94,7 @@ export function CourseScreen() {
 
   return (
     <div className="mx-auto w-full max-w-2xl">
-      <Link to="/" className="text-sm text-muted-foreground hover:text-foreground">
-        Courses
-      </Link>
-      <div className="mt-4 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <h1 className="min-w-0 flex-1">
           <InlineName
             value={current.name}
@@ -109,6 +103,7 @@ export function CourseScreen() {
             onRename={async (name) => {
               const next = await renameCourse(store, home, current.id, name)
               setCourse(next)
+              await refreshLibrary()
             }}
           />
         </h1>
@@ -153,13 +148,14 @@ export function CourseScreen() {
               const notes = current.notes.filter((note) => note.moduleId === module.id)
               return (
                 <section key={module.id}>
-                  <h3>
+                  <h3 className="border-b border-border pb-2">
                     <InlineName
                       value={module.name}
                       label={`Rename ${module.name}`}
                       className="font-serif text-xl"
                       onRename={async (name) => {
                         setCourse(await renameModule(store, home, current.id, module.id, name))
+                        await refreshLibrary()
                       }}
                     />
                   </h3>
@@ -223,11 +219,11 @@ function NoteList({
 }) {
   if (visible.length === 0) return null
   return (
-    <ul className="mt-4 border-t border-border">
+    <ul className="mt-4">
       {visible.map((note) => {
         const title = noteListTitle(note, notes)
         return (
-          <li key={note.id} className="flex items-center gap-3 border-b border-border">
+          <li key={note.id} className="flex items-center gap-3">
             <Link
               to={`/courses/${courseId}/notes/${note.id}`}
               className="group block min-w-0 flex-1 py-4 hover:bg-accent/40"
