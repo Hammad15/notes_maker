@@ -106,9 +106,11 @@ describe("one lecture outline", () => {
         }
         expect(system).toMatch(/Do not mention a transcript, a segment, a slice, or missing source material/)
         expect(system).toMatch(/return no heading and no text/)
+        expect(system).toMatch(/bold bullet for each subtopic and indented bullets for the facts under it/)
         expect(system).toMatch(
-          /When the lecture's context needs them, such as history, keep dates, years, and named time periods that were spoken/,
+          /Keep every date, year, month, and named time period that was spoken, including ordinal years and relative timing/,
         )
+        expect(system).toMatch(/every spoken date in this section/)
         expect(system).toMatch(/Do not invent dates/)
         if (/Section: Market failure/.test(user)) {
           return [
@@ -216,6 +218,9 @@ describe("one lecture outline", () => {
         const user = messages[1]?.content ?? ""
         if (/compact summary/i.test(system)) {
           kinds.push("summary")
+          expect(system).toMatch(/Keep every spoken date, year, month, named time period, name, and count/)
+          expect(system).toMatch(/Do not invent dates/)
+          expect(system).toMatch(/at most 120 words/)
           const points = [...user.matchAll(/point (\d+)/g)]
           const first = points[0]?.[1] ?? "0"
           const last = points[points.length - 1]?.[1] ?? first
@@ -223,6 +228,8 @@ describe("one lecture outline", () => {
         }
         if (/outline of the whole lecture/i.test(system)) {
           kinds.push("outline")
+          expect(system).toMatch(/Name every sustained subject/)
+          expect(system).toMatch(/every spoken date for that subject/)
           outlineUsers.push(user)
           return JSON.stringify({
             sections: [

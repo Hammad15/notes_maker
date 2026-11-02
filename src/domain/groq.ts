@@ -34,11 +34,16 @@ export interface PreparedAudio {
 export function studyNotesInstruction(language: NotesLanguage): string {
   return [
     `Write study notes in ${language.name}.`,
-    "Use Markdown headings for topics and bullet points for the ideas.",
-    "Leave out filler words, repeated false starts, music, applause, and lines such as thanks for watching.",
-    "Do not include a transcript, a timestamp table, or a word-for-word record.",
-    "When the lecture's context needs them, such as history, keep dates, years, and named time periods that were spoken. Do not invent dates.",
+    "Use a level-2 Markdown heading for each major topic.",
+    "Under a heading, use a bold bullet for each subtopic and indented bullets for the facts under it.",
+    "Keep the density of the speech: names, numbers, places, counts, and the order of events.",
+    "Do not compress a developed account into a short overview, and do not drop a subject the speech develops.",
+    "Keep every date, year, month, and named time period that was spoken, including ordinal years and relative timing.",
+    "Do not invent dates.",
     "Do not invent facts.",
+    "Leave out filler words, repeated false starts, music, applause, and lines such as thanks for watching.",
+    "Never mention a transcript. Do not include a timestamp table or a word-for-word record.",
+    "Omit a heading that would have no bullets.",
   ].join(" ")
 }
 

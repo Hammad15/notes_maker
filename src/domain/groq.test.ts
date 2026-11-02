@@ -46,10 +46,15 @@ describe("Groq speech and notes", () => {
     expect(notesLanguage("es")).toEqual({ code: "es", name: "es" })
     const english = studyNotesInstruction(notesLanguage("en"))
     expect(english).toContain("English")
+    expect(english).toContain("Use a level-2 Markdown heading for each major topic.")
+    expect(english).toContain("use a bold bullet for each subtopic and indented bullets for the facts under it.")
+    expect(english).toContain("Keep the density of the speech: names, numbers, places, counts, and the order of events.")
     expect(english).toContain(
-      "When the lecture's context needs them, such as history, keep dates, years, and named time periods that were spoken.",
+      "Keep every date, year, month, and named time period that was spoken, including ordinal years and relative timing.",
     )
     expect(english).toContain("Do not invent dates.")
+    expect(english).toContain("Never mention a transcript.")
+    expect(english).toContain("Omit a heading that would have no bullets.")
     expect(english).not.toMatch(/Hijrah|Biʿthah|Bi.thah|ISC\s*102/i)
   })
 

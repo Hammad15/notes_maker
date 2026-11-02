@@ -395,7 +395,9 @@ function outlineSystem(language: NotesLanguage): string {
   return [
     "Build one outline of the whole lecture before any section is written.",
     "You are given the full lecture, or compact summaries that cover it from start to finish.",
+    "Name every sustained subject, from the start of the lecture through the end. Do not skip a subject that has its own stretch of speech.",
     "A topic that shows up in more than one part is still one section.",
+    "Give each section a range that includes the events and every spoken date for that subject.",
     'Return JSON only, with this shape: {"sections":[{"title":"Supply and demand","ranges":[{"start":0,"end":90}]}]}',
     "Times are seconds. A section may have more than one range when the topic returns later.",
     "Do not write bullets, headings, or a transcript.",
@@ -406,7 +408,8 @@ function outlineSystem(language: NotesLanguage): string {
 function summarySystem(language: NotesLanguage): string {
   return [
     "Write a compact summary of this part of the lecture. This is not the study note.",
-    "Cover the ideas in order in at most 80 words.",
+    "Cover each subject in order, in at most 120 words.",
+    "Keep every spoken date, year, month, named time period, name, and count. Do not drop one to stay shorter. Do not invent dates.",
     "Put the start and end seconds in the first line as START-END | summary.",
     "No headings and no transcript.",
     `Write in ${language.name}.`,
@@ -420,18 +423,26 @@ function fillSystem(language: NotesLanguage, style: NoteStyle | null): string {
       ? "Return Markdown for this section only. Reuse the section title as the topic."
       : style?.preset === "paragraphs"
         ? "Write this section only, under a level-2 heading that reuses the section title."
-        : "Start with a level-2 heading that reuses the section title. Use bullets for the points and indented bullets for sub-points."
+        : "Start with a level-2 heading that reuses the section title. Use a bold bullet for each subtopic and indented bullets for the facts under it."
+  const density =
+    style?.preset === "concise"
+      ? ""
+      : "Keep the names, numbers, places, counts, sequence of events, and every spoken date in this section. Do not replace that detail with a short overview."
   return [
     shape,
     "The lecture outline is already decided.",
     "Write only the section named below, from the speech that follows.",
     layout,
+    density,
     "If that speech does not discuss this section, return no heading and no text.",
     "Do not mention a transcript, a segment, a slice, or missing source material.",
     "Do not write that something is absent.",
     "Do not invent facts.",
+    "Do not invent dates.",
     "Do not write the other sections or a second copy of the lecture.",
-  ].join(" ")
+  ]
+    .filter(Boolean)
+    .join(" ")
 }
 
 function whereLine(content: NoteContent): string {
