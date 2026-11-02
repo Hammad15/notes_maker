@@ -208,7 +208,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <div className="md:grid md:grid-cols-[250px_minmax(0,1fr)]">
         <aside className="flex flex-col gap-6 border-b border-sidebar-border bg-sidebar px-5 py-5 md:min-h-[calc(100vh-4px)] md:border-r md:border-b-0">
           <div>
-            <p className="font-serif text-xl tracking-tight">Study Notes</p>
+            <div className="flex items-center gap-2">
+              <img src="/favicon.svg" alt="" width={28} height={28} className="size-7" />
+              <p className="font-serif text-xl tracking-tight">Study Notes</p>
+            </div>
             <p className="mt-1 text-xs text-muted-foreground">One computer, one student.</p>
           </div>
           <NavLink

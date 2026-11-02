@@ -2,6 +2,7 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { writeFrontmatter } from "../domain/frontmatter"
 import { GROQ_NOTES_MODEL, GROQ_WHISPER_MODEL } from "../domain/groq"
 import { estimateTokens, GROQ_REQUEST_TOKEN_BUDGET } from "../domain/lectureNotes"
 import { GroqKeyError } from "../domain/errors"
@@ -9,6 +10,7 @@ import { createNodeFileStore, dispatchDesktop, resolveAppDataDir } from "../serv
 import {
   createCourse,
   createModule,
+  deleteNote,
   findRecordingNote,
   getCourse,
   makeNotes,
@@ -722,6 +724,55 @@ describe("a recording that already has a note", () => {
     expect(detail.notes).toHaveLength(4)
     expect(detail.modules[0]?.noteCount).toBe(2)
     vi.unstubAllGlobals()
+  })
+})
+
+describe("deleting a note", () => {
+  it("removes the markdown, the PDF, and the saved recording link", async () => {
+    const home = path.join(root, "home")
+    const store = createNodeFileStore(path.join(root, "appdata"))
+    await store.mkdir(home)
+    const course = await createCourse(store, home, "Biology 101")
+    const noteId = "note-to-delete"
+    const notesDir = path.join(course.path, "notes")
+    await store.mkdir(notesDir)
+    const markdownPath = path.join(notesDir, "Lecture.md")
+    await store.writeText(
+      markdownPath,
+      writeFrontmatter(
+        {
+          id: noteId,
+          title: "Lecture",
+          courseId: course.id,
+          moduleId: null,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+          provider: "local",
+        },
+        "# Lecture\n\n- Cells divide.\n",
+      ),
+    )
+    await store.writeBytes(path.join(notesDir, "Lecture.pdf"), new Uint8Array([1, 2, 3, 4]))
+    const study = path.join(course.path, ".study")
+    await store.mkdir(path.join(study, "sources"))
+    await store.mkdir(path.join(study, "transcripts"))
+    await store.writeText(
+      path.join(study, "sources", `${noteId}.json`),
+      `${JSON.stringify({ noteId, mediaPath: path.join(root, "Lecture.mp3"), courseId: course.id, moduleId: null })}\n`,
+    )
+    await store.writeText(
+      path.join(study, "transcripts", `${noteId}.json`),
+      `${JSON.stringify({ noteId, provider: "local", createdAt: "2026-01-01T00:00:00.000Z", transcribed: true, segments: [{ start: 0, end: 1, text: "Cells." }] })}\n`,
+    )
+    const before = await getCourse(store, home, course.id)
+    expect(before.notes.map((note) => note.mediaFileName)).toEqual(["Lecture.mp3"])
+    await deleteNote(store, home, course.id, noteId)
+    const after = await getCourse(store, home, course.id)
+    expect(after.notes).toEqual([])
+    expect(await store.exists(markdownPath)).toBe(false)
+    expect(await store.exists(path.join(notesDir, "Lecture.pdf"))).toBe(false)
+    expect(await store.exists(path.join(study, "sources", `${noteId}.json`))).toBe(false)
+    expect(await store.exists(path.join(study, "transcripts", `${noteId}.json`))).toBe(false)
   })
 })
 

@@ -78,6 +78,8 @@ export interface NoteInfo {
   updatedAt: string
   provider: ProviderId
   hasHistory: boolean
+  /** File name of the recording this note was made from, when one is saved. */
+  mediaFileName: string | null
 }
 
 export interface CourseDetail extends CourseSummary {
@@ -293,6 +295,7 @@ async function notesIn(
     const stem = entry.name.slice(0, -3)
     const pdfPath = joinPath(dir, `${stem}.pdf`)
     const historyPath = joinPath(coursePath, ".study", "history", `${parsed.meta.id}.md`)
+    const source = await loadSource(store, coursePath, parsed.meta.id)
     notes.push({
       id: parsed.meta.id,
       title: parsed.meta.title,
@@ -306,6 +309,7 @@ async function notesIn(
       updatedAt: parsed.meta.updatedAt,
       provider: parsed.meta.provider,
       hasHistory: await store.exists(historyPath),
+      mediaFileName: source ? fileName(source.mediaPath) : null,
     })
   }
   return notes
@@ -870,6 +874,7 @@ export async function makeNotes(
       updatedAt,
       provider: input.provider,
       pdfExists: true,
+      mediaFileName: existingNote.mediaFileName ?? fileName(input.mediaPath),
     }
   }
   const stemBase = folderNameFromDisplay(content.title) || "Notes"
@@ -893,6 +898,7 @@ export async function makeNotes(
     updatedAt,
     provider: input.provider,
     hasHistory: false,
+    mediaFileName: fileName(input.mediaPath),
   }
 }
 
@@ -949,6 +955,24 @@ async function loadTranscript(store: FileStore, coursePath: string, noteId: stri
   } catch {
     return null
   }
+}
+
+export async function deleteNote(
+  store: FileStore,
+  home: string,
+  courseId: string,
+  noteId: string,
+): Promise<void> {
+  const course = await findCourse(store, home, courseId)
+  const note = course.notes.find((item) => item.id === noteId)
+  if (!note) throw new StudyError("That note is not in this course.", "NOTE")
+  await store.remove(note.markdownPath)
+  await store.remove(note.pdfPath)
+  const study = joinPath(course.path, ".study")
+  await store.remove(joinPath(study, "transcripts", `${noteId}.json`))
+  await store.remove(joinPath(study, "sources", `${noteId}.json`))
+  await store.remove(joinPath(study, "history", `${noteId}.md`))
+  await touchCourse(store, course, new Date().toISOString())
 }
 
 export async function readNote(

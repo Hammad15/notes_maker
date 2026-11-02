@@ -1,17 +1,21 @@
 import { useEffect, useState } from "react"
-import { Link, useParams, useSearchParams } from "react-router-dom"
+import { Link, useParams } from "react-router-dom"
+import { Trash2 } from "lucide-react"
 import { messageOf } from "../domain/errors"
-import { formatWhen } from "../domain/text"
+import { noteListTitle } from "../domain/noteTitle"
 import { useHost } from "../platform/host"
 import {
   createModule,
+  deleteNote,
   getCourse,
   renameCourse,
   renameModule,
   type CourseDetail,
+  type NoteInfo,
 } from "../services/library"
 import { useLibrary } from "../state/library-context"
 import { Button } from "@/components/ui/button"
+import { InlineName } from "../components/inline-name"
 import { MakeNotesDialog } from "../components/make-notes-dialog"
 import { NameDialog } from "../components/name-dialog"
 
@@ -23,12 +27,9 @@ export function CourseScreen() {
   const [course, setCourse] = useState<CourseDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [params, setParams] = useSearchParams()
-  const requestedModule = params.get("module")
   const [makeOpen, setMakeOpen] = useState(false)
-  const [renameOpen, setRenameOpen] = useState(false)
   const [moduleOpen, setModuleOpen] = useState(false)
-  const [moduleRename, setModuleRename] = useState<string | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
 
   useEffect(() => {
     const home = settings.homeDirectory
@@ -62,7 +63,7 @@ export function CourseScreen() {
   }
   if (error && !course) {
     return (
-      <div className="max-w-md">
+      <div className="mx-auto max-w-md">
         <h1 className="font-serif text-3xl">Course unavailable</h1>
         <p className="mt-3 text-muted-foreground">{error}</p>
         <Button asChild variant="outline" className="mt-6">
@@ -73,152 +74,121 @@ export function CourseScreen() {
   }
   if (!course || !settings.homeDirectory) return null
 
-  const filter =
-    requestedModule && course.modules.some((module) => module.id === requestedModule)
-      ? requestedModule
-      : "all"
-  const visible = course.notes.filter((note) => filter === "all" || note.moduleId === filter)
-  const activeModule = course.modules.find((module) => module.id === filter)
+  const current = course
+  const home = settings.homeDirectory
+  const courseNotes = current.notes.filter((note) => note.moduleId == null)
 
-  function showModule(moduleId: string | null) {
-    if (!moduleId) setParams({})
-    else setParams({ module: moduleId })
+  async function reload() {
+    setCourse(await getCourse(store, home, current.id))
   }
-  const renaming = course.modules.find((module) => module.id === moduleRename) ?? null
+
+  async function removeNote(note: NoteInfo) {
+    setError(null)
+    setDeletingId(note.id)
+    try {
+      await deleteNote(store, home, current.id, note.id)
+      await reload()
+    } catch (err) {
+      setError(messageOf(err))
+    } finally {
+      setDeletingId(null)
+    }
+  }
 
   return (
-    <div>
+    <div className="mx-auto w-full max-w-2xl">
       <Link to="/" className="text-sm text-muted-foreground hover:text-foreground">
         Courses
       </Link>
-      <div className="mt-4 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h1 className="font-serif text-4xl tracking-tight">{course.name}</h1>
-          <button
-            type="button"
-            className="mt-2 text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
-            onClick={() => setRenameOpen(true)}
-          >
-            Rename
-          </button>
-        </div>
+      <div className="mt-4 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <h1 className="min-w-0 flex-1">
+          <InlineName
+            value={current.name}
+            label="Course name"
+            className="font-serif text-4xl tracking-tight"
+            onRename={async (name) => {
+              const next = await renameCourse(store, home, current.id, name)
+              setCourse(next)
+            }}
+          />
+        </h1>
         <Button type="button" className="w-full sm:w-auto" onClick={() => setMakeOpen(true)}>
           Make notes
         </Button>
       </div>
       {error ? <p className="mt-4 text-sm text-destructive">{error}</p> : null}
-      <div className="mt-10 grid gap-10 lg:grid-cols-[minmax(0,1fr)_240px]">
-        <section>
-          <div className="flex items-baseline justify-between gap-3">
-            <h2 className="font-serif text-2xl">{activeModule ? activeModule.name : "Notes"}</h2>
-            {filter !== "all" ? (
-              <button
-                type="button"
-                className="text-sm text-muted-foreground hover:text-foreground"
-                onClick={() => showModule(null)}
-              >
-                All notes
-              </button>
-            ) : null}
+      {courseNotes.length === 0 && current.modules.length === 0 ? (
+        <div className="mt-8">
+          <h2 className="font-serif text-xl">No notes yet</h2>
+          <p className="mt-3 leading-relaxed text-muted-foreground">
+            Make notes from a video or audio file already on this computer. The file stays where it is.
+          </p>
+        </div>
+      ) : (
+        <NoteList
+          courseId={current.id}
+          notes={current.notes}
+          visible={courseNotes}
+          deletingId={deletingId}
+          onOpenPdf={(note) => {
+            void host.openPath(note.pdfPath).catch((err: unknown) => setError(messageOf(err)))
+          }}
+          onDelete={(note) => void removeNote(note)}
+        />
+      )}
+      <section className="mt-10">
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="font-serif text-2xl">Modules</h2>
+          <Button type="button" variant="outline" size="sm" onClick={() => setModuleOpen(true)}>
+            New
+          </Button>
+        </div>
+        {current.modules.length === 0 ? (
+          <p className="mt-4 text-sm leading-relaxed text-muted-foreground">
+            A module is a folder inside the course, for a unit or topic. Notes can stay on the course itself.
+          </p>
+        ) : (
+          <div className="mt-6 grid gap-8">
+            {current.modules.map((module) => {
+              const notes = current.notes.filter((note) => note.moduleId === module.id)
+              return (
+                <section key={module.id}>
+                  <h3>
+                    <InlineName
+                      value={module.name}
+                      label={`Rename ${module.name}`}
+                      className="font-serif text-xl"
+                      onRename={async (name) => {
+                        setCourse(await renameModule(store, home, current.id, module.id, name))
+                      }}
+                    />
+                  </h3>
+                  {notes.length === 0 ? (
+                    <p className="mt-2 text-sm text-muted-foreground">No notes in this module yet.</p>
+                  ) : (
+                    <NoteList
+                      courseId={current.id}
+                      notes={current.notes}
+                      visible={notes}
+                      deletingId={deletingId}
+                      onOpenPdf={(note) => {
+                        void host.openPath(note.pdfPath).catch((err: unknown) => setError(messageOf(err)))
+                      }}
+                      onDelete={(note) => void removeNote(note)}
+                    />
+                  )}
+                </section>
+              )
+            })}
           </div>
-          {visible.length === 0 ? (
-            <div className="mt-8 max-w-md">
-              <h3 className="font-serif text-xl">
-                {activeModule ? `No notes in ${activeModule.name} yet` : "No notes yet"}
-              </h3>
-              <p className="mt-3 leading-relaxed text-muted-foreground">
-                Make notes from a video or audio file already on this computer. The file stays where it is.
-              </p>
-            </div>
-          ) : (
-            <ul className="mt-4 border-t border-border">
-              {visible.map((note) => (
-                <li key={note.id} className="flex items-center gap-3 border-b border-border">
-                  <Link
-                    to={`/courses/${course.id}/notes/${note.id}`}
-                    className="group block min-w-0 flex-1 py-4 hover:bg-accent/40"
-                  >
-                    <span className="block font-serif text-xl group-hover:text-primary">{note.title}</span>
-                    <span className="mt-1 block text-sm text-muted-foreground">
-                      {note.moduleName ?? "This course"}
-                      {" · "}
-                      {formatWhen(note.updatedAt)}
-                      {" · "}
-                      {note.pdfExists ? "PDF saved" : "PDF missing"}
-                    </span>
-                  </Link>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="shrink-0"
-                    disabled={!note.pdfExists}
-                    onClick={() => {
-                      void host.openPath(note.pdfPath).catch((err: unknown) => setError(messageOf(err)))
-                    }}
-                  >
-                    Open PDF
-                  </Button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-        <aside>
-          <div className="flex items-center justify-between gap-3">
-            <h2 className="font-serif text-2xl">Modules</h2>
-            <Button type="button" variant="outline" size="sm" onClick={() => setModuleOpen(true)}>
-              New
-            </Button>
-          </div>
-          {course.modules.length === 0 ? (
-            <p className="mt-4 text-sm leading-relaxed text-muted-foreground">
-              A module is a folder inside the course, for a unit or topic. Notes can stay on the course itself.
-            </p>
-          ) : (
-            <ul className="mt-4">
-              {course.modules.map((module) => (
-                <li key={module.id} className="border-b border-border py-3">
-                  <button
-                    type="button"
-                    className={`block text-left text-sm ${filter === module.id ? "text-primary" : "hover:text-primary"}`}
-                    onClick={() => showModule(module.id)}
-                  >
-                    {module.name}
-                  </button>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {module.noteCount === 1 ? "1 note" : `${module.noteCount} notes`}
-                  </p>
-                  <button
-                    type="button"
-                    className="mt-1 text-xs text-muted-foreground underline-offset-4 hover:underline"
-                    onClick={() => setModuleRename(module.id)}
-                  >
-                    Rename
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </aside>
-      </div>
+        )}
+      </section>
       <MakeNotesDialog
         open={makeOpen}
-        courseId={course.id}
-        courseName={course.name}
-        modules={course.modules}
+        courseId={current.id}
+        courseName={current.name}
+        modules={current.modules}
         onOpenChange={setMakeOpen}
-      />
-      <NameDialog
-        open={renameOpen}
-        title="Rename course"
-        description="The folder name follows the course. Notes keep their id."
-        initial={course.name}
-        confirmLabel="Rename"
-        onOpenChange={setRenameOpen}
-        onSubmit={async (name) => {
-          const next = await renameCourse(store, settings.homeDirectory!, course.id, name)
-          setCourse(next)
-        }}
       />
       <NameDialog
         open={moduleOpen}
@@ -228,32 +198,65 @@ export function CourseScreen() {
         confirmLabel="Create module"
         onOpenChange={setModuleOpen}
         onSubmit={async (name) => {
-          await createModule(store, settings.homeDirectory!, course.id, name)
-          setCourse(await getCourse(store, settings.homeDirectory!, course.id))
-        }}
-      />
-      <NameDialog
-        open={renaming !== null}
-        title="Rename module"
-        description="The module folder follows this name."
-        initial={renaming?.name ?? ""}
-        confirmLabel="Rename"
-        onOpenChange={(next) => {
-          if (!next) setModuleRename(null)
-        }}
-        onSubmit={async (name) => {
-          if (!renaming) return
-          const next = await renameModule(
-            store,
-            settings.homeDirectory!,
-            course.id,
-            renaming.id,
-            name,
-          )
-          setCourse(next)
-          setModuleRename(null)
+          await createModule(store, home, current.id, name)
+          await reload()
         }}
       />
     </div>
+  )
+}
+
+function NoteList({
+  courseId,
+  notes,
+  visible,
+  deletingId,
+  onOpenPdf,
+  onDelete,
+}: {
+  courseId: string
+  notes: NoteInfo[]
+  visible: NoteInfo[]
+  deletingId: string | null
+  onOpenPdf: (note: NoteInfo) => void
+  onDelete: (note: NoteInfo) => void
+}) {
+  if (visible.length === 0) return null
+  return (
+    <ul className="mt-4 border-t border-border">
+      {visible.map((note) => {
+        const title = noteListTitle(note, notes)
+        return (
+          <li key={note.id} className="flex items-center gap-3 border-b border-border">
+            <Link
+              to={`/courses/${courseId}/notes/${note.id}`}
+              className="group block min-w-0 flex-1 py-4 hover:bg-accent/40"
+            >
+              <span className="block font-serif text-xl group-hover:text-primary">{title}</span>
+            </Link>
+            <Button
+              type="button"
+              variant="outline"
+              className="shrink-0"
+              disabled={!note.pdfExists}
+              onClick={() => onOpenPdf(note)}
+            >
+              Open PDF
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="shrink-0 text-muted-foreground hover:text-destructive"
+              aria-label={`Delete ${title}`}
+              disabled={deletingId === note.id}
+              onClick={() => onDelete(note)}
+            >
+              <Trash2 />
+            </Button>
+          </li>
+        )
+      })}
+    </ul>
   )
 }
