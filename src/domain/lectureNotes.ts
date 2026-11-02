@@ -424,9 +424,13 @@ function fillSystem(language: NotesLanguage, style: NoteStyle | null): string {
   return [
     shape,
     "The lecture outline is already decided.",
-    "Write only the section named below, from the matching part of the transcript.",
+    "Write only the section named below, from the speech that follows.",
     layout,
-    "Do not write the other sections, a transcript, or a second copy of the lecture.",
+    "If that speech does not discuss this section, return no heading and no text.",
+    "Do not mention a transcript, a segment, a slice, or missing source material.",
+    "Do not write that something is absent.",
+    "Do not invent facts.",
+    "Do not write the other sections or a second copy of the lecture.",
   ].join(" ")
 }
 
@@ -471,6 +475,61 @@ function splitByHeading(markdown: string): MarkdownBlock[] {
     .filter((block) => block.title || block.body)
 }
 
+/** A line that only says the source does not discuss the heading. Real facts stay. */
+export function isAbsenceDisclaimer(text: string): boolean {
+  const line = text.replace(/\s+/g, " ").trim()
+  if (!line) return false
+  if (/\bnot in the transcript\b/i.test(line)) return true
+  if (/\bdo(?:es)? ?n[o']t contain\b/i.test(line) && /\b(?:transcript|discussion|material|information|source)\b/i.test(line)) {
+    return true
+  }
+  if (/\bno discussion of\b/i.test(line)) return true
+  if (/\btranscript segment\b/i.test(line)) return true
+  if (/\b(?:provided|this|the) transcript\b/i.test(line) && /\b(?:not|no|nothing|missing|absent|lack|without|does not|doesn't)\b/i.test(line)) {
+    return true
+  }
+  if (
+    /\b(?:this|the) (?:segment|slice|excerpt|passage)\b/i.test(line) &&
+    /\b(?:not|no|nothing|missing|absent|does not|doesn't|without)\b/i.test(line) &&
+    /\b(?:discuss|cover|mention|includ|address|material|information)\b/i.test(line)
+  ) {
+    return true
+  }
+  if (/\b(?:missing|absent) (?:source|material|transcript|segment|slice)\b/i.test(line)) return true
+  if (/\bsource material\b/i.test(line) && /\b(?:not|no|nothing|missing|absent|lack|without)\b/i.test(line)) return true
+  if (/\b(?:nothing|no information|no material|no content) (?:in|on|about|for) (?:this|the) (?:section|heading|topic|part|speech)\b/i.test(line)) {
+    return true
+  }
+  if (/\b(?:is|was|are|were) not (?:discussed|covered|mentioned|present|included|addressed)\b/i.test(line)) return true
+  if (/\bnot (?:discussed|covered|mentioned|addressed) in\b/i.test(line)) return true
+  return false
+}
+
+function withoutDisclaimers(body: string): string {
+  const kept: string[] = []
+  for (const raw of body.split("\n")) {
+    const trimmed = raw.trim()
+    if (!trimmed) {
+      if (kept.length > 0 && kept[kept.length - 1] !== "") kept.push("")
+      continue
+    }
+    const marker = raw.match(/^(\s*(?:[-*]|\d+\.)\s+)/)
+    const text = trimmed.replace(/^(?:[-*]|\d+\.)\s+/, "")
+    if (/^#{1,6}\s+/.test(trimmed)) {
+      const title = trimmed.replace(/^#{1,6}\s+/, "")
+      if (isAbsenceDisclaimer(title)) continue
+      kept.push(raw.trimEnd())
+      continue
+    }
+    const sentences = splitSentences(text)
+    const keptSentences = (sentences.length > 0 ? sentences : [text]).filter((sentence) => !isAbsenceDisclaimer(sentence))
+    if (keptSentences.length === 0) continue
+    const prefix = marker?.[1] ?? ""
+    kept.push(`${prefix}${keptSentences.join(" ")}`.trimEnd())
+  }
+  return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim()
+}
+
 function mergeBodies(bodies: string[]): string {
   const seen = new Set<string>()
   const lines: string[] = []
@@ -497,23 +556,28 @@ export function mergeMarkdownSections(parts: Array<{ markdown: string; title: st
     const blocks = splitByHeading(part.markdown)
     const usable = blocks.length > 0 ? blocks : [{ title: part.title, body: stripFences(part.markdown) }]
     for (const block of usable) {
-      const title = block.title || part.title
+      const title = isAbsenceDisclaimer(block.title) ? part.title : block.title || part.title
+      if (isAbsenceDisclaimer(title)) continue
+      const body = withoutDisclaimers(block.body)
+      if (!body) continue
       const key = headingKey(title) || headingKey(part.title) || "notes"
       const existing = map.get(key)
       if (!existing) {
-        map.set(key, { title, bodies: block.body ? [block.body] : [] })
+        map.set(key, { title, bodies: [body] })
         order.push(key)
         continue
       }
-      if (block.body) existing.bodies.push(block.body)
+      existing.bodies.push(body)
     }
   }
   return order
     .map((key) => {
       const block = map.get(key)!
-      const body = mergeBodies(block.bodies)
-      return body ? `## ${block.title}\n\n${body}` : `## ${block.title}`
+      const body = withoutDisclaimers(mergeBodies(block.bodies))
+      if (!body || isAbsenceDisclaimer(block.title)) return ""
+      return `## ${block.title}\n\n${body}`
     })
+    .filter(Boolean)
     .join("\n\n")
     .trim()
 }
@@ -525,16 +589,20 @@ function tableNote(parts: Array<{ markdown: string; title: string }>): string | 
     const sources = blocks.length > 0 ? blocks : [{ title: part.title, body: stripFences(part.markdown) }]
     for (const block of sources) {
       const title = (block.title || part.title).replace(/\|/g, "/")
-      const data = block.body
+      if (isAbsenceDisclaimer(title)) continue
+      const data = withoutDisclaimers(block.body)
         .split("\n")
         .map((line) => line.trim())
-        .filter((line) => line.startsWith("|") && !/^\|\s*-+/.test(line) && !/\btopic\b/i.test(line))
+        .filter(
+          (line) =>
+            line.startsWith("|") && !/^\|\s*-+/.test(line) && !/\btopic\b/i.test(line) && !isAbsenceDisclaimer(line),
+        )
       if (data.length > 0) {
         rows.push(...data)
         continue
       }
-      const points = block.body.replace(/\|/g, "/").replace(/\s+/g, " ").trim()
-      if (title && points) rows.push(`| ${title} | ${points} |`)
+      const points = withoutDisclaimers(block.body).replace(/\|/g, "/").replace(/\s+/g, " ").trim()
+      if (title && points && !isAbsenceDisclaimer(points)) rows.push(`| ${title} | ${points} |`)
     }
   }
   if (rows.length === 0) return null
@@ -603,9 +671,7 @@ export async function writeLectureNotes(request: LectureNotesRequest): Promise<s
     request.style?.preset === "table"
       ? tableNote(written) || mergeMarkdownSections(written)
       : mergeMarkdownSections(written)
-  const cleaned = merged
-    .replace(/\n## Transcript\b[\s\S]*$/i, "")
-    .trim()
+  const cleaned = withoutDisclaimers(merged.replace(/\n## Transcript\b[\s\S]*$/i, "")).trim()
   if (!cleaned) throw new StudyError("Groq did not return study notes.", "NOTES")
   return cleaned
 }

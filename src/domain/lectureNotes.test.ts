@@ -85,6 +85,54 @@ describe("lecture note chunks", () => {
 })
 
 describe("one lecture outline", () => {
+  it("drops a not-in-the-transcript disclaimer and keeps the real section", async () => {
+    const body = await writeLectureNotes({
+      language: { code: "en", name: "English" },
+      content: content([
+        { start: 0, end: 4, text: "Price responds to substitutes." },
+        { start: 6, end: 9, text: "The market segment does not contain many buyers." },
+      ]),
+      complete: async (messages) => {
+        const system = messages[0]?.content ?? ""
+        const user = messages[1]?.content ?? ""
+        if (/outline of the whole lecture/i.test(system)) {
+          return JSON.stringify({
+            sections: [
+              { title: "Elasticity", start: 0, end: 4 },
+              { title: "Market failure", start: 6, end: 9 },
+            ],
+          })
+        }
+        expect(system).toMatch(/Do not mention a transcript, a segment, a slice, or missing source material/)
+        expect(system).toMatch(/return no heading and no text/)
+        if (/Section: Market failure/.test(user)) {
+          return [
+            "## Market failure",
+            "",
+            "The provided transcript segment does not contain any discussion of market failure.",
+            "",
+            "Not in the transcript.",
+            "",
+            "This slice does not cover market failure.",
+          ].join("\n")
+        }
+        return "## Elasticity\n\n- Price responds to substitutes.\n- The market segment does not contain many buyers.\n"
+      },
+    })
+    expect(body).toContain("## Elasticity")
+    expect(body).toContain("Price responds to substitutes.")
+    expect(body).toContain("The market segment does not contain many buyers.")
+    expect(body).not.toMatch(/not in the transcript/i)
+    expect(body).not.toMatch(/does not contain any discussion/i)
+    expect(body).not.toMatch(/transcript segment/i)
+    expect(body).not.toMatch(/this slice/i)
+    expect(body).not.toMatch(/## Market failure/)
+    expect(mergeMarkdownSections([
+      { title: "Externalities", markdown: "## Externalities\n\nNot in the transcript.\n" },
+      { title: "Elasticity", markdown: "## Elasticity\n\n- Demand stretches.\n" },
+    ])).toBe("## Elasticity\n\n- Demand stretches.")
+  })
+
   it("outlines a short lecture before writing its section", async () => {
     const kinds: string[] = []
     const body = await writeLectureNotes({

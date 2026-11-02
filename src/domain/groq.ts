@@ -37,7 +37,7 @@ export function studyNotesInstruction(language: NotesLanguage): string {
     "Use Markdown headings for topics and bullet points for the ideas.",
     "Leave out filler words, repeated false starts, music, applause, and lines such as thanks for watching.",
     "Do not include a transcript, a timestamp table, or a word-for-word record.",
-    "Do not invent facts that are not in the transcript.",
+    "Do not invent facts.",
   ].join(" ")
 }
 
