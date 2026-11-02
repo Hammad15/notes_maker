@@ -104,6 +104,8 @@ export interface MakeNotesInput {
   moduleId: string | null
   moduleName: string | null
   newModuleName: string | null
+  /** Set only after the user chooses what to do with a note that is already filed. */
+  noteChoice?: "replace" | "add"
   jobId?: string
 }
 
@@ -539,10 +541,30 @@ function contentFrom(
   }
 }
 
+/** The note already filed for this recording in the chosen course or module. */
+export async function findRecordingNote(
+  store: FileStore,
+  input: {
+    home: string
+    courseId: string
+    mediaPath: string
+    moduleId: string | null
+    newModuleName: string | null
+  },
+): Promise<NoteInfo | null> {
+  const course = await findCourse(store, input.home, input.courseId)
+  const saved = await findSavedTranscript(store, course, input)
+  return saved?.note ?? null
+}
+
 async function findSavedTranscript(
   store: FileStore,
   course: CourseDetail,
-  input: MakeNotesInput,
+  input: {
+    mediaPath: string
+    moduleId: string | null
+    newModuleName: string | null
+  },
 ): Promise<{ transcript: Transcript; note: NoteInfo | null } | null> {
   const dir = joinPath(course.path, ".study", "sources")
   if (!(await store.exists(dir))) return null
@@ -685,13 +707,14 @@ export async function makeNotes(
     throw new StudyError("Choose a video or audio file.", "MEDIA")
   }
   const saved = await findSavedTranscript(store, course, input)
+  const addingBeside = input.noteChoice === "add" && saved?.note != null
   const probe = await store.probeMedia(input.mediaPath)
   const title = titleFromMediaPath(input.mediaPath)
   let transcript: Transcript
   let existingNote: NoteInfo | null = null
   if (saved) {
     transcript = saved.transcript
-    existingNote = saved.note
+    existingNote = addingBeside ? null : saved.note
   } else if (input.provider === "cloud") {
     const segments = await transcribeWithGroq(
       store,
@@ -768,14 +791,20 @@ export async function makeNotes(
     transcript.chapters,
     transcript.transcribed,
   )
-  const noteId = existingNote?.id || transcript.noteId || crypto.randomUUID()
+  const noteId = addingBeside
+    ? crypto.randomUUID()
+    : existingNote?.id || transcript.noteId || crypto.randomUUID()
   const study = joinPath(course.path, ".study")
   if (!existingNote) {
     await store.mkdir(joinPath(study, "transcripts"))
     await store.mkdir(joinPath(study, "sources"))
     await store.mkdir(joinPath(study, "history"))
     await store.setHidden(study)
-    const storedTranscript: Transcript = { ...transcript, noteId }
+    const storedTranscript: Transcript = {
+      ...transcript,
+      noteId,
+      createdAt: addingBeside ? new Date().toISOString() : transcript.createdAt,
+    }
     await store.writeText(
       joinPath(study, "transcripts", `${noteId}.json`),
       `${JSON.stringify(storedTranscript, null, 2)}\n`,

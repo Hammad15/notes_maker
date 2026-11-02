@@ -9,6 +9,7 @@ import { createNodeFileStore, dispatchDesktop, resolveAppDataDir } from "../serv
 import {
   createCourse,
   createModule,
+  findRecordingNote,
   getCourse,
   makeNotes,
   readNote,
@@ -559,6 +560,167 @@ describe("a saved long transcript", () => {
     const after = await readdir(notesDir)
     expect(after.filter((name) => name.endsWith(".md"))).toHaveLength(1)
     expect(after.filter((name) => name.endsWith(".pdf"))).toHaveLength(1)
+    vi.unstubAllGlobals()
+  })
+})
+
+describe("a recording that already has a note", () => {
+  it("replaces that note or writes another beside it", async () => {
+    const home = path.join(root, "home")
+    const store = createNodeFileStore(path.join(root, "appdata"))
+    await store.mkdir(home)
+    const course = await createCourse(store, home, "Biology 101")
+    const cells = await createModule(store, home, course.id, "Cells")
+    const media = path.join(root, "Lecture 3.wav")
+    await writeFile(media, wav(2))
+    await saveSettings(store, {
+      homeDirectory: home,
+      provider: "cloud",
+      lastMediaDirectory: null,
+      speechPace: "clearer",
+      groqApiKey: DEV_KEY,
+      languageCode: "en",
+    })
+    const request = {
+      home,
+      courseId: course.id,
+      mediaPath: media,
+      provider: "cloud" as const,
+      moduleId: null,
+      moduleName: null,
+      newModuleName: null,
+    }
+    const study = path.join(course.path, ".study")
+    const orphanId = "orphan-transcript"
+    await store.mkdir(path.join(study, "transcripts"))
+    await store.mkdir(path.join(study, "sources"))
+    await store.writeText(
+      path.join(study, "transcripts", `${orphanId}.json`),
+      `${JSON.stringify(
+        {
+          noteId: orphanId,
+          provider: "cloud",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          durationSeconds: 20,
+          transcribed: true,
+          segments: [
+            { start: 0, end: 8, text: "Today we talk about cell division." },
+            { start: 8, end: 20, text: "Mitosis is the process where the cell divides." },
+          ],
+          chapters: [],
+          model: GROQ_WHISPER_MODEL,
+        },
+        null,
+        2,
+      )}\n`,
+    )
+    await store.writeText(
+      path.join(study, "sources", `${orphanId}.json`),
+      `${JSON.stringify({ noteId: orphanId, mediaPath: media, courseId: course.id, moduleId: null }, null, 2)}\n`,
+    )
+    expect(await findRecordingNote(store, request)).toBeNull()
+    expect(await findRecordingNote(store, { ...request, moduleId: cells.id })).toBeNull()
+    expect(await findRecordingNote(store, { ...request, newModuleName: "Week two" })).toBeNull()
+
+    const version = { n: 1 }
+    const calls: string[] = []
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push(url)
+      expect(new URL(url).host).toBe("api.groq.com")
+      const auth = new Headers(init?.headers).get("authorization") ?? ""
+      if (auth !== `Bearer ${DEV_KEY}`) return Response.json({ error: { message: "unauthorized" } }, { status: 401 })
+      if (url.includes("/audio/transcriptions")) {
+        return Response.json({
+          segments: [
+            { start: 0, end: 8, text: "Today we talk about cell division." },
+            { start: 8, end: 20, text: "Mitosis is the process where the cell divides." },
+          ],
+        })
+      }
+      const system =
+        (JSON.parse(String(init?.body)) as { messages?: Array<{ content: string }> }).messages?.[0]?.content ?? ""
+      const content = /outline of the whole lecture/i.test(system)
+        ? '{"sections":[{"title":"Cell division","start":0,"end":20}]}'
+        : `## Cell division\n\n- Version ${version.n}.`
+      return Response.json({ choices: [{ message: { content } }] })
+    })
+    const whisperCalls = () => calls.filter((url) => url.includes("/audio/transcriptions")).length
+
+    const filed = await makeNotes(store, { ...request, noteChoice: "add" })
+    expect(filed.id).toBe(orphanId)
+    expect(whisperCalls()).toBe(0)
+    expect((await findRecordingNote(store, request))?.id).toBe(filed.id)
+    expect(await findRecordingNote(store, { ...request, moduleId: cells.id })).toBeNull()
+    expect(await findRecordingNote(store, { ...request, newModuleName: "Week two" })).toBeNull()
+
+    version.n = 2
+    const replaced = await makeNotes(store, { ...request, noteChoice: "replace" })
+    expect(replaced.id).toBe(filed.id)
+    expect(replaced.markdownPath).toBe(filed.markdownPath)
+    expect(await store.readText(replaced.markdownPath)).toContain("Version 2.")
+    expect((await getCourse(store, home, course.id)).notes).toHaveLength(1)
+    const kept = await store.readText(filed.markdownPath)
+    const keptPdf = (await store.stat(filed.pdfPath))?.size
+
+    version.n = 3
+    const added = await makeNotes(store, { ...request, noteChoice: "add" })
+    expect(added.id).not.toBe(filed.id)
+    expect(added.markdownPath).not.toBe(filed.markdownPath)
+    expect(added.fileStem.endsWith(" (2)")).toBe(true)
+    expect(await store.readText(filed.markdownPath)).toBe(kept)
+    expect((await store.stat(filed.pdfPath))?.size).toBe(keptPdf)
+    expect(await store.readText(added.markdownPath)).toContain("Version 3.")
+    expect(whisperCalls()).toBe(0)
+    expect((await getCourse(store, home, course.id)).notes).toHaveLength(2)
+    expect((await findRecordingNote(store, request))?.id).toBe(added.id)
+    const originalTranscript = await store.readText(path.join(study, "transcripts", `${filed.id}.json`))
+    expect(originalTranscript).toContain("Mitosis")
+    const copy = JSON.parse(
+      (await store.readText(path.join(study, "transcripts", `${added.id}.json`))) ?? "{}",
+    ) as { noteId: string; createdAt: string }
+    expect(copy.noteId).toBe(added.id)
+    expect(copy.createdAt > "2026-01-01T00:00:00.000Z").toBe(true)
+
+    version.n = 4
+    const replacedNewest = await makeNotes(store, { ...request, noteChoice: "replace" })
+    expect(replacedNewest.id).toBe(added.id)
+    expect(replacedNewest.markdownPath).toBe(added.markdownPath)
+    expect(await store.readText(replacedNewest.markdownPath)).toContain("Version 4.")
+    expect(await store.readText(filed.markdownPath)).toBe(kept)
+    expect((await store.stat(filed.pdfPath))?.size).toBe(keptPdf)
+    expect((await getCourse(store, home, course.id)).notes).toHaveLength(2)
+
+    version.n = 5
+    const inModule = await makeNotes(store, {
+      ...request,
+      moduleId: cells.id,
+      moduleName: cells.name,
+    })
+    expect(inModule.moduleId).toBe(cells.id)
+    expect(whisperCalls()).toBe(1)
+    expect((await findRecordingNote(store, { ...request, moduleId: cells.id }))?.id).toBe(inModule.id)
+    expect((await findRecordingNote(store, request))?.id).toBe(added.id)
+    const moduleMarkdown = await store.readText(inModule.markdownPath)
+    const modulePdf = (await store.stat(inModule.pdfPath))?.size
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    version.n = 6
+    const moduleAdded = await makeNotes(store, {
+      ...request,
+      moduleId: cells.id,
+      moduleName: cells.name,
+      noteChoice: "add",
+    })
+    expect(moduleAdded.id).not.toBe(inModule.id)
+    expect(moduleAdded.markdownPath).toContain(`${path.sep}Cells${path.sep}`)
+    expect(moduleAdded.fileStem.endsWith(" (2)")).toBe(true)
+    expect(await store.readText(inModule.markdownPath)).toBe(moduleMarkdown)
+    expect((await store.stat(inModule.pdfPath))?.size).toBe(modulePdf)
+    expect(whisperCalls()).toBe(1)
+    expect((await findRecordingNote(store, { ...request, moduleId: cells.id }))?.id).toBe(moduleAdded.id)
+    const detail = await getCourse(store, home, course.id)
+    expect(detail.notes).toHaveLength(4)
+    expect(detail.modules[0]?.noteCount).toBe(2)
     vi.unstubAllGlobals()
   })
 })

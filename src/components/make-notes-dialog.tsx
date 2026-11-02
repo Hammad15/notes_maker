@@ -1,11 +1,11 @@
-import { useEffect, useState, type FormEvent } from "react"
+import { useEffect, useRef, useState, type FormEvent } from "react"
 import { MISSING_GROQ_KEY, messageOf } from "../domain/errors"
 import { assertUsableFolderName } from "../domain/names"
 import { fileName } from "../domain/paths"
 import { isMediaFile } from "../domain/text"
 import { WINDOWS_DIALOG_REQUIRED } from "../platform/dialogs"
 import { useHost } from "../platform/host"
-import type { ModuleInfo } from "../services/library"
+import { findRecordingNote, type MakeNotesInput, type ModuleInfo, type NoteInfo } from "../services/library"
 import { useLibrary } from "../state/library-context"
 import { Button } from "@/components/ui/button"
 import {
@@ -45,6 +45,10 @@ export function MakeNotesDialog({
   const [moduleChoice, setModuleChoice] = useState("course")
   const [newModuleName, setNewModuleName] = useState("")
   const [error, setError] = useState<string | null>(null)
+  const [checking, setChecking] = useState(false)
+  const [existing, setExisting] = useState<{ input: MakeNotesInput; note: NoteInfo } | null>(null)
+  const openRef = useRef(open)
+  openRef.current = open
 
   useEffect(() => {
     if (!open) return
@@ -52,6 +56,8 @@ export function MakeNotesDialog({
     setModuleChoice("course")
     setNewModuleName("")
     setError(null)
+    setChecking(false)
+    setExisting(null)
   }, [open])
 
   async function chooseFile() {
@@ -68,12 +74,11 @@ export function MakeNotesDialog({
     }
   }
 
-  function submit(event: FormEvent) {
-    event.preventDefault()
-    if (!settings.homeDirectory) return
+  function preparedInput(): MakeNotesInput | null {
+    if (!settings.homeDirectory) return null
     if (!mediaPath || !isMediaFile(mediaPath)) {
       setError("Choose a video or audio file.")
-      return
+      return null
     }
     let moduleId: string | null = null
     let moduleName: string | null = null
@@ -83,7 +88,7 @@ export function MakeNotesDialog({
         assertUsableFolderName(newModuleName)
       } catch (err) {
         setError(messageOf(err))
-        return
+        return null
       }
       createdModule = newModuleName.trim()
       moduleName = createdModule
@@ -91,7 +96,7 @@ export function MakeNotesDialog({
       moduleId = moduleChoice
       moduleName = modules.find((item) => item.id === moduleChoice)?.name ?? null
     }
-    startMakeNotes({
+    return {
       home: settings.homeDirectory,
       courseId,
       mediaPath,
@@ -99,13 +104,63 @@ export function MakeNotesDialog({
       moduleId,
       moduleName,
       newModuleName: createdModule,
-    })
+    }
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    const input = preparedInput()
+    if (!input || checking) return
+    setChecking(true)
+    setError(null)
+    try {
+      const note = await findRecordingNote(host.store, input)
+      if (!openRef.current) return
+      if (note) {
+        setExisting({ input, note })
+        return
+      }
+      startMakeNotes(input)
+      onOpenChange(false)
+    } catch (err) {
+      if (openRef.current) setError(messageOf(err))
+    } finally {
+      if (openRef.current) setChecking(false)
+    }
+  }
+
+  function choose(noteChoice: "replace" | "add") {
+    if (!existing) return
+    startMakeNotes({ ...existing.input, noteChoice })
     onOpenChange(false)
   }
 
   return (
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent className="sm:max-w-lg">
+          {existing ? (
+            <div className="grid gap-4">
+              <DialogHeader>
+                <DialogTitle>This recording already has a note</DialogTitle>
+                <DialogDescription>
+                  {existing.note.title} is already in {existing.note.moduleName ?? courseName}. Replace
+                  overwrites that note&apos;s Markdown and PDF. Add keeps those files and writes a new note
+                  beside them.
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter className="gap-2 sm:justify-end">
+                <Button type="button" variant="outline" onClick={() => setExisting(null)}>
+                  Back
+                </Button>
+                <Button type="button" variant="outline" onClick={() => choose("add")}>
+                  Add another note
+                </Button>
+                <Button type="button" onClick={() => choose("replace")}>
+                  Replace note
+                </Button>
+              </DialogFooter>
+            </div>
+          ) : (
           <form onSubmit={submit} className="grid gap-4">
             <DialogHeader>
               <DialogTitle>Make notes</DialogTitle>
@@ -186,6 +241,7 @@ export function MakeNotesDialog({
               <Button
                 type="submit"
                 disabled={
+                  checking ||
                   (settings.provider === "local" && localStatus?.ready !== true) ||
                   (settings.provider === "cloud" && settings.groqApiKey.trim().length === 0)
                 }
@@ -194,6 +250,7 @@ export function MakeNotesDialog({
               </Button>
             </DialogFooter>
           </form>
+          )}
         </DialogContent>
       </Dialog>
   )
