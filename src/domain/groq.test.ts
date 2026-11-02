@@ -76,6 +76,42 @@ describe("Groq speech and notes", () => {
     )
   })
 
+  it("caps the completion and retries a rate limit without an upgrade pitch", async () => {
+    const key = "gsk_secret_value"
+    const bodies: Array<{ max_completion_tokens?: number }> = []
+    let tries = 0
+    const fetchImpl: typeof fetch = async (_input, init) => {
+      tries += 1
+      bodies.push(JSON.parse(String(init?.body)) as { max_completion_tokens?: number })
+      if (tries === 1) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              message:
+                "Rate limit reached. Please try again in 0.01s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing",
+            },
+          }),
+          { status: 429 },
+        )
+      }
+      return Response.json({ choices: [{ message: { content: "## Cells" } }] })
+    }
+    await expect(completeChat(key, [{ role: "user", content: "notes" }], fetchImpl, 400)).resolves.toBe("## Cells")
+    expect(tries).toBe(2)
+    expect(bodies[0]?.max_completion_tokens).toBe(400)
+
+    const blocked: typeof fetch = async () =>
+      new Response(
+        JSON.stringify({
+          error: { message: "Rate limit reached. Need more tokens? Upgrade to Dev Tier today." },
+        }),
+        { status: 429, headers: { "retry-after": "0" } },
+      )
+    await expect(completeChat(key, [{ role: "user", content: "notes" }], blocked, 200)).rejects.toThrow(
+      /^Rate limit reached\.$/,
+    )
+  })
+
   it("reads the chat text", () => {
     expect(chatText({ choices: [{ message: { content: "  ## Cells\n" } }] })).toBe("## Cells")
     expect(

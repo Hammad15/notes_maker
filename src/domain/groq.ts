@@ -101,6 +101,31 @@ function groqErrorMessage(payload: unknown, key: string): string | null {
   return text
 }
 
+/** Drop Groq's billing pitch. The app stays on this key and shortens the request instead. */
+export function publicGroqMessage(text: string): string {
+  return text
+    .replace(/\s*Need more tokens\?[\s\S]*$/i, "")
+    .replace(/\s*Upgrade to (?:the )?Dev Tier[\s\S]*$/i, "")
+    .trim()
+}
+
+function retryWaitMs(message: string | null, response: Response): number {
+  const header = response.headers.get("retry-after")
+  if (header) {
+    const seconds = Number(header)
+    if (Number.isFinite(seconds) && seconds >= 0) return Math.min(60_000, Math.round(seconds * 1000))
+  }
+  const match = message?.match(/try again in\s+([0-9]+(?:\.[0-9]+)?)\s*s/i)
+  if (match) return Math.min(60_000, Math.max(0, Math.round(Number(match[1]) * 1000)))
+  return 1_000
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
+}
+
 async function groqPost(
   url: string,
   key: string,
@@ -112,28 +137,34 @@ async function groqPost(
   if (host !== "api.groq.com") {
     throw new StudyError("Cloud notes use Groq.", "GROQ")
   }
-  let response: Response
-  try {
-    response = await fetchImpl(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        ...(jsonBody ? { "content-type": "application/json" } : {}),
-      },
-      body,
-    })
-  } catch {
-    throw new StudyError("Groq could not be reached.", "GROQ")
-  }
-  const payload = await response.json().catch(() => null)
-  if (!response.ok) {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    let response: Response
+    try {
+      response = await fetchImpl(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${key}`,
+          ...(jsonBody ? { "content-type": "application/json" } : {}),
+        },
+        body,
+      })
+    } catch {
+      throw new StudyError("Groq could not be reached.", "GROQ")
+    }
+    const payload = await response.json().catch(() => null)
+    if (response.ok) return payload
     if (response.status === 401 || response.status === 403) {
       throw new StudyError("Groq refused that API key.", "GROQ")
     }
     const detail = groqErrorMessage(payload, key)
-    throw new StudyError(detail || `Groq refused the request (${response.status}).`, "GROQ")
+    const tooLarge = /request too large/i.test(detail ?? "")
+    if (jsonBody && response.status === 429 && !tooLarge && attempt < 3) {
+      await wait(retryWaitMs(detail, response))
+      continue
+    }
+    throw new StudyError(publicGroqMessage(detail ?? "") || `Groq refused the request (${response.status}).`, "GROQ")
   }
-  return payload
+  throw new StudyError("Groq refused the request.", "GROQ")
 }
 
 export async function transcribeChunk(
@@ -160,6 +191,7 @@ export async function completeChat(
   key: string,
   messages: Array<{ role: "system" | "user"; content: string }>,
   fetchImpl: typeof fetch = globalThis.fetch,
+  maxCompletionTokens = 1200,
 ): Promise<string> {
   const payload = await groqPost(
     GROQ_CHAT_URL,
@@ -169,6 +201,7 @@ export async function completeChat(
       temperature: 0.2,
       reasoning_effort: "low",
       reasoning_format: "parsed",
+      max_completion_tokens: maxCompletionTokens,
       messages,
     }),
     true,
