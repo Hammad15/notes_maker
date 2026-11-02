@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { GROQ_NOTES_MODEL, GROQ_WHISPER_MODEL } from "../domain/groq"
+import { estimateTokens, GROQ_REQUEST_TOKEN_BUDGET } from "../domain/lectureNotes"
 import { GroqKeyError } from "../domain/errors"
 import { createNodeFileStore, dispatchDesktop, resolveAppDataDir } from "../server/nodeFs"
 import {
@@ -94,20 +95,49 @@ function groqFetch(calls: string[]): typeof fetch {
         ],
       })
     }
-    const body = JSON.parse(String(init?.body)) as { model?: string }
-    expect(body.model).toBe(GROQ_NOTES_MODEL)
-    expect(body.model).not.toBe("llama-3.3-70b-versatile")
-    expect(body.model).not.toMatch(/whisper-1/)
     return Response.json({
-      choices: [
-        {
-          message: {
-            content: "## Cell division\n\n- Mitosis is the process where the cell divides.\n\n## Transcript\n\nword for word",
-          },
-        },
-      ],
+      choices: [{ message: { content: notesChatContent(String(init?.body)) } }],
     })
   }
+}
+
+function notesChatContent(raw: string): string {
+  const posted = JSON.parse(raw) as {
+    model?: string
+    max_completion_tokens?: number
+    messages?: Array<{ role: string; content: string }>
+  }
+  expect(posted.model).toBe(GROQ_NOTES_MODEL)
+  expect(posted.model).not.toBe("llama-3.3-70b-versatile")
+  expect(posted.model).not.toMatch(/whisper-1/)
+  const messages = posted.messages ?? []
+  const system = messages.find((message) => message.role === "system")?.content ?? ""
+  const user = messages.find((message) => message.role === "user")?.content ?? ""
+  const used = estimateTokens(messages.map((message) => message.content).join("\n")) + (posted.max_completion_tokens ?? 0)
+  expect(used).toBeLessThanOrEqual(GROQ_REQUEST_TOKEN_BUDGET)
+  if (/compact summary/i.test(system)) {
+    const points = [...user.matchAll(/point (\d+)/g)]
+    const first = points[0]?.[1] ?? "0"
+    const last = points[points.length - 1]?.[1] ?? first
+    return `0-1 | Covers point ${first} through point ${last}.`
+  }
+  if (/outline of the whole lecture/i.test(system)) {
+    if (/cell division|mitosis/i.test(user)) {
+      return '{"sections":[{"title":"Cell division","start":0,"end":20}]}'
+    }
+    if (/supply and demand|supply/i.test(user) && !/point \d+/.test(user)) {
+      return '{"sections":[{"title":"Supply","start":0,"end":4}]}'
+    }
+    return JSON.stringify({
+      sections: [{ title: "Elasticity", ranges: [{ start: 0, end: 100000 }] }],
+    })
+  }
+  const point = user.match(/point (\d+)/)?.[1]
+  if (point) return `## Elasticity\n\n- Point ${point} belongs in the lecture.\n  - Detail ${point}.\n`
+  if (/cell division|mitosis/i.test(user)) {
+    return "## Cell division\n\n- Mitosis is the process where the cell divides.\n\n## Transcript\n\nword for word"
+  }
+  return "## Supply\n\n- Demand meets supply."
 }
 
 describe("course files", () => {
@@ -279,9 +309,7 @@ describe("course files", () => {
           { status: 400 },
         )
       }
-      const posted = JSON.parse(String(init?.body)) as { model?: string }
-      expect(posted.model).toBe(GROQ_NOTES_MODEL)
-      return Response.json({ choices: [{ message: { content: "## Supply\n\n- Demand meets supply." } }] })
+      return Response.json({ choices: [{ message: { content: notesChatContent(String(init?.body)) } }] })
     })
     const request = {
       home,
@@ -300,7 +328,7 @@ describe("course files", () => {
     expect(await store.exists(path.join(course.path, "notes"))).toBe(false)
     const filed = await makeNotes(store, request)
     expect(calls.filter((url) => url.includes("/audio/transcriptions"))).toHaveLength(1)
-    expect(calls.filter((url) => url.includes("/chat/completions"))).toHaveLength(2)
+    expect(calls.filter((url) => url.includes("/chat/completions")).length).toBeGreaterThanOrEqual(2)
     const markdown = await store.readText(filed.markdownPath)
     expect(markdown).toContain("Demand meets supply.")
     expect(markdown).not.toContain("## Transcript")
@@ -420,6 +448,118 @@ describe("course files", () => {
     await expect(createModule(store, home, course.id, "notes")).rejects.toThrow(/reserved/)
     const detail = await getCourse(store, home, course.id)
     expect(detail.modules).toHaveLength(1)
+  })
+})
+
+describe("a saved long transcript", () => {
+  it("writes one note and restyles it without Whisper", async () => {
+    const home = path.join(root, "home")
+    const store = createNodeFileStore(path.join(root, "appdata"))
+    await store.mkdir(home)
+    const course = await createCourse(store, home, "ISC 102")
+    const media = path.join(root, "ISC 102 U06.mp3")
+    await writeFile(media, wav(2))
+    await saveSettings(store, {
+      homeDirectory: home,
+      provider: "cloud",
+      lastMediaDirectory: null,
+      speechPace: "clearer",
+      groqApiKey: DEV_KEY,
+      languageCode: "en",
+    })
+    const noteId = "u06"
+    const segments: Array<{ start: number; end: number; text: string }> = []
+    let index = 0
+    let cursor = 0
+    while (estimateTokens(segments.map((segment) => segment.text).join("\n")) < 9000 && index < 400) {
+      const topic = index % 2 === 0 ? "Elasticity" : "Supply"
+      segments.push({
+        start: cursor,
+        end: cursor + 3,
+        text: `${topic} point ${index} is a complete sentence about prices, buyers, sellers, and the market.`,
+      })
+      cursor += 4.2
+      index += 1
+    }
+    const study = path.join(course.path, ".study")
+    await store.mkdir(path.join(study, "transcripts"))
+    await store.mkdir(path.join(study, "sources"))
+    const transcript = {
+      noteId,
+      provider: "cloud",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      durationSeconds: cursor,
+      transcribed: true,
+      segments,
+      chapters: [],
+      model: GROQ_WHISPER_MODEL,
+    }
+    const transcriptPath = path.join(study, "transcripts", `${noteId}.json`)
+    await store.writeText(transcriptPath, `${JSON.stringify(transcript, null, 2)}\n`)
+    await store.writeText(
+      path.join(study, "sources", `${noteId}.json`),
+      `${JSON.stringify({ noteId, mediaPath: media, courseId: course.id, moduleId: null }, null, 2)}\n`,
+    )
+    const kinds: string[] = []
+    const calls: string[] = []
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push(url)
+      expect(url).not.toContain("/audio/transcriptions")
+      const auth = new Headers(init?.headers).get("authorization") ?? ""
+      if (auth !== `Bearer ${DEV_KEY}`) return Response.json({ error: { message: "unauthorized" } }, { status: 401 })
+      const system = (JSON.parse(String(init?.body)) as { messages?: Array<{ content: string }> }).messages?.[0]?.content ?? ""
+      if (/compact summary/i.test(system)) kinds.push("summary")
+      else if (/outline of the whole lecture/i.test(system)) kinds.push("outline")
+      else kinds.push("fill")
+      return Response.json({ choices: [{ message: { content: notesChatContent(String(init?.body)) } }] })
+    })
+    const filed = await makeNotes(store, {
+      home,
+      courseId: course.id,
+      mediaPath: media,
+      provider: "cloud",
+      moduleId: null,
+      moduleName: null,
+      newModuleName: null,
+    })
+    expect(filed.id).toBe(noteId)
+    expect(kinds[0]).toBe("summary")
+    expect(kinds.filter((kind) => kind === "outline")).toEqual(["outline"])
+    expect(kinds.indexOf("fill")).toBeGreaterThan(kinds.indexOf("outline"))
+    const notesDir = path.join(course.path, "notes")
+    const names = await readdir(notesDir)
+    expect(names.filter((name) => name.endsWith(".md"))).toHaveLength(1)
+    expect(names.filter((name) => name.endsWith(".pdf"))).toHaveLength(1)
+    const markdown = await store.readText(filed.markdownPath)
+    expect(markdown).toContain("# ISC 102 U06")
+    expect(markdown?.match(/^## .+$/gm)).toEqual(["## Elasticity"])
+    expect(markdown).toContain("  - Detail")
+    expect((markdown?.match(/^- Point /gm) ?? []).length).toBeGreaterThan(1)
+    expect(markdown).not.toContain("## Transcript")
+    expect(await store.stat(filed.pdfPath)).toMatchObject({ isDir: false })
+    expect((await store.stat(filed.pdfPath))?.size).toBeGreaterThan(500)
+    const savedTranscript = await store.readText(transcriptPath)
+    expect(savedTranscript).toContain("point 0")
+    expect(calls.filter((url) => url.includes("/audio/transcriptions"))).toHaveLength(0)
+
+    const styled = await restyleNote(store, {
+      home,
+      courseId: course.id,
+      noteId,
+      provider: "cloud",
+      preset: "bullets",
+      prompt: "",
+    })
+    expect(await store.readText(transcriptPath)).toBe(savedTranscript)
+    expect(calls.filter((url) => url.includes("/audio/transcriptions"))).toHaveLength(0)
+    expect(styled.body).toContain("## Elasticity")
+    expect(styled.body).not.toContain("## Transcript")
+    expect(await store.stat(styled.pdfPath)).toMatchObject({ isDir: false })
+    const after = await readdir(notesDir)
+    expect(after.filter((name) => name.endsWith(".md"))).toHaveLength(1)
+    expect(after.filter((name) => name.endsWith(".pdf"))).toHaveLength(1)
+    vi.unstubAllGlobals()
   })
 })
 

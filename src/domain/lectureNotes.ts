@@ -1,0 +1,691 @@
+import { StudyError } from "./errors.ts"
+import { restyleInstruction, studyNotesInstruction } from "./groq.ts"
+import type { NotesLanguage } from "./language.ts"
+import { formatClock } from "./text.ts"
+import type { NoteContent, TranscriptSegment } from "./types.ts"
+
+/**
+ * Groq's developer tier allows 8000 tokens per minute for openai/gpt-oss-120b.
+ * One request larger than that limit is rejected. Each notes request aims under
+ * 6000 so the prompt and the completion still fit.
+ */
+export const GROQ_TPM_LIMIT = 8000
+export const GROQ_REQUEST_TOKEN_BUDGET = 6000
+
+const OUTLINE_COMPLETION_TOKENS = 1200
+const SUMMARY_COMPLETION_TOKENS = 500
+const FILL_COMPLETION_TOKENS = 1500
+const REQUEST_FRAMING_TOKENS = 32
+const PACK_MARGIN_TOKENS = 80
+
+/** A pause this long, before a new utterance, is a silence boundary. */
+export const SILENCE_GAP_SECONDS = 0.8
+
+export interface ChatMessage {
+  role: "system" | "user"
+  content: string
+}
+
+export interface NoteStyle {
+  preset: string | null
+  prompt: string
+}
+
+export interface LectureNotesRequest {
+  language: NotesLanguage
+  content: NoteContent
+  style?: NoteStyle | null
+  complete: (messages: ChatMessage[], maxCompletionTokens: number) => Promise<string>
+  onStep?: (done: number, total: number) => void
+}
+
+interface SpeechUnit {
+  start: number
+  end: number
+  text: string
+  /** A chunk may end here: a finished sentence, or silence before a new utterance. */
+  boundary: boolean
+}
+
+interface TimeRange {
+  start: number
+  end: number
+}
+
+interface LectureSection {
+  title: string
+  ranges: TimeRange[]
+}
+
+interface MarkdownBlock {
+  title: string
+  body: string
+}
+
+/** Overestimates tokens so a request planned at 6000 stays under the 8000 limit. */
+export function estimateTokens(text: string): number {
+  const trimmed = text.trim()
+  if (!trimmed) return 0
+  const byChars = Math.ceil(trimmed.length / 3)
+  const byWords = Math.ceil(trimmed.split(/\s+/).length * 1.5)
+  return Math.max(byChars, byWords)
+}
+
+export function requestTokens(messages: Array<{ content: string }>, completionTokens: number): number {
+  const input = messages.reduce((sum, message) => sum + estimateTokens(message.content), 0)
+  return input + REQUEST_FRAMING_TOKENS + Math.max(0, completionTokens)
+}
+
+function endsSentence(text: string): boolean {
+  return /[.!?]["')\]]*$/.test(text.trim())
+}
+
+function abbreviationBefore(text: string, index: number): boolean {
+  const before = text.slice(0, index)
+  if (/\d$/.test(before)) return true
+  return /\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|vs|etc|e\.g|i\.e|St|No)\s*$/i.test(before)
+}
+
+export function splitSentences(text: string): string[] {
+  const parts: string[] = []
+  let start = 0
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index]
+    if (char !== "." && char !== "!" && char !== "?") continue
+    if (char === "." && abbreviationBefore(text, index)) continue
+    let end = index + 1
+    while (end < text.length && /["')\]]/.test(text[end])) end += 1
+    const after = text.slice(end)
+    if (after.length > 0 && !/^\s/.test(after)) continue
+    const sentence = text.slice(start, end).trim()
+    if (sentence) parts.push(sentence)
+    start = end
+    index = end - 1
+  }
+  const rest = text.slice(start).trim()
+  if (rest) parts.push(rest)
+  return parts
+}
+
+function isBoundary(text: string, nextText: string | null, gapAfter: number | null): boolean {
+  if (endsSentence(text)) return true
+  if (gapAfter == null || gapAfter < SILENCE_GAP_SECONDS) return false
+  if (!nextText) return true
+  // A lowercase continuation is still the same sentence, even after a pause.
+  return /^[A-Z0-9"“(]/.test(nextText.trim())
+}
+
+function spokenSegments(segments: TranscriptSegment[]): TranscriptSegment[] {
+  return segments
+    .map((segment) => ({
+      start: segment.start,
+      end: segment.end,
+      text: segment.text.replace(/\s+/g, " ").trim(),
+    }))
+    .filter((segment) => segment.text.length > 0)
+    .sort((left, right) => left.start - right.start || left.end - right.end)
+}
+
+function buildUnits(segments: TranscriptSegment[]): SpeechUnit[] {
+  const spoken = spokenSegments(segments)
+  const units: SpeechUnit[] = []
+  for (let index = 0; index < spoken.length; index += 1) {
+    const segment = spoken[index]
+    const sentences = splitSentences(segment.text)
+    if (sentences.length === 0) continue
+    const span = Math.max(0, segment.end - segment.start)
+    const weights = sentences.map((sentence) => Math.max(1, sentence.length))
+    const total = weights.reduce((sum, weight) => sum + weight, 0)
+    let cursor = segment.start
+    sentences.forEach((sentence, sentenceIndex) => {
+      const last = sentenceIndex === sentences.length - 1
+      const share = span * (weights[sentenceIndex] / total)
+      const start = cursor
+      const end = last ? segment.end : cursor + share
+      cursor = end
+      const nextSegment = spoken[index + 1]
+      const nextText = last
+        ? nextSegment
+          ? (splitSentences(nextSegment.text)[0] ?? null)
+          : null
+        : sentences[sentenceIndex + 1]
+      const gapAfter = last ? (nextSegment ? nextSegment.start - segment.end : null) : 0
+      units.push({
+        start,
+        end,
+        text: sentence,
+        boundary: isBoundary(sentence, nextText, gapAfter),
+      })
+    })
+  }
+  return units
+}
+
+function unitCost(unit: SpeechUnit): number {
+  return estimateTokens(`[${formatClock(unit.start)}] ${unit.text}`) + 1
+}
+
+/**
+ * Pack speech so a chunk ends on silence or a finished sentence.
+ * A pause inside a sentence stays with that sentence.
+ */
+export function packSpeech(segments: TranscriptSegment[], maxTokens: number): TranscriptSegment[][] {
+  const units = buildUnits(segments)
+  if (units.length === 0) return []
+  const limit = Math.max(1, maxTokens)
+  const groups: SpeechUnit[][] = []
+  let current: SpeechUnit[] = []
+  let tokens = 0
+  const flush = () => {
+    if (current.length === 0) return
+    groups.push(current)
+    current = []
+    tokens = 0
+  }
+  for (const unit of units) {
+    const cost = unitCost(unit)
+    if (current.length > 0 && tokens + cost > limit && current[current.length - 1].boundary) flush()
+    current.push(unit)
+    tokens += cost
+  }
+  flush()
+  return groups.map((group) => group.map((unit) => ({ start: unit.start, end: unit.end, text: unit.text })))
+}
+
+export function packParagraphs(paragraphs: string[], maxTokens: number): string[][] {
+  const groups: string[][] = []
+  let current: string[] = []
+  let tokens = 0
+  const limit = Math.max(1, maxTokens)
+  for (const paragraph of paragraphs) {
+    const text = paragraph.trim()
+    if (!text) continue
+    const cost = estimateTokens(text) + 1
+    if (current.length > 0 && tokens + cost > limit) {
+      groups.push(current)
+      current = []
+      tokens = 0
+    }
+    current.push(text)
+    tokens += cost
+  }
+  if (current.length > 0) groups.push(current)
+  return groups
+}
+
+function timedTranscript(segments: TranscriptSegment[]): string {
+  return spokenSegments(segments)
+    .map((segment) => `[${formatClock(segment.start)}] ${segment.text}`)
+    .join("\n")
+}
+
+function bodyBudget(system: string, header: string, completionTokens: number): number {
+  const overhead = estimateTokens(system) + estimateTokens(header) + completionTokens + REQUEST_FRAMING_TOKENS + PACK_MARGIN_TOKENS
+  return Math.max(120, GROQ_REQUEST_TOKEN_BUDGET - overhead)
+}
+
+function completionFor(messages: ChatMessage[], preferred: number): number {
+  const input = requestTokens(messages, 0)
+  let completion = preferred
+  if (input + completion > GROQ_REQUEST_TOKEN_BUDGET) completion = GROQ_REQUEST_TOKEN_BUDGET - input
+  if (input + completion > GROQ_TPM_LIMIT) completion = GROQ_TPM_LIMIT - input
+  if (completion < 64 || input + completion > GROQ_TPM_LIMIT) {
+    throw new StudyError("That part of the lecture is still too long for one notes request.", "NOTES")
+  }
+  return completion
+}
+
+async function completeWithinBudget(
+  complete: LectureNotesRequest["complete"],
+  messages: ChatMessage[],
+  preferred: number,
+): Promise<string> {
+  const completion = completionFor(messages, preferred)
+  return complete(messages, completion)
+}
+
+export function headingKey(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+}
+
+function cleanRange(start: unknown, end: unknown): TimeRange | null {
+  const from = typeof start === "number" ? start : typeof start === "string" ? Number(start) : Number.NaN
+  const to = typeof end === "number" ? end : typeof end === "string" ? Number(end) : Number.NaN
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return null
+  return from <= to ? { start: from, end: to } : { start: to, end: from }
+}
+
+function rangesOf(row: { ranges?: unknown; start?: unknown; end?: unknown }): TimeRange[] {
+  if (Array.isArray(row.ranges)) {
+    const ranges: TimeRange[] = []
+    for (const item of row.ranges) {
+      if (!item || typeof item !== "object") continue
+      const range = item as { start?: unknown; end?: unknown }
+      const cleaned = cleanRange(range.start, range.end)
+      if (cleaned) ranges.push(cleaned)
+    }
+    if (ranges.length > 0) return ranges
+  }
+  const single = cleanRange(row.start, row.end)
+  return single ? [single] : []
+}
+
+function extractJson(text: string): unknown {
+  const stripped = text.replace(/```(?:json)?/gi, "").trim()
+  try {
+    return JSON.parse(stripped)
+  } catch {
+    const start = stripped.indexOf("{")
+    const end = stripped.lastIndexOf("}")
+    if (start >= 0 && end > start) {
+      try {
+        return JSON.parse(stripped.slice(start, end + 1))
+      } catch {
+        return null
+      }
+    }
+    return null
+  }
+}
+
+function collapseSections(sections: LectureSection[]): LectureSection[] {
+  const order: string[] = []
+  const map = new Map<string, LectureSection>()
+  for (const section of sections) {
+    const title = section.title.replace(/\s+/g, " ").trim()
+    const key = headingKey(title)
+    if (!key) continue
+    const existing = map.get(key)
+    if (!existing) {
+      map.set(key, { title, ranges: [...section.ranges] })
+      order.push(key)
+      continue
+    }
+    existing.ranges.push(...section.ranges)
+  }
+  return order.map((key) => map.get(key)!)
+}
+
+export function parseOutline(text: string): LectureSection[] {
+  const parsed = extractJson(text)
+  const found: LectureSection[] = []
+  if (parsed && typeof parsed === "object") {
+    const rows = (parsed as { sections?: unknown }).sections
+    if (Array.isArray(rows)) {
+      for (const row of rows) {
+        if (!row || typeof row !== "object") continue
+        const record = row as { title?: unknown; ranges?: unknown; start?: unknown; end?: unknown }
+        const title = typeof record.title === "string" ? record.title.trim() : ""
+        if (!title) continue
+        found.push({ title, ranges: rangesOf(record) })
+      }
+    }
+  }
+  if (found.length === 0) {
+    for (const line of text.split(/\n+/)) {
+      const match = line.trim().match(/^(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*\|\s*(.+)$/)
+      if (!match) continue
+      const range = cleanRange(Number(match[1]), Number(match[2]))
+      const title = match[3].replace(/\s+/g, " ").trim()
+      if (!range || !title) continue
+      found.push({ title, ranges: [range] })
+    }
+  }
+  return collapseSections(found)
+}
+
+function containsMid(range: TimeRange, mid: number): boolean {
+  return mid >= range.start && mid <= range.end
+}
+
+function coverLecture(
+  sections: LectureSection[],
+  segments: TranscriptSegment[],
+): Array<{ title: string; segments: TranscriptSegment[] }> {
+  const spoken = spokenSegments(segments)
+  const timed = sections.some((section) => section.ranges.length > 0)
+  if (!timed) {
+    const chunks = splitEvenly(spoken, sections.length)
+    return sections.map((section, index) => ({ title: section.title, segments: chunks[index] ?? [] }))
+  }
+  const buckets = sections.map((section) => ({ title: section.title, segments: [] as TranscriptSegment[] }))
+  for (const segment of spoken) {
+    const mid = (segment.start + segment.end) / 2
+    let best = 0
+    let bestDistance = Number.POSITIVE_INFINITY
+    for (let index = 0; index < sections.length; index += 1) {
+      for (const range of sections[index].ranges) {
+        if (containsMid(range, mid)) {
+          best = index
+          bestDistance = 0
+          break
+        }
+        const distance = mid < range.start ? range.start - mid : mid - range.end
+        if (distance < bestDistance) {
+          bestDistance = distance
+          best = index
+        }
+      }
+      if (bestDistance === 0) break
+    }
+    buckets[best].segments.push(segment)
+  }
+  return buckets
+}
+
+function splitEvenly(segments: TranscriptSegment[], count: number): TranscriptSegment[][] {
+  if (count <= 1) return [segments]
+  const total = Math.max(1, estimateTokens(timedTranscript(segments)))
+  const target = Math.max(1, Math.ceil(total / count))
+  const chunks = packSpeech(segments, target)
+  if (chunks.length <= count) return chunks
+  const groups: TranscriptSegment[][] = Array.from({ length: count }, () => [])
+  chunks.forEach((chunk, index) => {
+    const bucket = Math.min(count - 1, Math.floor((index * count) / chunks.length))
+    groups[bucket].push(...chunk)
+  })
+  return groups
+}
+
+function outlineSystem(language: NotesLanguage): string {
+  return [
+    "Build one outline of the whole lecture before any section is written.",
+    "You are given the full lecture, or compact summaries that cover it from start to finish.",
+    "A topic that shows up in more than one part is still one section.",
+    'Return JSON only, with this shape: {"sections":[{"title":"Supply and demand","ranges":[{"start":0,"end":90}]}]}',
+    "Times are seconds. A section may have more than one range when the topic returns later.",
+    "Do not write bullets, headings, or a transcript.",
+    `Write the titles in ${language.name}.`,
+  ].join(" ")
+}
+
+function summarySystem(language: NotesLanguage): string {
+  return [
+    "Write a compact summary of this part of the lecture. This is not the study note.",
+    "Cover the ideas in order in at most 80 words.",
+    "Put the start and end seconds in the first line as START-END | summary.",
+    "No headings and no transcript.",
+    `Write in ${language.name}.`,
+  ].join(" ")
+}
+
+function fillSystem(language: NotesLanguage, style: NoteStyle | null): string {
+  const shape = style ? restyleInstruction(language, style.preset, style.prompt) : studyNotesInstruction(language)
+  const layout =
+    style?.preset === "table"
+      ? "Return Markdown for this section only. Reuse the section title as the topic."
+      : style?.preset === "paragraphs"
+        ? "Write this section only, under a level-2 heading that reuses the section title."
+        : "Start with a level-2 heading that reuses the section title. Use bullets for the points and indented bullets for sub-points."
+  return [
+    shape,
+    "The lecture outline is already decided.",
+    "Write only the section named below, from the matching part of the transcript.",
+    layout,
+    "Do not write the other sections, a transcript, or a second copy of the lecture.",
+  ].join(" ")
+}
+
+function whereLine(content: NoteContent): string {
+  return content.moduleName ? `${content.courseName}, ${content.moduleName}` : content.courseName
+}
+
+function outlineList(sections: LectureSection[]): string {
+  return sections.map((section, index) => `${index + 1}. ${section.title}`).join("\n")
+}
+
+function stripFences(text: string): string {
+  return text
+    .replace(/^\uFEFF/, "")
+    .trim()
+    .replace(/^```(?:markdown|md)?\s*/i, "")
+    .replace(/\s*```$/, "")
+    .trim()
+}
+
+function splitByHeading(markdown: string): MarkdownBlock[] {
+  const lines = stripFences(markdown).split("\n")
+  const blocks: Array<{ title: string; body: string[] }> = []
+  let current: { title: string; body: string[] } | null = null
+  const preamble: string[] = []
+  for (const line of lines) {
+    const heading = /^(#{1,2})\s+(.+?)\s*$/.exec(line)
+    if (heading) {
+      if (current) blocks.push(current)
+      else if (preamble.join("").trim()) blocks.push({ title: "", body: [...preamble] })
+      current = { title: heading[2].replace(/[#]+$/g, "").trim(), body: [] }
+      preamble.length = 0
+      continue
+    }
+    if (current) current.body.push(line)
+    else preamble.push(line)
+  }
+  if (current) blocks.push(current)
+  else if (preamble.join("").trim()) blocks.push({ title: "", body: [...preamble] })
+  return blocks
+    .map((block) => ({ title: block.title, body: block.body.join("\n").trim() }))
+    .filter((block) => block.title || block.body)
+}
+
+function mergeBodies(bodies: string[]): string {
+  const seen = new Set<string>()
+  const lines: string[] = []
+  for (const body of bodies) {
+    for (const line of body.split("\n")) {
+      const preserved = line.trimEnd()
+      const key = preserved.trim()
+      if (!key) {
+        if (lines.length > 0 && lines[lines.length - 1] !== "") lines.push("")
+        continue
+      }
+      if (seen.has(preserved)) continue
+      seen.add(preserved)
+      lines.push(preserved)
+    }
+  }
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim()
+}
+
+export function mergeMarkdownSections(parts: Array<{ markdown: string; title: string }>): string {
+  const order: string[] = []
+  const map = new Map<string, { title: string; bodies: string[] }>()
+  for (const part of parts) {
+    const blocks = splitByHeading(part.markdown)
+    const usable = blocks.length > 0 ? blocks : [{ title: part.title, body: stripFences(part.markdown) }]
+    for (const block of usable) {
+      const title = block.title || part.title
+      const key = headingKey(title) || headingKey(part.title) || "notes"
+      const existing = map.get(key)
+      if (!existing) {
+        map.set(key, { title, bodies: block.body ? [block.body] : [] })
+        order.push(key)
+        continue
+      }
+      if (block.body) existing.bodies.push(block.body)
+    }
+  }
+  return order
+    .map((key) => {
+      const block = map.get(key)!
+      const body = mergeBodies(block.bodies)
+      return body ? `## ${block.title}\n\n${body}` : `## ${block.title}`
+    })
+    .join("\n\n")
+    .trim()
+}
+
+function tableNote(parts: Array<{ markdown: string; title: string }>): string | null {
+  const rows: string[] = []
+  for (const part of parts) {
+    const blocks = splitByHeading(part.markdown)
+    const sources = blocks.length > 0 ? blocks : [{ title: part.title, body: stripFences(part.markdown) }]
+    for (const block of sources) {
+      const title = (block.title || part.title).replace(/\|/g, "/")
+      const data = block.body
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith("|") && !/^\|\s*-+/.test(line) && !/\btopic\b/i.test(line))
+      if (data.length > 0) {
+        rows.push(...data)
+        continue
+      }
+      const points = block.body.replace(/\|/g, "/").replace(/\s+/g, " ").trim()
+      if (title && points) rows.push(`| ${title} | ${points} |`)
+    }
+  }
+  if (rows.length === 0) return null
+  return ["| Topic | Points |", "| --- | --- |", ...rows].join("\n")
+}
+
+export async function writeLectureNotes(request: LectureNotesRequest): Promise<string> {
+  const segments = spokenSegments(request.content.segments)
+  if (segments.length === 0) throw new StudyError("No speech was found in that recording.", "TRANSCRIPT")
+  const where = whereLine(request.content)
+  const title = request.content.title.replace(/\s+/g, " ").trim() || "Untitled recording"
+  let done = 0
+  let total = 1
+  const report = () => request.onStep?.(done, total)
+  const plan = (count: number) => {
+    total = Math.max(total, count)
+    report()
+  }
+  const finish = () => {
+    done += 1
+    total = Math.max(total, done)
+    report()
+  }
+
+  const sections = await buildOutline(request, where, title, segments, { plan, finish })
+  if (sections.length === 0) throw new StudyError("Groq did not return an outline of the lecture.", "NOTES")
+  const covered = coverLecture(sections, segments).filter((section) => section.segments.length > 0)
+  if (covered.length === 0) throw new StudyError("Groq did not return an outline of the lecture.", "NOTES")
+
+  const system = fillSystem(request.language, request.style ?? null)
+  const lectureOutline = outlineList(sections)
+  const pieces = covered.map((section) => {
+    const header = [
+      `Course: ${where}`,
+      `Title: ${title}`,
+      "Outline of the whole lecture:",
+      lectureOutline,
+      `Section: ${section.title}`,
+      "Transcript for this section:",
+    ].join("\n")
+    return {
+      title: section.title,
+      header,
+      chunks: packSpeech(section.segments, bodyBudget(system, header, FILL_COMPLETION_TOKENS)),
+    }
+  })
+  const fillCount = pieces.reduce((sum, piece) => sum + piece.chunks.length, 0)
+  plan(done + fillCount)
+
+  const written: Array<{ markdown: string; title: string }> = []
+  for (const piece of pieces) {
+    for (const chunk of piece.chunks) {
+      const transcript = timedTranscript(chunk)
+      if (!transcript.trim()) continue
+      const messages: ChatMessage[] = [
+        { role: "system", content: system },
+        { role: "user", content: `${piece.header}\n${transcript}` },
+      ]
+      const text = await completeWithinBudget(request.complete, messages, FILL_COMPLETION_TOKENS)
+      written.push({ markdown: text, title: piece.title })
+      finish()
+    }
+  }
+  if (written.length === 0) throw new StudyError("Groq did not return study notes.", "NOTES")
+  const merged =
+    request.style?.preset === "table"
+      ? tableNote(written) || mergeMarkdownSections(written)
+      : mergeMarkdownSections(written)
+  const cleaned = merged
+    .replace(/\n## Transcript\b[\s\S]*$/i, "")
+    .trim()
+  if (!cleaned) throw new StudyError("Groq did not return study notes.", "NOTES")
+  return cleaned
+}
+
+interface Progress {
+  plan: (count: number) => void
+  finish: () => void
+}
+
+async function buildOutline(
+  request: LectureNotesRequest,
+  where: string,
+  title: string,
+  segments: TranscriptSegment[],
+  progress: Progress,
+): Promise<LectureSection[]> {
+  const system = outlineSystem(request.language)
+  const header = `Course: ${where}\nTitle: ${title}\n\nLecture:\n`
+  const full = timedTranscript(segments)
+  const budget = bodyBudget(system, header, OUTLINE_COMPLETION_TOKENS)
+  let source = full
+  if (estimateTokens(full) > budget) {
+    source = await compactLecture(request, where, title, segments, progress)
+  }
+  const messages: ChatMessage[] = [
+    { role: "system", content: system },
+    {
+      role: "user",
+      content: estimateTokens(full) > budget
+        ? `Course: ${where}\nTitle: ${title}\n\nCompact summaries of the whole lecture, in order:\n${source}`
+        : `${header}${source}`,
+    },
+  ]
+  const text = await completeWithinBudget(request.complete, messages, OUTLINE_COMPLETION_TOKENS)
+  progress.finish()
+  return parseOutline(text)
+}
+
+async function compactLecture(
+  request: LectureNotesRequest,
+  where: string,
+  title: string,
+  segments: TranscriptSegment[],
+  progress: Progress,
+): Promise<string> {
+  const system = summarySystem(request.language)
+  const header = `Course: ${where}\nTitle: ${title}\n\nPart of the lecture:\n`
+  let pieces = packSpeech(segments, bodyBudget(system, header, SUMMARY_COMPLETION_TOKENS)).map((chunk) =>
+    timedTranscript(chunk),
+  )
+  if (pieces.length === 0) pieces = [timedTranscript(segments)]
+  let guard = 0
+  while (pieces.length > 1 && guard < 4) {
+    guard += 1
+    const outlineBudget = bodyBudget(outlineSystem(request.language), `Course: ${where}\nTitle: ${title}\n\n`, OUTLINE_COMPLETION_TOKENS)
+    if (estimateTokens(pieces.join("\n")) <= outlineBudget) break
+    progress.plan(pieces.length)
+    const summaries: string[] = []
+    for (const piece of pieces) {
+      const messages: ChatMessage[] = [
+        { role: "system", content: system },
+        { role: "user", content: `${header}${piece}` },
+      ]
+      summaries.push((await completeWithinBudget(request.complete, messages, SUMMARY_COMPLETION_TOKENS)).trim())
+      progress.finish()
+    }
+    const joined = summaries.filter(Boolean).join("\n")
+    if (!joined || joined.length >= pieces.join("\n").length) return joined || pieces.join("\n")
+    const grouped = packParagraphs(summaries, outlineBudget)
+    if (grouped.length === 1) return joined
+    pieces = grouped.map((group) => group.join("\n"))
+  }
+  if (pieces.length === 1 && estimateTokens(pieces[0]) > bodyBudget(outlineSystem(request.language), `Course: ${where}\nTitle: ${title}\n\n`, OUTLINE_COMPLETION_TOKENS)) {
+    const messages: ChatMessage[] = [
+      { role: "system", content: system },
+      { role: "user", content: `${header}${pieces[0]}` },
+    ]
+    const summary = (await completeWithinBudget(request.complete, messages, SUMMARY_COMPLETION_TOKENS)).trim()
+    progress.finish()
+    return summary
+  }
+  return pieces.join("\n")
+}

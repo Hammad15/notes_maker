@@ -186,7 +186,9 @@ export function NoteScreen() {
         <p className="mt-2 text-sm text-muted-foreground">
           {settings.provider === "cloud"
             ? settings.groqApiKey.trim()
-              ? "Restyle asks Groq to rewrite these notes. One previous copy is kept."
+              ? note.transcriptProduced
+                ? "Restyle asks Groq to rewrite these notes from the saved transcript. One previous copy is kept."
+                : "Restyle asks Groq to rewrite these notes. One previous copy is kept."
               : "The Groq API key is missing. Paste it under Cloud in the sidebar."
             : "Restyle uses local notes. One previous copy is kept."}
         </p>

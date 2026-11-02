@@ -8,16 +8,17 @@ import {
   completeChat,
   GROQ_WHISPER_MODEL,
   restyleInstruction,
-  studyNotesInstruction,
   transcribeChunk,
   type PreparedAudio,
 } from "../domain/groq"
+import { writeLectureNotes, type NoteStyle } from "../domain/lectureNotes"
 import { localLanguageSupported, notesLanguage } from "../domain/language"
 import {
   chunkTranscriptionPercent,
   notesRunPercent,
   sameSavedRecording,
   speechPace,
+  TRANSCRIPTION_PERCENT_END,
   type SpeechPace,
   type TranscriptionProgress,
 } from "../domain/localSpeech"
@@ -655,21 +656,17 @@ async function notesFromGroq(
   key: string,
   languageCode: string,
   content: NoteContent,
+  style?: NoteStyle | null,
+  onStep?: (done: number, total: number) => void,
 ): Promise<string> {
-  const language = notesLanguage(languageCode)
-  const transcript = content.segments
-    .map((segment) => segment.text.replace(/\s+/g, " ").trim())
-    .filter(Boolean)
-    .join("\n")
-  const where = content.moduleName ? `${content.courseName}, ${content.moduleName}` : content.courseName
-  const text = await completeChat(key, [
-    { role: "system", content: studyNotesInstruction(language) },
-    {
-      role: "user",
-      content: `Course: ${where}\nTitle: ${content.title}\n\nTranscript:\n${transcript}`,
-    },
-  ])
-  return withNoteHeader(content, text)
+  const body = await writeLectureNotes({
+    language: notesLanguage(languageCode),
+    content,
+    style,
+    onStep,
+    complete: (messages, maxCompletionTokens) => completeChat(key, messages, globalThis.fetch, maxCompletionTokens),
+  })
+  return withNoteHeader(content, body)
 }
 
 export async function makeNotes(
@@ -801,9 +798,27 @@ export async function makeNotes(
       jobId: input.jobId,
     })
   }, 1000)
+  const publishWriting = (done: number, total: number) => {
+    const fraction = total > 0 ? Math.min(1, done / total) : 0
+    const stepped = afterTranscription
+      ? Math.min(99, TRANSCRIPTION_PERCENT_END + Math.round(fraction * (99 - TRANSCRIPTION_PERCENT_END)))
+      : fraction <= 0
+        ? 0
+        : Math.min(95, Math.max(1, Math.round(fraction * 95)))
+    const timed = notesRunPercent(Date.now() - notesStarted, afterTranscription)
+    hooks?.onProgress?.({
+      phase: "writing",
+      label: "Writing the notes and PDF",
+      percent: Math.max(timed, stepped),
+      jobId: input.jobId,
+    })
+  }
   let body: string
   try {
-    body = input.provider === "cloud" ? await notesFromGroq(groqKey, language.code, content) : renderFull(content)
+    body =
+      input.provider === "cloud"
+        ? await notesFromGroq(groqKey, language.code, content, null, publishWriting)
+        : renderFull(content)
   } finally {
     clearInterval(notesTimer)
   }
@@ -964,11 +979,18 @@ export async function restyleNote(
     const key = await readGroqKey(store)
     if (!key) throw new GroqKeyError()
     const language = notesLanguage(settings.languageCode)
-    const text = await completeChat(key, [
-      { role: "system", content: restyleInstruction(language, input.preset, input.prompt) },
-      { role: "user", content: note.body },
-    ])
-    body = withNoteHeader(content, text)
+    if (content.transcriptProduced && content.segments.some((segment) => segment.text.trim())) {
+      body = await notesFromGroq(key, language.code, content, {
+        preset: input.preset,
+        prompt: input.prompt,
+      })
+    } else {
+      const text = await completeChat(key, [
+        { role: "system", content: restyleInstruction(language, input.preset, input.prompt) },
+        { role: "user", content: note.body },
+      ])
+      body = withNoteHeader(content, text)
+    }
   } else {
     body = renderRestyle(content, input.preset, input.prompt)
   }
