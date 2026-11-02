@@ -1,7 +1,7 @@
-import { StudyError } from "./errors"
-import type { NotesLanguage } from "./language"
-import { cleanSpokenText } from "./localSpeech"
-import type { TranscriptSegment } from "./types"
+import { StudyError } from "./errors.ts"
+import type { NotesLanguage } from "./language.ts"
+import { cleanSpokenText } from "./localSpeech.ts"
+import type { TranscriptSegment } from "./types.ts"
 
 /** Groq's host. The path is Groq's compatible API, not an OpenAI account. */
 export const GROQ_ORIGIN = "https://api.groq.com"

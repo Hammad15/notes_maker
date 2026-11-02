@@ -1,5 +1,5 @@
-import { messageOf, StudyError } from "./errors"
-import type { TranscriptSegment } from "./types"
+import { messageOf, StudyError } from "./errors.ts"
+import type { TranscriptSegment } from "./types.ts"
 
 /** Shown when a different recording replaces the one that is already running. */
 export const TRANSCRIPTION_REPLACED = "Transcription was replaced by a different recording."
