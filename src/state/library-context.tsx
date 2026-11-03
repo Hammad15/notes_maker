@@ -232,6 +232,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       const next = { ...settingsRef.current, speechPace: pace }
       settingsRef.current = next
       setSettings(next)
+      setLocalStatus(null)
       await saveSettings(store, next)
       try {
         setLocalStatus(await store.localStatus(pace))

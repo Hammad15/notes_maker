@@ -22,7 +22,9 @@ import {
   LLAMA_ENGINE_FILES,
   NOTES_CONTEXT_TOKENS,
   NOTES_MODEL,
+  setupStepLabel,
   speechModel,
+  speechModelsForSetup,
   speechPace,
   TRANSCRIPTION_REPLACED,
   WHISPER_ENGINE,
@@ -301,7 +303,7 @@ export async function setupLocalRuntime(
   await fs.mkdir(downloads, { recursive: true })
 
   if (!(await toolPath(appData, "ffmpeg")) || !(await toolPath(appData, "ffprobe"))) {
-    const label = "Downloading ffmpeg and ffprobe"
+    const label = setupStepLabel("ffmpeg")
     report(onProgress, "ffmpeg", label, 0, FFMPEG_BUNDLE.zipBytes)
     const zip = path.join(downloads, "ffmpeg-9.0.2-essentials_build.zip")
     try {
@@ -328,7 +330,7 @@ export async function setupLocalRuntime(
   }
 
   if (!(await engineReady(bin))) {
-    const label = "Downloading the speech engine"
+    const label = setupStepLabel("engine")
     report(onProgress, "engine", label, 0, WHISPER_ENGINE.zipBytes)
     const zip = path.join(downloads, "whisper-bin-x64.zip")
     try {
@@ -346,21 +348,24 @@ export async function setupLocalRuntime(
     if (!(await engineReady(bin))) throw new Error("The speech engine download did not include whisper-cli.")
   }
 
-  const model = speechModel(pace)
-  const label = pace === "faster" ? "Downloading the tiny English model" : "Downloading the speech model"
-  report(onProgress, "model", label, 0, model.bytes)
-  try {
-    await downloadVerified(model.url, modelPath(appData, pace), model.bytes, model.sha256, (received, total) =>
-      report(onProgress, "model", label, received, total),
-    )
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : "The download failed."
-    throw new Error(`Could not download the speech model. ${detail}`)
+  const models = speechModelsForSetup(pace)
+  const model = models[0] ?? speechModel(pace)
+  for (const speech of models) {
+    const label = setupStepLabel("model")
+    report(onProgress, "model", label, 0, speech.bytes)
+    try {
+      await downloadVerified(speech.url, path.join(appData, "models", speech.file), speech.bytes, speech.sha256, (received, total) =>
+        report(onProgress, "model", label, received, total),
+      )
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "The download failed."
+      throw new Error(`Could not download the speech model. ${detail}`)
+    }
   }
 
   const notesDir = notesBin(appData)
   if (!(await notesEngineReady(notesDir))) {
-    const label = "Downloading the notes engine"
+    const label = setupStepLabel("notesEngine")
     report(onProgress, "notesEngine", label, 0, LLAMA_ENGINE.zipBytes)
     const zip = path.join(downloads, "llama-bin-win-cpu-x64.zip")
     try {
@@ -379,7 +384,7 @@ export async function setupLocalRuntime(
     if (!(await notesEngineReady(notesDir))) throw new Error("The notes engine download did not include llama-cli.")
   }
 
-  const notesLabel = "Downloading the notes model"
+  const notesLabel = setupStepLabel("notes")
   report(onProgress, "notes", notesLabel, 0, NOTES_MODEL.bytes)
   try {
     await downloadVerified(NOTES_MODEL.url, notesModelPath(appData), NOTES_MODEL.bytes, NOTES_MODEL.sha256, (received, total) =>
@@ -390,7 +395,7 @@ export async function setupLocalRuntime(
     throw new Error(`Could not download the notes model. ${detail}`)
   }
 
-  report(onProgress, "config", "Saving local setup", 1, 1)
+  report(onProgress, "config", setupStepLabel("config"), 1, 1)
   const ffmpegFromPath = !(await exists(path.join(bin, "ffmpeg.exe")))
   const config = {
     ready: true,

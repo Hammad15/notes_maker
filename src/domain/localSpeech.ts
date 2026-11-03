@@ -35,6 +35,29 @@ export function speechModel(pace: SpeechPace): typeof SPEECH_MODEL | typeof TINY
   return pace === "faster" ? TINY_MODEL : SPEECH_MODEL
 }
 
+/** Setup downloads the speech model for the selected speed, not both. */
+export function speechModelsForSetup(pace: SpeechPace): Array<typeof SPEECH_MODEL | typeof TINY_MODEL> {
+  return [speechModel(pace)]
+}
+
+/** Names a setup download without the file name on disk. */
+export function setupStepLabel(phase: SetupProgress["phase"]): string {
+  switch (phase) {
+    case "ffmpeg":
+      return "Downloading the speech tools"
+    case "engine":
+      return "Downloading the speech engine"
+    case "model":
+      return "Downloading the speech model"
+    case "notesEngine":
+      return "Downloading the notes engine"
+    case "notes":
+      return "Downloading the notes model"
+    case "config":
+      return "Saving local setup"
+  }
+}
+
 export const WHISPER_ENGINE = {
   version: "1.9.2",
   file: "whisper-cli.exe",

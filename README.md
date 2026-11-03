@@ -8,7 +8,7 @@ Press **Set up local notes** once in the sidebar. That button downloads the spee
 
 Suggested CPU specs: 4-core CPU and 16 GB RAM. Lesser builds should also work, just slower.
 
-**Speed** is chosen once, under Local. Faster uses the tiny English model and every processor core. Clearer uses the base English model and half the cores. Switching speed shows setup again only when that model file is missing. Both model files can sit next to each other.
+**Speed** is chosen under Local. Faster is quicker and the notes can be rougher. Clearer is slower and the notes are better. Switching speed shows setup again until that speed's speech model is present. Both model files can sit next to each other.
 
 If a transcript already exists for the same recording and the same course or module, Make Notes does not run speech recognition again. It rewrites the study notes from that saved transcript. The raw transcript stays in the hidden `.study` folder. The Markdown note and the PDF are study notes.
 

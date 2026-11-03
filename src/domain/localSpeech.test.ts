@@ -18,7 +18,9 @@ import {
   scaleTranscriptionPercent,
   sameSavedRecording,
   SPEECH_MODEL,
+  setupStepLabel,
   speechModel,
+  speechModelsForSetup,
   TINY_MODEL,
   WHISPER_ENGINE,
   forwardProgress,
@@ -126,6 +128,13 @@ describe("transcription stays usable", () => {
       sha256: "921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f",
     })
     expect(TINY_MODEL.url).toContain("ggml-tiny.en.bin")
+    expect(speechModelsForSetup("faster").map((model) => model.file)).toEqual(["ggml-tiny.en.bin"])
+    expect(speechModelsForSetup("clearer").map((model) => model.file)).toEqual(["ggml-base.en.bin"])
+    expect(setupStepLabel("model")).toBe("Downloading the speech model")
+    expect(setupStepLabel("notes")).toBe("Downloading the notes model")
+    for (const phase of ["ffmpeg", "engine", "model", "notesEngine", "notes", "config"] as const) {
+      expect(setupStepLabel(phase)).not.toMatch(/ggml|qwen|\.bin|\.gguf|\.zip/i)
+    }
   })
 
   it("shows reading, percent, and the notes write", () => {

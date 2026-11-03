@@ -1,7 +1,7 @@
 import { NavLink, useNavigate } from "react-router-dom"
 import { Plus } from "lucide-react"
 import { CLOUD_NOTES_UNAVAILABLE } from "../domain/errors"
-import { barPercent, localJobMessage, NOTES_MODEL, speechModel, type SpeechPace } from "../domain/localSpeech"
+import { barPercent, localJobMessage, type SpeechPace } from "../domain/localSpeech"
 import { WINDOWS_DIALOG_REQUIRED } from "../platform/dialogs"
 import { useHost } from "../platform/host"
 import { useLibrary } from "../state/library-context"
@@ -11,9 +11,9 @@ import { FeedbackDialog } from "./feedback-dialog"
 import { FirstRunTour } from "./first-run-tour"
 import { NameDialog } from "./name-dialog"
 
-function setupPercent(received: number, total: number | null): string {
-  if (!total || total <= 0) return ""
-  return ` ${Math.min(100, Math.round((received / total) * 100))}%`
+function setupPercent(received: number, total: number | null): number | null {
+  if (!total || total <= 0) return null
+  return Math.min(100, Math.round((received / total) * 100))
 }
 
 function ProviderSwitch() {
@@ -21,6 +21,7 @@ function ProviderSwitch() {
   const [error, setError] = useState<string | null>(null)
   const localReady = localStatus?.ready === true
   const pace = settings.speechPace
+  const setupRatio = setupProgress ? setupPercent(setupProgress.received, setupProgress.total) : null
   return (
     <fieldset className="grid gap-2">
       <legend className="text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase">
@@ -49,12 +50,6 @@ function ProviderSwitch() {
         ))}
       </div>
       {settings.provider === "local" ? (
-        <>
-          {localReady ? (
-            <p className="text-xs leading-relaxed text-muted-foreground">
-              {`Speech uses ${speechModel(pace).name}, and notes use ${NOTES_MODEL.name}.`}
-            </p>
-          ) : null}
           <fieldset className="grid gap-1">
             <legend className="text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase">Speed</legend>
             <div className="grid grid-cols-2 gap-1 rounded-lg bg-muted p-1">
@@ -79,10 +74,9 @@ function ProviderSwitch() {
               ))}
             </div>
             <p className="text-xs leading-relaxed text-muted-foreground">
-              Faster uses the tiny English model and more cores; Clearer uses the base English model and fewer.
+              Faster is quicker and the notes can be rougher. Clearer is slower and the notes are better.
             </p>
           </fieldset>
-        </>
       ) : (
         <p className="text-xs leading-relaxed text-muted-foreground">{CLOUD_NOTES_UNAVAILABLE}</p>
       )}
@@ -101,10 +95,22 @@ function ProviderSwitch() {
         <p className="text-xs text-muted-foreground">Checking local notes…</p>
       ) : null}
       {setupProgress ? (
-        <p className="text-xs leading-relaxed text-muted-foreground">
-          {setupProgress.label}
-          {setupPercent(setupProgress.received, setupProgress.total)}
-        </p>
+        <div className="grid gap-2">
+          <p id="local-setup-step" className="text-xs leading-relaxed text-muted-foreground">
+            {setupProgress.label}
+            {setupRatio != null ? ` ${setupRatio}%` : ""}
+          </p>
+          <div
+            className="h-1 overflow-hidden rounded-full bg-muted"
+            role="progressbar"
+            aria-labelledby="local-setup-step"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={setupRatio ?? undefined}
+          >
+            <div className="h-full bg-primary" style={{ width: `${setupRatio ?? 0}%` }} />
+          </div>
+        </div>
       ) : null}
       {error ? (
         <p className="text-xs text-destructive" role="alert">

@@ -25,6 +25,7 @@ const TINY_SHA256: &str = "921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac
 const TINY_URL: &str =
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin";
 
+#[derive(Clone, Copy)]
 struct ModelSpec {
     name: &'static str,
     file: &'static str,
@@ -35,6 +36,22 @@ struct ModelSpec {
 
 fn pace_name(pace: &str) -> &'static str {
     if pace == "faster" { "faster" } else { "clearer" }
+}
+
+fn setup_label(phase: &str) -> &'static str {
+    match phase {
+        "ffmpeg" => "Downloading the speech tools",
+        "engine" => "Downloading the speech engine",
+        "model" => "Downloading the speech model",
+        "notesEngine" => "Downloading the notes engine",
+        "notes" => "Downloading the notes model",
+        _ => "Saving local setup",
+    }
+}
+
+/// The selected speed's speech model. Setup does not fetch the other speed's file.
+fn speech_models_for_setup(pace: &str) -> Vec<ModelSpec> {
+    vec![model_spec(pace)]
 }
 
 fn model_spec(pace: &str) -> ModelSpec {
@@ -428,7 +445,7 @@ pub(crate) fn setup_local(
     fs::create_dir_all(&downloads).map_err(|error| error.to_string())?;
 
     if tool_path(app_data, "ffmpeg").is_none() || tool_path(app_data, "ffprobe").is_none() {
-        let label = "Downloading ffmpeg and ffprobe";
+        let label = setup_label("ffmpeg");
         progress("ffmpeg", label, 0, Some(FFMPEG_ZIP_BYTES));
         let zip = downloads.join("ffmpeg-9.0.2-essentials_build.zip");
         download_verified(
@@ -459,7 +476,7 @@ pub(crate) fn setup_local(
     }
 
     if !engine_ready(&bin) {
-        let label = "Downloading the speech engine";
+        let label = setup_label("engine");
         progress("engine", label, 0, Some(ENGINE_ZIP_BYTES));
         let zip = downloads.join("whisper-bin-x64.zip");
         download_verified(
@@ -478,27 +495,26 @@ pub(crate) fn setup_local(
         }
     }
 
-    let spec = model_spec(pace);
-    let label = if pace_name(pace) == "faster" {
-        "Downloading the tiny English model"
-    } else {
-        "Downloading the speech model"
-    };
-    progress("model", label, 0, Some(spec.bytes));
-    download_verified(
-        spec.url,
-        &model_path(app_data, pace),
-        spec.bytes,
-        spec.sha256,
-        &mut |received, total| {
-            progress("model", label, received, Some(total));
-        },
-    )
-    .map_err(|error| format!("Could not download the speech model. {error}"))?;
+    let models = speech_models_for_setup(pace);
+    let spec = models.first().cloned().unwrap_or_else(|| model_spec(pace));
+    for speech in &models {
+        let label = setup_label("model");
+        progress("model", label, 0, Some(speech.bytes));
+        download_verified(
+            speech.url,
+            &app_data.join("models").join(speech.file),
+            speech.bytes,
+            speech.sha256,
+            &mut |received, total| {
+                progress("model", label, received, Some(total));
+            },
+        )
+        .map_err(|error| format!("Could not download the speech model. {error}"))?;
+    }
 
     let notes_dir = notes_bin(app_data);
     if !notes_engine_ready(&notes_dir) {
-        let label = "Downloading the notes engine";
+        let label = setup_label("notesEngine");
         progress("notesEngine", label, 0, Some(NOTES_ENGINE_ZIP_BYTES));
         let zip = downloads.join("llama-bin-win-cpu-x64.zip");
         download_verified(
@@ -518,7 +534,7 @@ pub(crate) fn setup_local(
         }
     }
 
-    let notes_label = "Downloading the notes model";
+    let notes_label = setup_label("notes");
     progress("notes", notes_label, 0, Some(NOTES_MODEL_BYTES));
     download_verified(
         NOTES_MODEL_URL,
@@ -531,7 +547,7 @@ pub(crate) fn setup_local(
     )
     .map_err(|error| format!("Could not download the notes model. {error}"))?;
 
-    progress("config", "Saving local setup", 1, Some(1));
+    progress("config", setup_label("config"), 1, Some(1));
     let ffmpeg_source = if bin.join("ffmpeg.exe").is_file() {
         FFMPEG_VERSION
     } else {
@@ -2151,7 +2167,8 @@ pub(crate) fn prepare_cloud_audio(app_data: &Path, media: &str) -> Result<Value,
 mod tests {
     use super::{
         assert_heard, clean_notes_reply, forward_percent, owned_pids_to_stop, parse_whisper_json,
-        plan_resume, progress_percent, same_job, whisper_thread_count, whisper_wait_limit,
+        collect_status, plan_resume, progress_percent, same_job, setup_label, speech_models_for_setup,
+        whisper_thread_count, whisper_wait_limit,
         NOTES_ENGINE_VERSION, NOTES_ENGINE_ZIP_BYTES, NOTES_MODEL_BYTES, NOTES_MODEL_FILE,
         NOTES_MODEL_NAME, NOTES_MODEL_SHA256, ResumePlan, SavedJob, Segment, Target,
     };
@@ -2323,6 +2340,36 @@ mod tests {
         let error = assert_heard(Some(57.0 * 60.0), 59_000, &segments).unwrap_err();
         assert!(error.contains("could have heard"), "{error}");
         assert_heard(Some(57.0 * 60.0), 90_000, &segments).unwrap();
+    }
+
+    #[test]
+    fn setup_downloads_only_the_selected_speech_model() {
+        let faster = speech_models_for_setup("faster");
+        let clearer = speech_models_for_setup("clearer");
+        assert_eq!(faster.len(), 1);
+        assert_eq!(clearer.len(), 1);
+        assert_eq!(faster[0].file, "ggml-tiny.en.bin");
+        assert_eq!(clearer[0].file, "ggml-base.en.bin");
+        assert_ne!(faster[0].file, clearer[0].file);
+        assert_eq!(setup_label("model"), "Downloading the speech model");
+        assert_eq!(setup_label("notes"), "Downloading the notes model");
+        for phase in ["ffmpeg", "engine", "model", "notesEngine", "notes", "config"] {
+            let label = setup_label(phase);
+            assert!(!label.contains("ggml"));
+            assert!(!label.contains(".bin"));
+            assert!(!label.contains(".gguf"));
+        }
+        let root = std::env::temp_dir().join(format!("study-notes-pace-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("models")).unwrap();
+        std::fs::write(root.join("models").join("ggml-tiny.en.bin"), b"not the model").unwrap();
+        let faster_status = collect_status(&root, "faster").unwrap();
+        let clearer_status = collect_status(&root, "clearer").unwrap();
+        assert!(faster_status.missing.contains(&"model"));
+        assert!(clearer_status.missing.contains(&"model"));
+        assert!(!faster_status.ready);
+        assert!(!clearer_status.ready);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[cfg(windows)]
