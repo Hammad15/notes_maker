@@ -340,6 +340,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
           }
         }
         let stopWatch = () => {}
+        let notesFinished = false
         try {
           if (input.provider === "local" && host.watchTranscription) {
             stopWatch = await host.watchTranscription((progress) => {
@@ -370,6 +371,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
               )
             },
           })
+          notesFinished = true
           setJobs((current) => current.filter((job) => job.id !== id))
         } catch (err) {
           if (transcriptionWasReplaced(err) || notesWereCancelled(err)) {
@@ -384,7 +386,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
           )
         } finally {
           stopWatch()
-          if (input.provider === "local") {
+          if (notesFinished && input.provider === "local") {
             try {
               await store.clearTranscription(id)
             } catch {

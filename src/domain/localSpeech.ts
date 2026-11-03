@@ -208,7 +208,11 @@ export interface WhisperProcess {
   commandLine: string
 }
 
-export type ResumePlan = { action: "attach"; pid: number } | { action: "reuse" } | { action: "start" }
+export type ResumePlan =
+  | { action: "attach"; pid: number }
+  | { action: "reuse" }
+  | { action: "continue" }
+  | { action: "start" }
 
 /**
  * Clearer uses half the logical processors, at least one.
@@ -385,7 +389,7 @@ export function planResume(
     return { action: "attach", pid: saved.pid }
   }
   if (saved.jsonReady) return { action: "reuse" }
-  return { action: "start" }
+  return { action: "continue" }
 }
 
 export function parseSavedTranscription(raw: string): SavedTranscription | null {

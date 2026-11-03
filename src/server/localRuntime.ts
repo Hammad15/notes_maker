@@ -957,8 +957,13 @@ export async function clearTranscriptionJob(appData: string, id: string): Promis
         saved.pid,
       )
     if (stillRunning && currentFlight?.id === id && !currentFlight.settled) return
-    await removeWork(appData, saved)
-    await fs.rm(jobFile(appData), { force: true })
+    // A partial transcript stays on disk so a closed app can continue it.
+    // Cancel removes that partial itself. A finished whisper file is only
+    // work space once the transcript has been saved.
+    if (await jsonReady(saved.jsonPath)) {
+      await removeWork(appData, saved)
+      await fs.rm(jobFile(appData), { force: true })
+    }
   }
   if (currentFlight?.id === id) currentFlight = null
 }
@@ -1027,6 +1032,11 @@ export async function transcribeWithRuntime(
       currentFlight = flight
       return { kind: "attach" as const, flight, saved, pid: plan.pid }
     }
+    if (plan.action === "continue" && saved && savedPathsUsable(appData, saved)) {
+      const flight = createFlight(request.jobId || saved.id, target)
+      currentFlight = flight
+      return { kind: "continue" as const, flight, saved }
+    }
     const flight = createFlight(request.jobId || crypto.randomUUID(), target)
     currentFlight = flight
     return { kind: "start" as const, flight }
@@ -1041,8 +1051,28 @@ export async function transcribeWithRuntime(
     settle(admitted.flight, attachJob(appData, admitted.saved, admitted.pid, admitted.flight))
     return admitted.flight.promise
   }
+  if (admitted.kind === "continue") {
+    settle(admitted.flight, continueSaved(appData, mediaPath, request, admitted.flight, admitted.saved))
+    return admitted.flight.promise
+  }
   settle(admitted.flight, startFresh(appData, mediaPath, request, admitted.flight))
   return admitted.flight.promise
+}
+
+function savedPathsUsable(appData: string, saved: SavedTranscription): boolean {
+  return [saved.wavPath, saved.jsonPath, saved.stderrPath, saved.stdoutPath].every(
+    (target) => !!target && isTmpFile(appData, target),
+  )
+}
+
+async function wavKept(saved: SavedTranscription): Promise<boolean> {
+  if (saved.phase === "reading") return false
+  try {
+    const info = await fs.stat(saved.wavPath)
+    return info.isFile() && info.size > 44
+  } catch {
+    return false
+  }
 }
 
 async function attachJob(appData: string, saved: SavedTranscription, pid: number, flight: Flight): Promise<TranscriptionResult> {
@@ -1129,6 +1159,72 @@ async function startFresh(
     "Could not read that recording.",
   )
   if (flight.cancelled) throw new Error(TRANSCRIPTION_REPLACED)
+  return transcribePreparedWav(appData, flight, wav, jsonBase, jsonPath, stderrPath, stdoutPath, job)
+}
+
+/** Keep the extracted audio and the job files, then finish the transcript. */
+async function continueSaved(
+  appData: string,
+  mediaPath: string,
+  request: TranscriptionRequest,
+  flight: Flight,
+  saved: SavedTranscription,
+): Promise<TranscriptionResult> {
+  const ffmpeg = await toolPath(appData, "ffmpeg")
+  const ffprobe = await toolPath(appData, "ffprobe")
+  if (!ffmpeg || !ffprobe) throw new LocalSetupError()
+  const wav = saved.wavPath
+  const jsonPath = saved.jsonPath
+  const jsonBase = jsonPath.replace(/\.json$/i, "")
+  const stderrPath = saved.stderrPath
+  const stdoutPath = saved.stdoutPath
+  const keepWav = await wavKept(saved)
+  const job: SavedTranscription = {
+    ...saved,
+    id: flight.id,
+    jobId: flight.id,
+    mediaPath,
+    home: request.home,
+    courseId: request.courseId,
+    moduleId: request.moduleId,
+    moduleName: request.moduleName,
+    newModuleName: request.newModuleName,
+    phase: keepWav ? "transcribing" : "reading",
+    label: keepWav ? "Transcribing the recording" : "Reading the recording",
+    percent: keepWav ? saved.percent : null,
+    pid: null,
+    pace: speechPace(request.pace),
+    language: request.language?.trim() || saved.language || "en",
+  }
+  await writeJob(appData, job)
+  if (!keepWav) {
+    await runChild(
+      ffmpeg,
+      ["-hide_banner", "-loglevel", "error", "-y", "-i", mediaPath, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-vn", wav],
+      flight,
+      appData,
+      null,
+      null,
+      undefined,
+      "Could not read that recording.",
+    )
+    if (flight.cancelled) throw new Error(TRANSCRIPTION_REPLACED)
+  }
+  return transcribePreparedWav(appData, flight, wav, jsonBase, jsonPath, stderrPath, stdoutPath, job)
+}
+
+async function transcribePreparedWav(
+  appData: string,
+  flight: Flight,
+  wav: string,
+  jsonBase: string,
+  jsonPath: string,
+  stderrPath: string,
+  stdoutPath: string,
+  job: SavedTranscription,
+): Promise<TranscriptionResult> {
+  const ffprobe = await toolPath(appData, "ffprobe")
+  if (!ffprobe) throw new LocalSetupError()
   let durationSeconds = await probeDuration(ffprobe, wav)
   if (durationSeconds == null) {
     const info = await fs.stat(wav)
@@ -1149,7 +1245,7 @@ async function startFresh(
   try {
     await runChild(
       own,
-      ["-m", modelPath(appData, speechPace(request.pace)), "-f", wav, "-l", request.language?.trim() || "en", "-t", String(whisperThreadCount(os.availableParallelism(), speechPace(request.pace))), "-oj", "-of", jsonBase, "-np", "-pp", "-ng"],
+      ["-m", modelPath(appData, speechPace(job.pace)), "-f", wav, "-l", job.language?.trim() || "en", "-t", String(whisperThreadCount(os.availableParallelism(), speechPace(job.pace))), "-oj", "-of", jsonBase, "-np", "-pp", "-ng"],
       flight,
       appData,
       stderrPath,

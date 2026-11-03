@@ -1259,6 +1259,22 @@ fn is_tmp_file(app_data: &Path, path: &str) -> bool {
     Path::new(path).starts_with(&tmp)
 }
 
+fn saved_paths_usable(app_data: &Path, job: &SavedJob) -> bool {
+    [&job.wav_path, &job.json_path, &job.stderr_path, &job.stdout_path]
+        .iter()
+        .all(|path| !path.is_empty() && is_tmp_file(app_data, path))
+}
+
+/// The extracted audio is worth keeping once ffmpeg has left the header behind.
+fn wav_kept(job: &SavedJob) -> bool {
+    if job.phase == "reading" {
+        return false;
+    }
+    fs::metadata(&job.wav_path)
+        .map(|meta| meta.is_file() && meta.len() > 44)
+        .unwrap_or(false)
+}
+
 fn remove_work_files(app_data: &Path, job: &SavedJob) {
     for path in [&job.wav_path, &job.json_path, &job.stderr_path, &job.stdout_path] {
         if is_tmp_file(app_data, path) {
@@ -1401,6 +1417,7 @@ fn admit(target: &Target, job_id: &str) -> Admission {
 enum ResumePlan {
     Attach(SavedJob),
     Reuse(SavedJob),
+    Continue(SavedJob),
     Start,
 }
 
@@ -1426,7 +1443,7 @@ fn plan_resume(saved: Option<&SavedJob>, target: &Target, snapshot: &str, own_ex
     if json_ready(&saved.json_path) {
         return ResumePlan::Reuse(saved.clone());
     }
-    ResumePlan::Start
+    ResumePlan::Continue(saved.clone())
 }
 
 /// On launch, stop leftover whisper-cli from this app. Keep the pid recorded
@@ -1519,8 +1536,12 @@ pub(crate) fn clear_job(app_data: &Path, id: &str) -> Result<(), String> {
                     }
                 }
             }
-            remove_work_files(app_data, &job);
-            let _ = fs::remove_file(job_file(app_data));
+            // Leave a partial transcript in place. The next launch continues it.
+            // Cancel deletes that partial on its own.
+            if json_ready(&job.json_path) {
+                remove_work_files(app_data, &job);
+                let _ = fs::remove_file(job_file(app_data));
+            }
         }
     }
     let mut guard = lock_gate();
@@ -1741,6 +1762,16 @@ fn run_owned(
             progress("transcribing", "Transcribing the recording", Some(100), None);
             finish_transcript(&job)
         }
+        ResumePlan::Continue(job) => {
+            stop_pids(&owned_pids_to_stop(&snapshot, &own_text, None));
+            let ffmpeg_path = own_ffmpeg_exe(app_data);
+            stop_pids(&owned_pids_to_stop(
+                &snapshot,
+                &ffmpeg_path.to_string_lossy(),
+                None,
+            ));
+            continue_saved(app_data, media, request, flight, progress, job)
+        }
         ResumePlan::Start => {
             stop_pids(&owned_pids_to_stop(&snapshot, &own_text, None));
             let ffmpeg_path = own_ffmpeg_exe(app_data);
@@ -1844,8 +1875,149 @@ fn start_fresh(
         return Err(error);
     }
     stopped(flight)?;
-    let duration = probe_duration(&ffprobe, &wav).or_else(|| {
-        fs::metadata(&wav)
+    transcribe_prepared_wav(
+        app_data,
+        flight,
+        progress,
+        job,
+        &ffprobe,
+        &wav,
+        &json_base,
+        &json_path,
+        &stderr_path,
+        &stdout_path,
+    )
+}
+
+/// Keep the extracted audio and the job files, then finish the transcript.
+fn continue_saved(
+    app_data: &Path,
+    media: &str,
+    request: &TranscribeRequest,
+    flight: &Arc<Flight>,
+    progress: &mut dyn FnMut(&str, &str, Option<u8>, Option<u64>),
+    mut job: SavedJob,
+) -> Result<Value, String> {
+    stopped(flight)?;
+    if !saved_paths_usable(app_data, &job) {
+        return start_fresh(app_data, media, request, flight, progress);
+    }
+    let ffmpeg = tool_path(app_data, "ffmpeg").ok_or_else(|| SETUP_REQUIRED.to_string())?;
+    let ffprobe = tool_path(app_data, "ffprobe").ok_or_else(|| SETUP_REQUIRED.to_string())?;
+    let keep_wav = wav_kept(&job);
+    let wav = PathBuf::from(&job.wav_path);
+    let json_path = PathBuf::from(&job.json_path);
+    let json_base = json_path.with_extension("");
+    let stderr_path = PathBuf::from(&job.stderr_path);
+    let stdout_path = PathBuf::from(&job.stdout_path);
+    let language = {
+        let code = request.language.trim();
+        if !code.is_empty() {
+            code.to_string()
+        } else if job.language.trim().is_empty() {
+            "en".to_string()
+        } else {
+            job.language.clone()
+        }
+    };
+    job.id = flight.job_id.clone();
+    job.media_path = media.to_string();
+    job.home = request.home.clone();
+    job.course_id = request.course_id.clone();
+    job.module_id = nonempty(request.module_id.as_deref());
+    job.module_name = nonempty(request.module_name.as_deref());
+    job.new_module_name = nonempty(request.new_module_name.as_deref());
+    job.phase = if keep_wav { "transcribing" } else { "reading" }.into();
+    job.label = if keep_wav {
+        "Transcribing the recording"
+    } else {
+        "Reading the recording"
+    }
+    .into();
+    if !keep_wav {
+        job.percent = None;
+    }
+    job.pid = None;
+    job.pace = pace_name(&request.pace).to_string();
+    job.language = language;
+    job.model = model_spec(&request.pace).name.to_string();
+    write_saved(app_data, &job)?;
+    if !keep_wav {
+        progress("reading", "Reading the recording", None, None);
+        let mut convert = Command::new(&ffmpeg);
+        convert.args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            media,
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            "-c:a",
+            "pcm_s16le",
+            "-vn",
+        ]);
+        convert.arg(&wav);
+        let flight_stop = flight.clone();
+        let flight_spawn = flight.clone();
+        let app_data_spawn = app_data.to_path_buf();
+        let job_id = flight.job_id.clone();
+        let converted = run_command_watched(
+            convert,
+            Some(Duration::from_secs(2 * 60 * 60)),
+            "Could not read that recording.",
+            &mut |_| {},
+            &|| flight_stop.cancelled(),
+            &mut |pid| {
+                flight_spawn.set_pid(pid);
+                update_saved(&app_data_spawn, &job_id, |saved| {
+                    saved.pid = Some(pid);
+                });
+            },
+        );
+        if let Err(error) = converted {
+            flight.set_pid(0);
+            return Err(error);
+        }
+        stopped(flight)?;
+    }
+    transcribe_prepared_wav(
+        app_data,
+        flight,
+        progress,
+        job,
+        &ffprobe,
+        &wav,
+        &json_base,
+        &json_path,
+        &stderr_path,
+        &stdout_path,
+    )
+}
+
+fn transcribe_prepared_wav(
+    app_data: &Path,
+    flight: &Arc<Flight>,
+    progress: &mut dyn FnMut(&str, &str, Option<u8>, Option<u64>),
+    job: SavedJob,
+    ffprobe: &Path,
+    wav: &Path,
+    json_base: &Path,
+    json_path: &Path,
+    stderr_path: &Path,
+    stdout_path: &Path,
+) -> Result<Value, String> {
+    let pace = job.pace.clone();
+    let language = if job.language.trim().is_empty() {
+        "en".to_string()
+    } else {
+        job.language.trim().to_string()
+    };
+    let duration = probe_duration(ffprobe, wav).or_else(|| {
+        fs::metadata(wav)
             .ok()
             .and_then(|meta| wav_seconds(meta.len()))
     });
@@ -1867,8 +2039,8 @@ fn start_fresh(
         }
     }
     let bin = bin_dir(app_data);
-    let stderr = File::create(&stderr_path).map_err(|error| error.to_string())?;
-    let stdout = File::create(&stdout_path).map_err(|error| error.to_string())?;
+    let stderr = File::create(stderr_path).map_err(|error| error.to_string())?;
+    let stdout = File::create(stdout_path).map_err(|error| error.to_string())?;
     let mut whisper = Command::new(bin.join(ENGINE_EXE));
     quiet(&mut whisper);
     whisper
@@ -1878,16 +2050,16 @@ fn start_fresh(
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
         .arg("-m")
-        .arg(model_path(app_data, &request.pace))
+        .arg(model_path(app_data, &pace))
         .arg("-f")
-        .arg(&wav)
+        .arg(wav)
         .arg("-l")
-        .arg(if request.language.trim().is_empty() { "en" } else { request.language.trim() })
+        .arg(&language)
         .arg("-t")
-        .arg(whisper_thread_count(logical_cpus(), &request.pace).to_string())
+        .arg(whisper_thread_count(logical_cpus(), &pace).to_string())
         .arg("-oj")
         .arg("-of")
-        .arg(&json_base)
+        .arg(json_base)
         .arg("-np")
         .arg("-pp")
         .arg("-ng");
@@ -1898,6 +2070,7 @@ fn start_fresh(
     let pid = child.id();
     flight.set_pid(pid);
     let transcribe_started = now_ms();
+    let shown = job.percent.unwrap_or(0);
     update_saved(app_data, &flight.job_id, |saved| {
         saved.phase = "transcribing".into();
         saved.label = "Transcribing the recording".into();
@@ -1908,10 +2081,10 @@ fn start_fresh(
     progress(
         "transcribing",
         "Transcribing the recording",
-        Some(0),
+        Some(shown),
         Some(transcribe_started),
     );
-    let waited = wait_child(&mut child, &stderr_path, flight, |percent| {
+    let waited = wait_child(&mut child, stderr_path, flight, |percent| {
         progress(
             "transcribing",
             "Transcribing the recording",
@@ -2396,6 +2569,58 @@ mod tests {
             plan_resume(Some(&saved), &other, &snapshot, own),
             ResumePlan::Start
         ));
+        let mut gone = saved.clone();
+        gone.pid = None;
+        assert!(matches!(
+            plan_resume(Some(&gone), &lecture(), "", own),
+            ResumePlan::Continue(_)
+        ));
+        gone.pid = Some(99);
+        assert!(matches!(
+            plan_resume(Some(&gone), &lecture(), "", own),
+            ResumePlan::Continue(_)
+        ));
+    }
+
+    #[test]
+    fn keeps_extracted_audio_when_whisper_has_stopped() {
+        let root = std::env::temp_dir().join(format!("study-notes-continue-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let tmp = root.join("tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let wav = tmp.join("work.wav");
+        std::fs::write(&wav, vec![0u8; 45]).unwrap();
+        let job = SavedJob {
+            id: "job".into(),
+            media_path: r"D:\Lectures\ISC 102 U01.mp3".into(),
+            home: root.to_string_lossy().into_owned(),
+            course_id: "isc-102".into(),
+            module_id: None,
+            module_name: None,
+            new_module_name: None,
+            phase: "transcribing".into(),
+            label: "Transcribing the recording".into(),
+            percent: Some(15),
+            pid: None,
+            stderr_path: tmp.join("work.stderr").to_string_lossy().into_owned(),
+            stdout_path: tmp.join("work.stdout").to_string_lossy().into_owned(),
+            json_path: tmp.join("work.json").to_string_lossy().into_owned(),
+            wav_path: wav.to_string_lossy().into_owned(),
+            started_ms: 1,
+            duration_seconds: None,
+            pace: "clearer".into(),
+            language: "en".into(),
+            transcribe_started_ms: 1,
+            model: "ggml-base.en".into(),
+        };
+        assert!(super::saved_paths_usable(&root, &job));
+        assert!(super::wav_kept(&job));
+        let mut reading = job.clone();
+        reading.phase = "reading".into();
+        assert!(!super::wav_kept(&reading));
+        std::fs::write(&wav, vec![0u8; 44]).unwrap();
+        assert!(!super::wav_kept(&job));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -309,6 +309,12 @@ describe("one transcription", () => {
     expect(
       planResume({ ...lecture, pid: null, jsonReady: true }, lecture, [], own),
     ).toEqual({ action: "reuse" })
+    expect(planResume({ ...lecture, pid: null, jsonReady: false }, lecture, [], own)).toEqual({
+      action: "continue",
+    })
+    expect(planResume({ ...lecture, pid: 99, jsonReady: false }, lecture, [], own)).toEqual({
+      action: "continue",
+    })
   })
 
   it("does not move the percent backward", () => {
