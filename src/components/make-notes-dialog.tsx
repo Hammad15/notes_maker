@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from "react"
+import { useEffect, useId, useRef, useState, type FormEvent } from "react"
 import { CLOUD_NOTES_UNAVAILABLE, messageOf } from "../domain/errors"
 import { LOCAL_HARDWARE_NOTE } from "../domain/localSpeech"
 import { assertUsableFolderName } from "../domain/names"
@@ -49,6 +49,7 @@ export function MakeNotesDialog({
   const [checking, setChecking] = useState(false)
   const [existing, setExisting] = useState<{ input: MakeNotesInput; note: NoteInfo } | null>(null)
   const openRef = useRef(open)
+  const placeId = useId()
   openRef.current = open
 
   useEffect(() => {
@@ -149,7 +150,7 @@ export function MakeNotesDialog({
                   beside them.
                 </DialogDescription>
               </DialogHeader>
-              <DialogFooter className="gap-2 sm:justify-end">
+              <DialogFooter className="gap-2 sm:flex-wrap sm:justify-end">
                 <Button type="button" variant="outline" onClick={() => setExisting(null)}>
                   Back
                 </Button>
@@ -170,17 +171,15 @@ export function MakeNotesDialog({
               </DialogDescription>
             </DialogHeader>
             <div className="grid gap-2">
-              <Label>Course</Label>
-              <p className="font-serif text-lg">{courseName}</p>
+              <p className="text-sm font-medium">Course</p>
+              <p className="font-serif text-lg break-words">{courseName}</p>
             </div>
             <div className="grid gap-2">
               <Label htmlFor="recording">Recording</Label>
               {mediaPath ? (
                 <div className="rounded-lg border border-border bg-background px-3 py-2">
-                  <p className="truncate text-sm">{fileName(mediaPath)}</p>
-                  <p className="truncate font-mono text-xs text-muted-foreground" title={mediaPath}>
-                    {mediaPath}
-                  </p>
+                  <p className="text-sm break-all">{fileName(mediaPath)}</p>
+                  <p className="font-mono text-xs break-all text-muted-foreground">{mediaPath}</p>
                 </div>
               ) : (
                 <p className="text-sm text-muted-foreground">No file chosen yet.</p>
@@ -190,9 +189,11 @@ export function MakeNotesDialog({
               </Button>
             </div>
             <div className="grid gap-2">
-              <Label>Where should the notes go?</Label>
+              <p id={placeId} className="text-sm font-medium">
+                Where should the notes go?
+              </p>
               <Select value={moduleChoice} onValueChange={setModuleChoice}>
-                <SelectTrigger className="w-full">
+                <SelectTrigger className="w-full" aria-labelledby={placeId}>
                   <SelectValue placeholder="This course" />
                 </SelectTrigger>
                 <SelectContent position="popper">
@@ -237,9 +238,13 @@ export function MakeNotesDialog({
                 <p className="text-sm leading-relaxed text-muted-foreground">{LOCAL_HARDWARE_NOTE}</p>
               </div>
             )}
-            {error ? <p className="text-sm text-destructive">{error}</p> : null}
-            <DialogFooter className="sm:items-center sm:justify-between">
-              <p className="text-xs leading-relaxed text-muted-foreground sm:max-w-[16rem]">
+            {error ? (
+              <p className="text-sm text-destructive" role="alert">
+                {error}
+              </p>
+            ) : null}
+            <DialogFooter className="sm:flex-wrap sm:items-center sm:justify-between">
+              <p className="min-w-0 flex-1 text-xs leading-relaxed text-muted-foreground">
                 You can close this window. Writing the notes and PDF keeps going.
               </p>
               <Button

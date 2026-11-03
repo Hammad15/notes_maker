@@ -118,11 +118,11 @@ export function NoteScreen() {
 
   return (
     <div className="pb-10">
-      <Link to={backTo} className="text-sm text-muted-foreground hover:text-foreground">
+      <Link to={backTo} className="inline-flex rounded-sm text-sm text-muted-foreground hover:text-foreground">
         ← Back to {backLabel}
       </Link>
-      <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <p className="text-sm text-muted-foreground">
+      <div className="mt-4 flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <p className="min-w-0 text-sm break-words text-muted-foreground">
           {note.moduleName ?? "This course"}
           {note.mediaPath ? ` · ${fileName(note.mediaPath)}` : ""}
           {" · "}
@@ -131,6 +131,8 @@ export function NoteScreen() {
         <Button
           type="button"
           variant="outline"
+          className="shrink-0"
+          aria-label={`Open PDF for ${note.title}`}
           disabled={!note.pdfExists}
           onClick={() => {
             setPdfError(null)
@@ -140,7 +142,11 @@ export function NoteScreen() {
           Open PDF
         </Button>
       </div>
-      {pdfError ? <p className="mt-3 text-sm text-destructive">{pdfError}</p> : null}
+      {pdfError ? (
+        <p className="mt-3 text-sm text-destructive" role="alert">
+          {pdfError}
+        </p>
+      ) : null}
       <article className="note-body mt-6 max-w-2xl">
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
@@ -161,7 +167,7 @@ export function NoteScreen() {
       </article>
       {note.transcriptProduced && note.segments.some((segment) => segment.text.trim()) ? (
         <details className="mt-10 max-w-2xl border-t border-border pt-6">
-          <summary className="cursor-pointer text-sm text-muted-foreground hover:text-foreground">
+          <summary className="cursor-pointer rounded-sm text-sm text-muted-foreground hover:text-foreground">
             Transcript
           </summary>
           <ul className="mt-4 space-y-3">
@@ -182,11 +188,13 @@ export function NoteScreen() {
         onSubmit={(event) => void onRestyle(event)}
         className="mt-12 max-w-2xl border-t border-border pt-6"
       >
-        <h2 className="font-serif text-2xl">Restyle these notes</h2>
-        <p className="mt-2 text-sm text-muted-foreground">
+        <h2 id="restyle-heading" className="font-serif text-2xl">
+          Restyle these notes
+        </h2>
+        <p id="restyle-note" className="mt-2 text-sm text-muted-foreground">
           {settings.provider === "cloud" ? CLOUD_NOTES_UNAVAILABLE : "Restyle uses local notes. One previous copy is kept."}
         </p>
-        <div className="mt-4 flex flex-wrap gap-2">
+        <div className="mt-4 flex flex-wrap gap-2" role="group" aria-labelledby="restyle-heading">
           {PRESETS.map((item) => (
             <Button
               key={item.id}
@@ -205,10 +213,15 @@ export function NoteScreen() {
           placeholder="Or describe the change"
           className="mt-4 min-h-24"
           aria-label="Restyle prompt"
+          aria-describedby={formError ? "restyle-error" : undefined}
         />
-        {formError ? <p className="mt-3 text-sm text-destructive">{formError}</p> : null}
-        <div className="mt-4 flex flex-col gap-2 sm:flex-row">
-          <Button type="submit" disabled={busy || settings.provider === "cloud"}>
+        {formError ? (
+          <p id="restyle-error" className="mt-3 text-sm text-destructive" role="alert">
+            {formError}
+          </p>
+        ) : null}
+        <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+          <Button type="submit" aria-describedby="restyle-note" disabled={busy || settings.provider === "cloud"}>
             {busy ? "Restyling…" : "Restyle notes"}
           </Button>
           <Button

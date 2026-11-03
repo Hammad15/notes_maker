@@ -1,4 +1,5 @@
-import { useCallback, useLayoutEffect, useState } from "react"
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
+import { createPortal } from "react-dom"
 import { useLibrary } from "../state/library-context"
 import { Button } from "@/components/ui/button"
 
@@ -36,7 +37,7 @@ const STEPS: TourStep[] = [
 ]
 
 function placeCard(rect: DOMRect): { top: number; left: number } {
-  const width = 280
+  const width = Math.min(280, window.innerWidth - 24)
   const height = 176
   const gap = 12
   let top = rect.top
@@ -66,7 +67,9 @@ export function FirstRunTour() {
   const [usingFallback, setUsingFallback] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const dialogRef = useRef<HTMLDivElement>(null)
   const current = STEPS[step]
+  const shown = Boolean(card) && !settings.tourDismissed
 
   const measure = useCallback(() => {
     const primary = document.querySelector(`[data-tour="${current.target}"]`)
@@ -94,6 +97,11 @@ export function FirstRunTour() {
     }
   }, [measure, settings.tourDismissed])
 
+  useEffect(() => {
+    if (!shown) return
+    dialogRef.current?.focus()
+  }, [shown, step])
+
   if (settings.tourDismissed || !card) return null
   const last = step === STEPS.length - 1
   const body = usingFallback && current.fallbackBody ? current.fallbackBody : current.body
@@ -109,29 +117,46 @@ export function FirstRunTour() {
     }
   }
 
-  return (
+  return createPortal(
     <>
       {spot ? (
         <div
-          className="pointer-events-none fixed z-40 rounded-md ring-2 ring-primary"
+          aria-hidden="true"
+          className="pointer-events-none fixed z-40 rounded-md ring-2 ring-primary-text"
           style={{ top: spot.top - 4, left: spot.left - 4, width: spot.width + 8, height: spot.height + 8 }}
         />
       ) : null}
       <div
+        ref={dialogRef}
+        tabIndex={-1}
         role="dialog"
+        aria-modal="false"
         aria-labelledby="first-run-tour-title"
-        className="fixed z-50 w-[280px] rounded-lg border border-border bg-card p-3 text-card-foreground shadow-lg"
+        aria-describedby="first-run-tour-body"
+        className="fixed z-50 max-h-[calc(100dvh-1.5rem)] w-[min(280px,calc(100vw-1.5rem))] overflow-y-auto rounded-lg border border-border bg-card p-3 text-card-foreground shadow-lg"
         style={{ top: card.top, left: card.left }}
+        onKeyDown={(event) => {
+          if (event.key !== "Escape") return
+          event.preventDefault()
+          event.stopPropagation()
+          void finish()
+        }}
       >
-        <p className="text-xs font-medium text-primary">
+        <p className="text-xs font-medium text-primary-text">
           {step + 1} of {STEPS.length}
         </p>
         <h2 id="first-run-tour-title" className="mt-1 text-sm font-medium">
           {current.title}
         </h2>
-        <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{body}</p>
-        {error ? <p className="mt-2 text-xs text-destructive">{error}</p> : null}
-        <div className="mt-3 flex items-center justify-between gap-2">
+        <p id="first-run-tour-body" className="mt-1 text-sm leading-relaxed text-muted-foreground">
+          {body}
+        </p>
+        {error ? (
+          <p className="mt-2 text-xs text-destructive" role="alert">
+            {error}
+          </p>
+        ) : null}
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
           <Button type="button" variant="ghost" size="sm" disabled={saving} onClick={() => void finish()}>
             Dismiss
           </Button>
@@ -146,6 +171,7 @@ export function FirstRunTour() {
           )}
         </div>
       </div>
-    </>
+    </>,
+    document.body,
   )
 }

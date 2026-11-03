@@ -41,6 +41,7 @@
   --color-secondary: var(--secondary);
   --color-primary-foreground: var(--primary-foreground);
   --color-primary: var(--primary);
+  --color-primary-text: var(--primary-text);
   --color-popover-foreground: var(--popover-foreground);
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
@@ -66,6 +67,7 @@
   --popover-foreground: oklch(0.96 0 0);
   --primary: oklch(0.48 0.14 305);
   --primary-foreground: oklch(0.97 0.01 305);
+  --primary-text: oklch(0.78 0.13 305);
   --secondary: oklch(0.32 0.08 305);
   --secondary-foreground: oklch(0.96 0.02 305);
   --muted: oklch(0.16 0 0);
@@ -73,9 +75,9 @@
   --accent: oklch(0.22 0.05 305);
   --accent-foreground: oklch(0.96 0.02 305);
   --destructive: oklch(0.68 0.16 28);
-  --border: oklch(0.3 0.03 305);
-  --input: oklch(0.28 0.03 305);
-  --ring: oklch(0.48 0.14 305);
+  --border: oklch(0.5 0.04 305);
+  --input: oklch(0.5 0.04 305);
+  --ring: oklch(0.86 0.11 305);
   --chart-1: oklch(0.48 0.14 305);
   --chart-2: oklch(0.4 0.1 305);
   --chart-3: oklch(0.32 0.08 305);
@@ -88,8 +90,8 @@
   --sidebar-primary-foreground: oklch(0.97 0.01 305);
   --sidebar-accent: oklch(0.2 0.04 305);
   --sidebar-accent-foreground: oklch(0.96 0.02 305);
-  --sidebar-border: oklch(0.22 0.02 305);
-  --sidebar-ring: oklch(0.48 0.14 305);
+  --sidebar-border: oklch(0.5 0.04 305);
+  --sidebar-ring: oklch(0.86 0.11 305);
 }
 
 @layer base {
@@ -131,8 +133,37 @@ input.name-edit {
 }
 
 input.name-edit:focus {
-  border-color: var(--primary);
+  border-color: var(--primary-text);
   outline: none;
+}
+
+input.name-edit:focus-visible,
+button.name-edit:focus-visible {
+  border-color: var(--primary-text);
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.skip-link {
+  position: fixed;
+  top: 0.75rem;
+  left: 0.75rem;
+  z-index: 80;
+  transform: translateY(-200%);
+  border: 2px solid var(--ring);
+  border-radius: 0.5rem;
+  background: var(--card);
+  color: var(--foreground);
+  padding: 0.4rem 0.75rem;
+}
+
+.skip-link:focus {
+  transform: none;
 }
 
 .note-body {
@@ -140,6 +171,11 @@ input.name-edit:focus {
   font-size: 1.05rem;
   line-height: 1.7;
   color: var(--foreground);
+  overflow-wrap: break-word;
+}
+
+.note-body pre {
+  white-space: pre-wrap;
 }
 
 .note-body h1 {
@@ -156,7 +192,7 @@ input.name-edit:focus {
   font-weight: 600;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: var(--primary);
+  color: var(--primary-text);
 }
 
 .note-body p {
@@ -174,6 +210,7 @@ input.name-edit:focus {
 }
 
 .note-table {
+  max-width: 100%;
   margin-top: 1rem;
   overflow-x: auto;
 }

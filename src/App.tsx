@@ -24,13 +24,12 @@ function CourseHome() {
 
 function Frame() {
   const { ready, error, homeMissing, settings, reload } = useLibrary()
-  if (!ready) return <OpeningScreen />
-  let screen
-  if (error && !settings.homeDirectory) {
+  let screen = <OpeningScreen />
+  if (ready && error && !settings.homeDirectory) {
     screen = <StartupError message={error} onRetry={() => void reload().catch(() => undefined)} />
-  } else if (!settings.homeDirectory || homeMissing) {
+  } else if (ready && (!settings.homeDirectory || homeMissing)) {
     screen = <SetupScreen missing={homeMissing} />
-  } else {
+  } else if (ready) {
     screen = (
       <AppShell>
         <Routes>
@@ -43,10 +42,13 @@ function Frame() {
     )
   }
   return (
-    <>
-      <UpdateNotice />
-      {screen}
-    </>
+    <div className="flex h-dvh min-w-0 flex-col overflow-hidden bg-background text-foreground">
+      <a className="skip-link" href="#main">
+        Skip to main content
+      </a>
+      {ready ? <UpdateNotice /> : null}
+      <div className="min-h-0 min-w-0 flex-1">{screen}</div>
+    </div>
   )
 }
 

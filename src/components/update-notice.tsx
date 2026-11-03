@@ -8,6 +8,7 @@ let openedDownload: string | null = null
 export function UpdateNotice() {
   const host = useHost()
   const [update, setUpdate] = useState<InstallerUpdate | null>(null)
+  const [openError, setOpenError] = useState<string | null>(null)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -33,15 +34,30 @@ export function UpdateNotice() {
 
   if (!update) return null
   return (
-    <div role="status" aria-live="polite" className="border-b border-border bg-card px-4 py-3">
-      <div className="mx-auto flex w-full max-w-4xl flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <p className="text-sm">
+    <div className="border-b border-border bg-card px-4 py-3">
+      <div className="mx-auto flex w-full min-w-0 max-w-4xl flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+        <p role="status" className="min-w-0 text-sm">
           Create Notes {update.version} is available. The installer download is opening.
         </p>
-        <Button type="button" className="w-fit" onClick={() => void host.openUrl(update.downloadUrl).catch(() => undefined)}>
+        <Button
+          type="button"
+          className="w-fit shrink-0"
+          aria-label={`Open the download of Create Notes ${update.version}`}
+          onClick={() => {
+            setOpenError(null)
+            void host.openUrl(update.downloadUrl).catch((err: unknown) => {
+              setOpenError(err instanceof Error ? err.message : "Could not open the download.")
+            })
+          }}
+        >
           Open the download
         </Button>
       </div>
+      {openError ? (
+        <p role="alert" className="mx-auto mt-2 w-full max-w-4xl text-sm text-destructive">
+          {openError}
+        </p>
+      ) : null}
     </div>
   )
 }

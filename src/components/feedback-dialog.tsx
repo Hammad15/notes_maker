@@ -86,7 +86,11 @@ export function FeedbackDialog() {
                 onChange={(event) => setEmail(event.target.value)}
               />
             </div>
-            {error ? <p className="text-sm text-destructive">{error}</p> : null}
+            {error ? (
+              <p className="text-sm text-destructive" role="alert">
+                {error}
+              </p>
+            ) : null}
             <DialogFooter>
               <Button type="submit" disabled={sending || message.trim().length === 0}>
                 Open email

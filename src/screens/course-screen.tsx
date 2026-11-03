@@ -80,11 +80,13 @@ export function CourseScreen() {
   }
 
   async function removeNote(note: NoteInfo) {
+    const active = document.activeElement
     setError(null)
     setDeletingId(note.id)
     try {
       await deleteNote(store, home, current.id, note.id)
       await reload()
+      if (active instanceof HTMLElement && !active.isConnected) document.getElementById("make-notes")?.focus()
     } catch (err) {
       setError(messageOf(err))
     } finally {
@@ -93,7 +95,7 @@ export function CourseScreen() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-2xl">
+    <div className="mx-auto w-full min-w-0 max-w-2xl">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <h1 className="min-w-0 flex-1">
           <InlineName
@@ -107,11 +109,21 @@ export function CourseScreen() {
             }}
           />
         </h1>
-        <Button type="button" data-tour="make-notes" className="w-full sm:w-auto" onClick={() => setMakeOpen(true)}>
+        <Button
+          id="make-notes"
+          type="button"
+          data-tour="make-notes"
+          className="w-full sm:w-auto"
+          onClick={() => setMakeOpen(true)}
+        >
           Make notes
         </Button>
       </div>
-      {error ? <p className="mt-4 text-sm text-destructive">{error}</p> : null}
+      {error ? (
+        <p className="mt-4 text-sm text-destructive" role="alert">
+          {error}
+        </p>
+      ) : null}
       {courseNotes.length === 0 && current.modules.length === 0 ? (
         <div className="mt-8">
           <h2 className="font-serif text-xl">No notes yet</h2>
@@ -134,7 +146,7 @@ export function CourseScreen() {
       <section className="mt-10">
         <div className="flex items-center justify-between gap-3">
           <h2 className="font-serif text-2xl">Modules</h2>
-          <Button type="button" variant="outline" size="sm" onClick={() => setModuleOpen(true)}>
+          <Button type="button" variant="outline" size="sm" aria-label="New module" onClick={() => setModuleOpen(true)}>
             New
           </Button>
         </div>
@@ -223,17 +235,18 @@ function NoteList({
       {visible.map((note) => {
         const title = noteListTitle(note, notes)
         return (
-          <li key={note.id} className="flex items-center gap-3">
+          <li key={note.id} className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-border py-3">
             <Link
               to={`/courses/${courseId}/notes/${note.id}`}
-              className="group block min-w-0 flex-1 py-4"
+              className="group block min-w-0 flex-1 basis-full rounded-sm py-1 sm:basis-auto"
             >
-              <span className="block font-serif text-xl group-hover:text-primary">{title}</span>
+              <span className="block truncate font-serif text-xl group-hover:text-primary-text">{title}</span>
             </Link>
             <Button
               type="button"
               variant="outline"
               className="shrink-0"
+              aria-label={`Open PDF for ${title}`}
               disabled={!note.pdfExists}
               onClick={() => onOpenPdf(note)}
             >

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from "react"
+import { useEffect, useId, useRef, useState, type FormEvent } from "react"
 import { messageOf } from "../domain/errors"
 
 export function InlineName({
@@ -17,6 +17,17 @@ export function InlineName({
   const [error, setError] = useState<string | null>(null)
   const skipCommit = useRef(false)
   const committing = useRef(false)
+  const restoreFocus = useRef(false)
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const errorId = useId()
+  const accessibleName = label.includes(value) ? label : `${label}, ${value}`
+
+  useEffect(() => {
+    if (!editing && restoreFocus.current) {
+      restoreFocus.current = false
+      buttonRef.current?.focus()
+    }
+  }, [editing])
 
   useEffect(() => {
     if (!editing) setDraft(value)
@@ -49,7 +60,13 @@ export function InlineName({
 
   if (!editing) {
     return (
-      <button type="button" className={`name-edit text-left ${className}`} aria-label={label} onClick={() => setEditing(true)}>
+      <button
+        ref={buttonRef}
+        type="button"
+        className={`name-edit max-w-full rounded-sm text-left break-words ${className}`}
+        aria-label={accessibleName}
+        onClick={() => setEditing(true)}
+      >
         {value}
       </button>
     )
@@ -57,6 +74,7 @@ export function InlineName({
 
   function onSubmit(event: FormEvent) {
     event.preventDefault()
+    restoreFocus.current = true
     void commit()
   }
 
@@ -65,8 +83,10 @@ export function InlineName({
       <input
         autoFocus
         value={draft}
-        aria-label={label}
-        className={`name-edit w-full ${className}`}
+        aria-label={accessibleName}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={error ? errorId : undefined}
+        className={`name-edit w-full max-w-full ${className}`}
         onChange={(event) => {
           setDraft(event.target.value)
           setError(null)
@@ -75,13 +95,18 @@ export function InlineName({
         onKeyDown={(event) => {
           if (event.key !== "Escape") return
           event.preventDefault()
+          restoreFocus.current = true
           skipCommit.current = true
           setDraft(value)
           setEditing(false)
           setError(null)
         }}
       />
-      {error ? <p className="mt-1 text-sm font-sans text-destructive">{error}</p> : null}
+      {error ? (
+        <p id={errorId} role="alert" className="mt-1 text-sm font-sans text-destructive">
+          {error}
+        </p>
+      ) : null}
     </form>
   )
 }

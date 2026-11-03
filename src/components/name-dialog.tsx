@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react"
+import { useEffect, useId, useState, type FormEvent } from "react"
 import { messageOf } from "../domain/errors"
 import { Button } from "@/components/ui/button"
 import {
@@ -32,6 +32,9 @@ export function NameDialog({
   const [name, setName] = useState(initial)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const nameId = useId()
+  const errorId = useId()
+  const helpId = useId()
 
   useEffect(() => {
     if (!open) return
@@ -63,20 +66,26 @@ export function NameDialog({
             <DialogDescription>{description}</DialogDescription>
           </DialogHeader>
           <div className="grid gap-2">
-            <Label htmlFor="study-name">Name</Label>
+            <Label htmlFor={nameId}>Name</Label>
             <Input
-              id="study-name"
+              id={nameId}
               value={name}
               onChange={(event) => setName(event.target.value)}
               autoFocus
               placeholder="Biology 101"
               className="h-10"
+              aria-invalid={error ? true : undefined}
+              aria-describedby={error ? `${helpId} ${errorId}` : helpId}
             />
-            <p className="text-xs leading-relaxed text-muted-foreground">
+            <p id={helpId} className="text-xs leading-relaxed text-muted-foreground">
               The folder uses this name, with characters Windows does not allow removed.
             </p>
           </div>
-          {error ? <p className="text-sm text-destructive">{error}</p> : null}
+          {error ? (
+            <p id={errorId} className="text-sm text-destructive" role="alert">
+              {error}
+            </p>
+          ) : null}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancel

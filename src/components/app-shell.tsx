@@ -2,7 +2,6 @@ import { NavLink, useNavigate } from "react-router-dom"
 import { Plus } from "lucide-react"
 import { CLOUD_NOTES_UNAVAILABLE } from "../domain/errors"
 import { barPercent, localJobMessage, NOTES_MODEL, speechModel, type SpeechPace } from "../domain/localSpeech"
-import { truncateMiddle } from "../domain/paths"
 import { WINDOWS_DIALOG_REQUIRED } from "../platform/dialogs"
 import { useHost } from "../platform/host"
 import { useLibrary } from "../state/library-context"
@@ -56,8 +55,8 @@ function ProviderSwitch() {
               ? `On this computer, using ${speechModel(pace).name}. Study notes are written by ${NOTES_MODEL.name}.`
               : "On this computer. One button downloads the speech model and the notes model."}
           </p>
-          <div className="grid gap-1">
-            <p className="text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase">Speed</p>
+          <fieldset className="grid gap-1">
+            <legend className="text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase">Speed</legend>
             <div className="grid grid-cols-2 gap-1 rounded-lg bg-muted p-1">
               {(["faster", "clearer"] as const satisfies readonly SpeechPace[]).map((id) => (
                 <button
@@ -83,7 +82,7 @@ function ProviderSwitch() {
               Chosen once. Faster uses the tiny English model and more processor cores. Clearer keeps the base English
               model and fewer cores.
             </p>
-          </div>
+          </fieldset>
         </>
       ) : (
         <p className="text-xs leading-relaxed text-muted-foreground">{CLOUD_NOTES_UNAVAILABLE}</p>
@@ -108,8 +107,16 @@ function ProviderSwitch() {
           {setupPercent(setupProgress.received, setupProgress.total)}
         </p>
       ) : null}
-      {error ? <p className="text-xs text-destructive">{error}</p> : null}
-      {setupError ? <p className="text-xs text-destructive">{setupError}</p> : null}
+      {error ? (
+        <p className="text-xs text-destructive" role="alert">
+          {error}
+        </p>
+      ) : null}
+      {setupError ? (
+        <p className="text-xs text-destructive" role="alert">
+          {setupError}
+        </p>
+      ) : null}
     </fieldset>
   )
 }
@@ -128,7 +135,7 @@ function JobBanner() {
             className="rounded-lg border border-border bg-card px-4 py-3 text-sm"
           >
             <p>{localJobMessage(job.label, job.progress)}</p>
-            <div className="mt-2 h-1 overflow-hidden rounded-full bg-muted">
+            <div className="mt-2 h-1 overflow-hidden rounded-full bg-muted" aria-hidden="true">
               <div
                 className="h-full bg-primary"
                 style={{ width: `${barPercent(job.progress) ?? 0}%` }}
@@ -181,9 +188,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      <div className="md:grid md:min-h-screen md:grid-cols-[250px_minmax(0,1fr)]">
-        <aside className="flex flex-col gap-6 border-b border-sidebar-border bg-sidebar px-5 py-5 md:border-r md:border-b-0">
+    <div className="h-full min-h-0 bg-background text-foreground">
+      <div className="h-full min-h-0 overflow-y-auto md:grid md:grid-cols-[minmax(0,250px)_minmax(0,1fr)] md:grid-rows-[minmax(0,1fr)] md:overflow-hidden">
+        <aside
+          aria-label="Create Notes"
+          className="flex min-w-0 flex-col gap-6 scroll-p-3 border-b border-sidebar-border bg-sidebar px-5 py-5 md:min-h-0 md:overflow-y-auto md:border-r md:border-b-0"
+        >
           <div>
             <p className="font-serif text-xl tracking-tight">Create Notes</p>
             <p className="mt-1 text-xs text-muted-foreground">One computer, one student.</p>
@@ -195,26 +205,30 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <p className="text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase">
               Home
             </p>
-            <p className="truncate font-mono text-xs text-muted-foreground" title={home ?? ""}>
-              {home ? truncateMiddle(home, 32) : "No folder yet"}
-            </p>
+            <p className="truncate font-mono text-xs text-muted-foreground">{home ?? "No folder yet"}</p>
             <button
               type="button"
-              className="w-fit text-left text-xs text-foreground underline-offset-4 hover:underline"
+              className="w-fit rounded-sm text-left text-xs text-foreground underline-offset-4 hover:underline"
               onClick={() => void changeHome()}
             >
               Change home folder
             </button>
-            {homeError ? <p className="text-xs text-destructive">{homeError}</p> : null}
+            {homeError ? (
+              <p className="text-xs text-destructive" role="alert">
+                {homeError}
+              </p>
+            ) : null}
           </div>
-          <nav data-tour="courses" className="grid gap-2">
+          <nav aria-labelledby="courses-heading" data-tour="courses" className="grid gap-2">
             <div className="flex items-center justify-between gap-2">
-              <p className="text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase">Courses</p>
+              <p id="courses-heading" className="text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase">
+                Courses
+              </p>
               <button
                 type="button"
                 data-tour="new-course"
                 aria-label="New course"
-                className="grid size-6 place-items-center rounded-md text-primary hover:bg-accent"
+                className="grid size-8 place-items-center rounded-md text-primary-text hover:bg-accent"
                 onClick={() => setCourseOpen(true)}
               >
                 <Plus className="size-4" />
@@ -229,7 +243,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     <NavLink
                       to={`/courses/${course.id}`}
                       className={({ isActive }) =>
-                        `block truncate text-sm ${isActive ? "text-primary" : "text-foreground hover:text-primary"}`
+                        `block truncate rounded-sm text-sm ${isActive ? "font-medium text-primary-text underline underline-offset-4" : "text-foreground hover:text-primary-text"}`
                       }
                     >
                       {course.name}
@@ -243,12 +257,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <ProviderSwitch />
           </div>
         </aside>
-        <div className="min-w-0">
+        <main id="main" tabIndex={-1} className="min-w-0 scroll-p-3 md:min-h-0 md:overflow-y-auto">
           <JobBanner />
-          <div data-tour="course-page" className="mx-auto w-full max-w-4xl px-5 py-8 md:px-10 md:py-10">
+          <div data-tour="course-page" className="mx-auto w-full min-w-0 max-w-4xl px-5 py-8 md:px-10 md:py-10">
             {children}
           </div>
-        </div>
+        </main>
       </div>
       <NameDialog
         open={courseOpen}
