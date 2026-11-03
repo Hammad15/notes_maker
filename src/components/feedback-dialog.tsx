@@ -1,16 +1,9 @@
 import { useState } from "react"
-import { FEEDBACK_EMAIL, feedbackMailto } from "../domain/feedback"
+import { feedbackMailto } from "../domain/feedback"
 import { messageOf } from "../domain/errors"
 import { useHost } from "../platform/host"
 import { Button } from "@/components/ui/button"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog"
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 
@@ -48,10 +41,6 @@ export function FeedbackDialog() {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Contact us</DialogTitle>
-            <DialogDescription>
-              Submit feedback. This opens your email app with the message addressed to {FEEDBACK_EMAIL}. Create Notes
-              does not keep a copy, and you do not need an account.
-            </DialogDescription>
           </DialogHeader>
           <form
             className="grid gap-3"

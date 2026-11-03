@@ -50,11 +50,11 @@ function ProviderSwitch() {
       </div>
       {settings.provider === "local" ? (
         <>
-          <p className="text-xs leading-relaxed text-muted-foreground">
-            {localReady
-              ? `On this computer, using ${speechModel(pace).name}. Study notes are written by ${NOTES_MODEL.name}.`
-              : "On this computer. One button downloads the speech model and the notes model."}
-          </p>
+          {localReady ? (
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              {`Speech uses ${speechModel(pace).name}, and notes use ${NOTES_MODEL.name}.`}
+            </p>
+          ) : null}
           <fieldset className="grid gap-1">
             <legend className="text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase">Speed</legend>
             <div className="grid grid-cols-2 gap-1 rounded-lg bg-muted p-1">
@@ -79,8 +79,7 @@ function ProviderSwitch() {
               ))}
             </div>
             <p className="text-xs leading-relaxed text-muted-foreground">
-              Chosen once. Faster uses the tiny English model and more processor cores. Clearer keeps the base English
-              model and fewer cores.
+              Faster uses the tiny English model and more cores; Clearer uses the base English model and fewer.
             </p>
           </fieldset>
         </>
@@ -196,7 +195,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         >
           <div>
             <p className="font-serif text-xl tracking-tight">Create Notes</p>
-            <p className="mt-1 text-xs text-muted-foreground">One computer, one student.</p>
             <div className="mt-4">
               <FeedbackDialog />
             </div>

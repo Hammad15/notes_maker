@@ -22,7 +22,7 @@ export class CloudNotesError extends StudyError {
 
 export class LocalSetupError extends StudyError {
   constructor() {
-    super("Press Set up local notes before making notes.", "LOCAL_SETUP")
+    super("Press Set up local notes before creating notes.", "LOCAL_SETUP")
     this.name = "LocalSetupError"
   }
 }

@@ -66,7 +66,7 @@ export const NOTES_MODEL = {
 } as const
 
 export const LOCAL_HARDWARE_NOTE =
-  "A 4-core CPU from the last few years and 16 GB of memory for a lecture under an hour. An older laptop can run it and may take hours."
+  "Suggested CPU specs: 4-core CPU and 16 GB RAM. Lesser builds should also work, just slower."
 
 export const LLAMA_ENGINE = {
   version: "b10599",

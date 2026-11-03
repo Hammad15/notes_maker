@@ -165,10 +165,7 @@ export function MakeNotesDialog({
           ) : (
           <form onSubmit={submit} className="grid gap-4">
             <DialogHeader>
-              <DialogTitle>Make notes</DialogTitle>
-              <DialogDescription>
-                {courseName} stays the course for these notes.
-              </DialogDescription>
+              <DialogTitle>Create notes</DialogTitle>
             </DialogHeader>
             <div className="grid gap-2">
               <p className="text-sm font-medium">Course</p>
@@ -228,12 +225,10 @@ export function MakeNotesDialog({
               <div className="grid gap-2">
                 {localStatus && !localStatus.ready ? (
                   <p className="text-sm text-muted-foreground">
-                    Press Set up local notes in the sidebar. That downloads the speech model and finishes setup.
+                    Press Set up local notes in the sidebar to start creating notes.
                   </p>
                 ) : (
-                  <p className="text-sm text-muted-foreground">
-                    Using the speech model on this computer. The note is the study notes.
-                  </p>
+                  <p className="text-sm text-muted-foreground">Study notes are written on this computer.</p>
                 )}
                 <p className="text-sm leading-relaxed text-muted-foreground">{LOCAL_HARDWARE_NOTE}</p>
               </div>
@@ -243,10 +238,7 @@ export function MakeNotesDialog({
                 {error}
               </p>
             ) : null}
-            <DialogFooter className="sm:flex-wrap sm:items-center sm:justify-between">
-              <p className="min-w-0 flex-1 text-xs leading-relaxed text-muted-foreground">
-                You can close this window. Writing the notes and PDF keeps going.
-              </p>
+            <DialogFooter className="sm:justify-end">
               <Button
                 type="submit"
                 disabled={
@@ -255,7 +247,7 @@ export function MakeNotesDialog({
                   (settings.provider === "local" && localStatus?.ready !== true)
                 }
               >
-                Make notes
+                Create notes
               </Button>
             </DialogFooter>
           </form>

@@ -192,7 +192,7 @@ export function NoteScreen() {
           Restyle these notes
         </h2>
         <p id="restyle-note" className="mt-2 text-sm text-muted-foreground">
-          {settings.provider === "cloud" ? CLOUD_NOTES_UNAVAILABLE : "Restyle uses local notes. One previous copy is kept."}
+          {settings.provider === "cloud" ? CLOUD_NOTES_UNAVAILABLE : "Restyle uses local notes and keeps the previous copy."}
         </p>
         <div className="mt-4 flex flex-wrap gap-2" role="group" aria-labelledby="restyle-heading">
           {PRESETS.map((item) => (

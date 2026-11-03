@@ -30,9 +30,9 @@ const STEPS: TourStep[] = [
   {
     target: "make-notes",
     fallback: "course-page",
-    title: "Make Notes",
-    body: "Make Notes is this button. It starts from a recording already on this computer.",
-    fallbackBody: "Make Notes is the button at the top of a course.",
+    title: "Create notes",
+    body: "Create notes starts from a recording on this computer.",
+    fallbackBody: "Create notes is the button at the top of a course.",
   },
 ]
 

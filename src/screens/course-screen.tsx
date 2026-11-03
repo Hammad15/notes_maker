@@ -116,7 +116,7 @@ export function CourseScreen() {
           className="w-full sm:w-auto"
           onClick={() => setMakeOpen(true)}
         >
-          Make notes
+          Create notes
         </Button>
       </div>
       {error ? (
@@ -128,7 +128,7 @@ export function CourseScreen() {
         <div className="mt-8">
           <h2 className="font-serif text-xl">No notes yet</h2>
           <p className="mt-3 leading-relaxed text-muted-foreground">
-            Make notes from a video or audio file already on this computer. The file stays where it is.
+            Create notes from a video or audio file on this computer. The file stays where it is.
           </p>
         </div>
       ) : (
@@ -152,7 +152,7 @@ export function CourseScreen() {
         </div>
         {current.modules.length === 0 ? (
           <p className="mt-4 text-sm leading-relaxed text-muted-foreground">
-            A module is a folder inside the course, for a unit or topic. Notes can stay on the course itself.
+            A module is a folder for a unit or topic. Notes can also stay on the course.
           </p>
         ) : (
           <div className="mt-6 grid gap-8">
@@ -235,7 +235,7 @@ function NoteList({
       {visible.map((note) => {
         const title = noteListTitle(note, notes)
         return (
-          <li key={note.id} className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-border py-3">
+          <li key={note.id} className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 py-3">
             <Link
               to={`/courses/${courseId}/notes/${note.id}`}
               className="group block min-w-0 flex-1 basis-full rounded-sm py-1 sm:basis-auto"

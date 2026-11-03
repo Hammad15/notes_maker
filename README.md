@@ -6,7 +6,7 @@ This build is the course library and Make Notes. The theme is dark. There is no 
 
 Press **Set up local notes** once in the sidebar. That button downloads the speech model for the speed you chose, the speech engine, and ffmpeg and ffprobe when those programs are missing. Local notes do not ask for an API key. After setup finishes, Make Notes transcribes the recording and writes Markdown plus a PDF. The window shows a percent and an estimate of the time remaining for the whole run, including writing the notes after transcription. The bar stays empty until both of those numbers are on screen.
 
-A 4-core CPU from the last few years and 16 GB of memory for a lecture under an hour. An older laptop can run it and may take hours.
+Suggested CPU specs: 4-core CPU and 16 GB RAM. Lesser builds should also work, just slower.
 
 **Speed** is chosen once, under Local. Faster uses the tiny English model and every processor core. Clearer uses the base English model and half the cores. Switching speed shows setup again only when that model file is missing. Both model files can sit next to each other.
 
