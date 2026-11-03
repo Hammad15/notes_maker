@@ -211,7 +211,7 @@ export function MakeNotesDialog({
                     setNewModuleName(event.target.value)
                     setError(null)
                   }}
-                  placeholder="Cells"
+                  placeholder="Module name"
                   aria-label="New module name"
                   className="h-10"
                 />
