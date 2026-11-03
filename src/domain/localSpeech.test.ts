@@ -1,9 +1,12 @@
+import { readFileSync } from "node:fs"
+import path from "node:path"
 import { describe, expect, it } from "vitest"
 import {
   assertHeardRecording,
   cleanNotesReply,
   FFMPEG_BUNDLE,
   LLAMA_ENGINE,
+  LOCAL_HARDWARE_NOTE,
   NOTES_MODEL,
   formatRemaining,
   localJobMessage,
@@ -39,6 +42,13 @@ const whisperJson = `{
     }
   ]
 }`
+
+describe("local hardware", () => {
+  it("uses the same note in the README", () => {
+    const readme = readFileSync(path.join(process.cwd(), "README.md"), "utf8")
+    expect(readme).toContain(LOCAL_HARDWARE_NOTE)
+  })
+})
 
 describe("whisper transcript", () => {
   it("reads timed speech and drops non-speech markers", () => {

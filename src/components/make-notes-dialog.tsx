@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react"
 import { CLOUD_NOTES_UNAVAILABLE, messageOf } from "../domain/errors"
+import { LOCAL_HARDWARE_NOTE } from "../domain/localSpeech"
 import { assertUsableFolderName } from "../domain/names"
 import { fileName } from "../domain/paths"
 import { isMediaFile } from "../domain/text"
@@ -222,14 +223,19 @@ export function MakeNotesDialog({
               <p className="rounded-lg bg-muted px-3 py-2 text-sm leading-relaxed text-muted-foreground">
                 {CLOUD_NOTES_UNAVAILABLE}
               </p>
-            ) : localStatus && !localStatus.ready ? (
-              <p className="text-sm text-muted-foreground">
-                Press Set up local notes in the sidebar. That downloads the speech model and finishes setup.
-              </p>
             ) : (
-              <p className="text-sm text-muted-foreground">
-                Using the speech model on this computer. The note is the study notes.
-              </p>
+              <div className="grid gap-2">
+                {localStatus && !localStatus.ready ? (
+                  <p className="text-sm text-muted-foreground">
+                    Press Set up local notes in the sidebar. That downloads the speech model and finishes setup.
+                  </p>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    Using the speech model on this computer. The note is the study notes.
+                  </p>
+                )}
+                <p className="text-sm leading-relaxed text-muted-foreground">{LOCAL_HARDWARE_NOTE}</p>
+              </div>
             )}
             {error ? <p className="text-sm text-destructive">{error}</p> : null}
             <DialogFooter className="sm:items-center sm:justify-between">

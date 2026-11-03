@@ -65,6 +65,9 @@ export const NOTES_MODEL = {
   url: "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf",
 } as const
 
+export const LOCAL_HARDWARE_NOTE =
+  "A 4-core CPU from the last few years and 16 GB of memory for a lecture under an hour. An older laptop can run it and may take hours."
+
 export const LLAMA_ENGINE = {
   version: "b10599",
   file: "llama-cli.exe",
