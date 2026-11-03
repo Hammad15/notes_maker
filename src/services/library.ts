@@ -34,6 +34,7 @@ export interface Settings {
   lastMediaDirectory: string | null
   speechPace: SpeechPace
   languageCode: string
+  tourDismissed: boolean
 }
 
 export interface CourseSummary {
@@ -120,6 +121,7 @@ const EMPTY_SETTINGS: Settings = {
   lastMediaDirectory: null,
   speechPace: "clearer",
   languageCode: "en",
+  tourDismissed: false,
 }
 
 let pendingSettingsWrite: Promise<void> = Promise.resolve()
@@ -150,6 +152,7 @@ export async function loadSettings(store: FileStore): Promise<Settings> {
     lastMediaDirectory: typeof json.lastMediaDirectory === "string" ? json.lastMediaDirectory : null,
     speechPace: speechPace(json.speechPace),
     languageCode: typeof languageCode === "string" && languageCode.trim() ? languageCode.trim() : "en",
+    tourDismissed: json.tourDismissed === true,
   }
   if (Object.prototype.hasOwnProperty.call(json, "groqApiKey")) await saveSettings(store, settings)
   return settings

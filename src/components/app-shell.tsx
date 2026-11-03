@@ -8,6 +8,8 @@ import { useHost } from "../platform/host"
 import { useLibrary } from "../state/library-context"
 import { Button } from "@/components/ui/button"
 import { useState } from "react"
+import { FeedbackDialog } from "./feedback-dialog"
+import { FirstRunTour } from "./first-run-tour"
 import { NameDialog } from "./name-dialog"
 
 function setupPercent(received: number, total: number | null): string {
@@ -185,6 +187,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div>
             <p className="font-serif text-xl tracking-tight">Create Notes</p>
             <p className="mt-1 text-xs text-muted-foreground">One computer, one student.</p>
+            <div className="mt-4">
+              <FeedbackDialog />
+            </div>
           </div>
           <div className="grid gap-2">
             <p className="text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase">
@@ -202,11 +207,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </button>
             {homeError ? <p className="text-xs text-destructive">{homeError}</p> : null}
           </div>
-          <nav className="grid gap-2">
+          <nav data-tour="courses" className="grid gap-2">
             <div className="flex items-center justify-between gap-2">
               <p className="text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase">Courses</p>
               <button
                 type="button"
+                data-tour="new-course"
                 aria-label="New course"
                 className="grid size-6 place-items-center rounded-md text-primary hover:bg-accent"
                 onClick={() => setCourseOpen(true)}
@@ -239,7 +245,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </aside>
         <div className="min-w-0">
           <JobBanner />
-          <div className="mx-auto w-full max-w-4xl px-5 py-8 md:px-10 md:py-10">{children}</div>
+          <div data-tour="course-page" className="mx-auto w-full max-w-4xl px-5 py-8 md:px-10 md:py-10">
+            {children}
+          </div>
         </div>
       </div>
       <NameDialog
@@ -254,6 +262,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           navigate(`/courses/${created.id}`)
         }}
       />
+      <FirstRunTour />
     </div>
   )
 }

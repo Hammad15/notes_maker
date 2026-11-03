@@ -64,6 +64,19 @@ export function createTauriHost(): Host {
         }
       }
     },
+    openUrl: async (url) => {
+      const { openUrl } = await import("@tauri-apps/plugin-opener")
+      try {
+        await openUrl(url)
+      } catch (error) {
+        try {
+          await tauriCall({ op: "openUrl", url })
+        } catch (fallback) {
+          if (/not allowed/i.test(messageOf(error))) throw fallback
+          throw error
+        }
+      }
+    },
     watchTranscription: async (onProgress) => {
       const { listen } = await import("@tauri-apps/api/event")
       const stop = await listen<TranscriptionProgress>("local-transcribe-progress", (event) => {

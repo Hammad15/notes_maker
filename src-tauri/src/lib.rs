@@ -632,6 +632,51 @@ async fn desktop_call(app: tauri::AppHandle, request: Value) -> Result<Value, St
     desktop_request(app, request)
 }
 
+fn mailto_ok(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("mailto:") else {
+        return false;
+    };
+    if rest.contains(['/', '\\', ' ']) {
+        return false;
+    }
+    let address = rest.split('?').next().unwrap_or("");
+    let mut parts = address.split('@');
+    let local = parts.next().unwrap_or("");
+    let host = parts.next().unwrap_or("");
+    parts.next().is_none() && !local.is_empty() && host.contains('.')
+}
+
+fn openable_url(url: &str) -> bool {
+    if url.starts_with("mailto:") {
+        return mailto_ok(url);
+    }
+    const PREFIX: &str = "https://github.com/Hammad15/notes_maker/releases/download/";
+    let Some(rest) = url.strip_prefix(PREFIX) else {
+        return false;
+    };
+    let lower_rest = rest.to_ascii_lowercase();
+    if rest.contains(['?', '#', '\\', ' ']) || rest.contains("..") {
+        return false;
+    }
+    if lower_rest.contains("%2f") || lower_rest.contains("%5c") {
+        return false;
+    }
+    let mut parts = rest.split('/');
+    let tag = match parts.next() {
+        Some(tag) if !tag.is_empty() => tag,
+        _ => return false,
+    };
+    let file = match parts.next() {
+        Some(file) if !file.is_empty() => file,
+        _ => return false,
+    };
+    if parts.next().is_some() || tag.contains(['@', ':']) {
+        return false;
+    }
+    let lower = file.to_ascii_lowercase();
+    lower.ends_with(".exe") || lower.ends_with(".msi")
+}
+
 fn desktop_request(app: tauri::AppHandle, request: Value) -> Result<Value, String> {
     let op = require_str(&request, "op")?;
     match op {
@@ -728,6 +773,14 @@ fn desktop_request(app: tauri::AppHandle, request: Value) -> Result<Value, Strin
                 .map_err(|error| error.to_string())?;
             Ok(Value::Null)
         }
+        "openUrl" => {
+            let url = require_str(&request, "url")?;
+            if !openable_url(url) {
+                return Err("That link cannot be opened from Create Notes.".into());
+            }
+            tauri_plugin_opener::open_url(url, None::<&str>).map_err(|error| error.to_string())?;
+            Ok(Value::Null)
+        }
         "pickMedia" => {
             let mut dialog = app
                 .dialog()
@@ -772,7 +825,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod duration_tests {
-    use super::duration_from_header;
+    use super::{duration_from_header, openable_url};
     use serde_json::json;
 
     fn wav(seconds: u32) -> Vec<u8> {
@@ -871,6 +924,31 @@ mod duration_tests {
             prepare_blocking < prepare,
             "ffmpeg preparation starts on a worker thread"
         );
+    }
+
+    #[test]
+    fn open_url_allows_mailto_and_release_installers_only() {
+        assert!(openable_url(
+            "mailto:person@school.test?subject=Create%20Notes&body=Hello"
+        ));
+        assert!(!openable_url("mailto:not-an-address"));
+        assert!(!openable_url("mailto:has/slash@example.com"));
+        assert!(openable_url(
+            "https://github.com/Hammad15/notes_maker/releases/download/v0.2.0/CreateNotes_0.2.0_x64-setup.exe"
+        ));
+        assert!(openable_url(
+            "https://github.com/Hammad15/notes_maker/releases/download/v0.2.0/Create.Notes.msi"
+        ));
+        assert!(!openable_url(
+            "https://github.com/Hammad15/notes_maker/releases/download/v0.2.0/notes.zip"
+        ));
+        assert!(!openable_url(
+            "http://github.com/Hammad15/notes_maker/releases/download/v0.2.0/Setup.exe"
+        ));
+        assert!(!openable_url(
+            "https://user:pass@github.com/Hammad15/notes_maker/releases/download/v0.2.0/Setup.exe"
+        ));
+        assert!(!openable_url("https://example.com/Setup.exe"));
     }
 
     #[test]

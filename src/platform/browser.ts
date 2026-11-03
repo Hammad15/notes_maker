@@ -34,6 +34,14 @@ export function createBrowserHost(): Host {
     openPath: async () => {
       throw new Error(DESKTOP_WINDOW_REQUIRED)
     },
+    openUrl: async (url) => {
+      if (url.startsWith("mailto:")) {
+        window.location.assign(url)
+        return
+      }
+      const opened = window.open(url, "_blank", "noopener,noreferrer")
+      if (!opened) throw new Error("The browser blocked that link.")
+    },
     setupLocal: async (pace, onProgress) => {
       onProgress?.({
         phase: "model",

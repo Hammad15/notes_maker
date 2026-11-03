@@ -107,7 +107,7 @@ export function CourseScreen() {
             }}
           />
         </h1>
-        <Button type="button" className="w-full sm:w-auto" onClick={() => setMakeOpen(true)}>
+        <Button type="button" data-tour="make-notes" className="w-full sm:w-auto" onClick={() => setMakeOpen(true)}>
           Make notes
         </Button>
       </div>

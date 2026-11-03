@@ -359,6 +359,19 @@ describe("course files", () => {
     vi.unstubAllGlobals()
   })
 
+  it("shows the first-run tour until the saved choice says it was dismissed", async () => {
+    const data = path.join(root, "appdata")
+    const store = createNodeFileStore(data)
+    expect((await loadSettings(store)).tourDismissed).toBe(false)
+    await store.writeText(path.join(data, "settings.json"), `${JSON.stringify({ provider: "local" })}\n`)
+    expect((await loadSettings(store)).tourDismissed).toBe(false)
+    await store.writeText(
+      path.join(data, "settings.json"),
+      `${JSON.stringify({ provider: "local", tourDismissed: true })}\n`,
+    )
+    expect((await loadSettings(store)).tourDismissed).toBe(true)
+  })
+
   it("writes study notes from a saved transcript with the local notes model", async () => {
     const home = path.join(root, "home")
     const store = createNodeFileStore(path.join(root, "appdata"))

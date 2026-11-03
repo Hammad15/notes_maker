@@ -1,5 +1,6 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom"
 import { AppShell } from "./components/app-shell"
+import { UpdateNotice } from "./components/update-notice"
 import { HostProvider } from "./platform/host"
 import { CourseScreen } from "./screens/course-screen"
 import { NoteScreen } from "./screens/note-screen"
@@ -24,19 +25,28 @@ function CourseHome() {
 function Frame() {
   const { ready, error, homeMissing, settings, reload } = useLibrary()
   if (!ready) return <OpeningScreen />
+  let screen
   if (error && !settings.homeDirectory) {
-    return <StartupError message={error} onRetry={() => void reload().catch(() => undefined)} />
+    screen = <StartupError message={error} onRetry={() => void reload().catch(() => undefined)} />
+  } else if (!settings.homeDirectory || homeMissing) {
+    screen = <SetupScreen missing={homeMissing} />
+  } else {
+    screen = (
+      <AppShell>
+        <Routes>
+          <Route path="/" element={<CourseHome />} />
+          <Route path="/courses/:courseId" element={<CourseScreen />} />
+          <Route path="/courses/:courseId/notes/:noteId" element={<NoteScreen />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </AppShell>
+    )
   }
-  if (!settings.homeDirectory || homeMissing) return <SetupScreen missing={homeMissing} />
   return (
-    <AppShell>
-      <Routes>
-        <Route path="/" element={<CourseHome />} />
-        <Route path="/courses/:courseId" element={<CourseScreen />} />
-        <Route path="/courses/:courseId/notes/:noteId" element={<NoteScreen />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </AppShell>
+    <>
+      <UpdateNotice />
+      {screen}
+    </>
   )
 }
 

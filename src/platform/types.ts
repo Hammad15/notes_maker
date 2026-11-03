@@ -42,6 +42,7 @@ export interface Host {
   pickDirectory(): Promise<string | null>
   pickMedia(directory?: string | null): Promise<string | null>
   openPath(path: string): Promise<void>
+  openUrl(url: string): Promise<void>
   setupLocal(pace: SpeechPace, onProgress?: (progress: SetupProgress) => void): Promise<LocalRuntimeStatus>
   watchTranscription?(onProgress: (progress: TranscriptionProgress) => void): Promise<() => void>
 }

@@ -111,6 +111,7 @@ interface LibraryState {
   addCourse: (name: string) => Promise<CourseSummary>
   startMakeNotes: (input: MakeNotesInput) => void
   dismissJob: (id: string) => void
+  dismissTour: () => Promise<void>
 }
 
 const LibraryContext = createContext<LibraryState | null>(null)
@@ -121,6 +122,7 @@ const EMPTY_SETTINGS: Settings = {
   lastMediaDirectory: null,
   speechPace: "clearer",
   languageCode: "en",
+  tourDismissed: false,
 }
 
 function notReady(pace: SpeechPace): LocalRuntimeStatus {
@@ -249,6 +251,13 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     },
     [store],
   )
+
+  const dismissTour = useCallback(async () => {
+    const next = { ...settingsRef.current, tourDismissed: true }
+    settingsRef.current = next
+    setSettings(next)
+    await saveSettings(store, next)
+  }, [store])
 
   const addCourse = useCallback(
     async (name: string) => {
@@ -475,6 +484,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       addCourse,
       startMakeNotes,
       dismissJob,
+      dismissTour,
     }),
     [
       ready,
@@ -496,6 +506,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       addCourse,
       startMakeNotes,
       dismissJob,
+      dismissTour,
     ],
   )
 
