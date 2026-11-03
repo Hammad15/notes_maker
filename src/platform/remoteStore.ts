@@ -75,5 +75,8 @@ export function createRemoteStore(call: Caller): FileStore {
     cancelMakeNotes: async (id) => {
       await call({ op: Ops.cancelMakeNotes, id })
     },
+    markTranscriptFiled: async (id) => {
+      await call({ op: Ops.markTranscriptFiled, id })
+    },
   }
 }

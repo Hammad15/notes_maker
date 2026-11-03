@@ -21,6 +21,12 @@ export interface CancelRollback {
   finishedNotePaths: readonly string[]
 }
 
+/** Staged note files. A finished `.md` or `.pdf` does not match. */
+export function isUnfinishedNoteFile(name: string): boolean {
+  const lower = name.toLowerCase()
+  return lower.endsWith(".md.partial") || lower.endsWith(".pdf.partial")
+}
+
 /** Files cancel should delete. A finished note is never included. */
 export function pathsToRemoveOnCancel(rollback: CancelRollback): string[] {
   const finished = new Set(rollback.finishedNotePaths.filter(Boolean))

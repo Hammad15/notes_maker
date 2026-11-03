@@ -22,6 +22,7 @@ export const Ops = {
   activeTranscription: "activeTranscription",
   clearTranscription: "clearTranscription",
   cancelMakeNotes: "cancelMakeNotes",
+  markTranscriptFiled: "markTranscriptFiled",
   pickDirectory: "pickDirectory",
   pickMedia: "pickMedia",
   startInstaller: "startInstaller",

@@ -118,7 +118,7 @@ const SETUP_REQUIRED: &str = "Press Set up local notes before making notes.";
 const REPLACED: &str = "Transcription was replaced by a different recording.";
 const NOTES_CANCELLED: &str = "Note making was cancelled.";
 #[cfg(windows)]
-const PROCESS_SNAPSHOT_SCRIPT: &str = r#"Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'whisper-cli.exe' -or $_.Name -eq 'ffmpeg.exe' } | ForEach-Object { $cmd = $_.CommandLine; if ($null -eq $cmd) { $cmd = '' }; $cmd = ($cmd -replace "`t", ' ' -replace "`r|`n", ' '); $exe = $_.ExecutablePath; if ($null -eq $exe) { $exe = '' }; Write-Output (('{0}`t{1}`t{2}' -f $_.ProcessId, $exe, $cmd)) }"#;
+const PROCESS_SNAPSHOT_SCRIPT: &str = r#"Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'whisper-cli.exe' -or $_.Name -eq 'ffmpeg.exe' -or $_.Name -eq 'llama-cli.exe' } | ForEach-Object { $cmd = $_.CommandLine; if ($null -eq $cmd) { $cmd = '' }; $cmd = ($cmd -replace "`t", ' ' -replace "`r|`n", ' '); $exe = $_.ExecutablePath; if ($null -eq $exe) { $exe = '' }; Write-Output (('{0}`t{1}`t{2}' -f $_.ProcessId, $exe, $cmd)) }"#;
 
 const ENGINE_DLLS: [&str; 4] = [
     "whisper.dll",
@@ -1152,7 +1152,6 @@ fn pid_alive(pid: u32) -> bool {
 
 /// Stop this app's whisper-cli. On Windows that is `taskkill /PID <pid> /F /T`
 /// after the process list shows the executable is our own `bin\\whisper-cli.exe`.
-/// The live job pid is left running so the same recording can resume.
 fn kill_pid(pid: u32) {
     if pid <= 4 || pid == std::process::id() {
         return;
@@ -1216,6 +1215,9 @@ struct SavedJob {
     transcribe_started_ms: u64,
     #[serde(default)]
     model: String,
+    /// The course already has this run's transcript, so a later launch can drop the temp copy.
+    #[serde(default)]
+    transcript_filed: bool,
 }
 
 fn saved_target(job: &SavedJob) -> Target {
@@ -1429,35 +1431,117 @@ fn plan_resume(saved: Option<&SavedJob>, target: &Target, snapshot: &str, own_ex
     ResumePlan::Start
 }
 
-/// On launch, stop leftover whisper-cli from this app. Keep the pid recorded
-/// for the in-progress job when that process is still our whisper-cli.
+/// A launch or a closed app rolls an interrupted run back. It does not resume.
 pub(crate) fn reconcile_on_launch(app_data: &Path) -> Result<(), String> {
-    let saved = read_saved(app_data);
-    let snapshot = process_snapshot()?;
-    let own = own_whisper_exe(app_data);
-    let own_text = own.to_string_lossy().into_owned();
-    let keep = saved.as_ref().and_then(|job| {
-        let pid = job.pid?;
-        if owned_pids_to_stop(&snapshot, &own_text, None).contains(&pid) {
-            Some(pid)
-        } else {
-            None
-        }
+    abandon_interrupted(app_data)
+}
+
+pub(crate) fn mark_transcript_filed(app_data: &Path, id: &str) -> Result<(), String> {
+    update_saved(app_data, id, |job| {
+        job.transcript_filed = true;
     });
-    stop_pids(&owned_pids_to_stop(&snapshot, &own_text, keep));
-    let ffmpeg = own_ffmpeg_exe(app_data);
-    stop_pids(&owned_pids_to_stop(
-        &snapshot,
-        &ffmpeg.to_string_lossy(),
-        None,
-    ));
-    if keep.is_none() {
-        if let Some(mut job) = saved {
-            job.pid = None;
-            let _ = write_saved(app_data, &job);
+    Ok(())
+}
+
+/// Same rollback as Cancel. A partial transcript is deleted. Once the transcript
+/// is filed, unfinished notes are deleted and the run is not started again.
+/// A finished note is left in place.
+pub(crate) fn abandon_interrupted(app_data: &Path) -> Result<(), String> {
+    let saved = read_saved(app_data);
+    if let Ok(snapshot) = process_snapshot() {
+        let own = own_whisper_exe(app_data);
+        stop_pids(&owned_pids_to_stop(&snapshot, &own.to_string_lossy(), None));
+        let ffmpeg = own_ffmpeg_exe(app_data);
+        stop_pids(&owned_pids_to_stop(
+            &snapshot,
+            &ffmpeg.to_string_lossy(),
+            None,
+        ));
+        let llama = notes_bin(app_data).join(NOTES_ENGINE_EXE);
+        stop_pids(&owned_pids_to_stop(
+            &snapshot,
+            &llama.to_string_lossy(),
+            None,
+        ));
+    }
+    let mut homes = Vec::new();
+    if let Some(job) = &saved {
+        if !job.home.trim().is_empty() {
+            homes.push(PathBuf::from(&job.home));
         }
     }
+    if let Some(home) = settings_home(app_data) {
+        if !homes.iter().any(|item| item == &home) {
+            homes.push(home);
+        }
+    }
+    for home in &homes {
+        remove_unfinished_notes(home);
+    }
+    let Some(job) = saved else {
+        return Ok(());
+    };
+    let ready = json_ready(&job.json_path);
+    if ready && !job.transcript_filed {
+        return Ok(());
+    }
+    remove_work_files(app_data, &job);
+    let _ = fs::remove_file(job_file(app_data));
     Ok(())
+}
+
+fn settings_home(app_data: &Path) -> Option<PathBuf> {
+    let text = fs::read_to_string(app_data.join("settings.json")).ok()?;
+    let json: Value = serde_json::from_str(&text).ok()?;
+    let home = json.get("homeDirectory")?.as_str()?.trim();
+    if home.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(home))
+    }
+}
+
+fn is_unfinished_note_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".md.partial") || lower.ends_with(".pdf.partial")
+}
+
+fn is_notes_home(path: &Path) -> bool {
+    path.is_dir() && path.parent().is_some() && path.components().count() > 1
+}
+
+fn remove_unfinished_notes(home: &Path) {
+    if !is_notes_home(home) {
+        return;
+    }
+    let mut stack = vec![home.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        if !dir.starts_with(home) {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !kind.is_file() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|item| item.to_str()) else {
+                continue;
+            };
+            if is_unfinished_note_name(name) {
+                let _ = fs::remove_file(path);
+            }
+        }
+    }
 }
 
 /// Stop this run. A partial transcript is removed. A finished transcript stays.
@@ -1802,6 +1886,7 @@ fn start_fresh(
         },
         transcribe_started_ms: 0,
         model: model_spec(&request.pace).name.to_string(),
+        transcript_filed: false,
     };
     write_saved(app_data, &job)?;
     progress("reading", "Reading the recording", None, None);
@@ -2385,6 +2470,7 @@ mod tests {
             language: "en".into(),
             transcribe_started_ms: 1,
             model: "ggml-base.en".into(),
+            transcript_filed: false,
         };
         assert!(matches!(
             plan_resume(Some(&saved), &lecture(), &snapshot, own),
@@ -2553,6 +2639,72 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    #[test]
+    fn shutdown_rolls_back_like_cancel() {
+        let root = std::env::temp_dir().join(format!("create-notes-abandon-{}", super::now_ms()));
+        let home = root.join("home");
+        let notes = home.join("Biology").join("notes");
+        let tmp = root.join("tmp");
+        let transcript = home
+            .join("Biology")
+            .join(".study")
+            .join("transcripts")
+            .join("note.json");
+        std::fs::create_dir_all(&notes).unwrap();
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+        let finished = notes.join("Lecture.md");
+        std::fs::write(&finished, "finished note\n").unwrap();
+        std::fs::write(notes.join("Lecture.pdf"), "pdf").unwrap();
+        std::fs::write(&transcript, "{\"text\":\"Cells divide.\"}\n").unwrap();
+        std::fs::write(notes.join("Lecture.md.partial"), "unfinished\n").unwrap();
+
+        let partial_json = tmp.join("partial.json");
+        let partial_wav = tmp.join("partial.wav");
+        std::fs::write(&partial_json, "{").unwrap();
+        std::fs::write(&partial_wav, "wav").unwrap();
+        super::write_saved(&root, &saved_job(&root, "partial", &partial_json, &partial_wav)).unwrap();
+        let mut partial = super::read_saved(&root).unwrap();
+        partial.home = home.to_string_lossy().into_owned();
+        super::write_saved(&root, &partial).unwrap();
+        super::abandon_interrupted(&root).unwrap();
+        assert!(!partial_json.exists());
+        assert!(!super::job_file(&root).exists());
+        assert!(!notes.join("Lecture.md.partial").exists());
+        assert_eq!(std::fs::read_to_string(&finished).unwrap(), "finished note\n");
+        assert_eq!(
+            std::fs::read_to_string(&transcript).unwrap(),
+            "{\"text\":\"Cells divide.\"}\n"
+        );
+
+        let complete_json = tmp.join("complete.json");
+        let complete_wav = tmp.join("complete.wav");
+        std::fs::write(
+            &complete_json,
+            r#"{"transcription":[{"offsets":{"from":0,"to":1000},"text":"Cells divide."}]}"#,
+        )
+        .unwrap();
+        std::fs::write(&complete_wav, "wav").unwrap();
+        std::fs::write(notes.join("Lecture.md.partial"), "still unfinished\n").unwrap();
+        let mut complete = saved_job(&root, "complete", &complete_json, &complete_wav);
+        complete.home = home.to_string_lossy().into_owned();
+        complete.phase = "writing".into();
+        super::write_saved(&root, &complete).unwrap();
+        super::abandon_interrupted(&root).unwrap();
+        assert!(complete_json.exists());
+        assert!(super::job_file(&root).exists());
+        assert!(!notes.join("Lecture.md.partial").exists());
+        assert_eq!(std::fs::read_to_string(&finished).unwrap(), "finished note\n");
+
+        super::mark_transcript_filed(&root, "complete").unwrap();
+        super::abandon_interrupted(&root).unwrap();
+        assert!(!complete_json.exists());
+        assert!(!super::job_file(&root).exists());
+        assert_eq!(std::fs::read_to_string(&finished).unwrap(), "finished note\n");
+        assert!(transcript.exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     fn saved_job(
         root: &std::path::Path,
         id: &str,
@@ -2589,6 +2741,7 @@ mod tests {
             language: "en".into(),
             transcribe_started_ms: 1,
             model: "ggml-base.en".into(),
+            transcript_filed: false,
         }
     }
 

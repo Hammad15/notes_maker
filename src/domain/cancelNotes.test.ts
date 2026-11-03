@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { pathsToRemoveOnCancel } from "./cancelNotes"
+import { isUnfinishedNoteFile, pathsToRemoveOnCancel } from "./cancelNotes"
 
 describe("cancel rollback", () => {
   it("deletes a partial transcript and leaves a finished note", () => {
@@ -22,6 +22,14 @@ describe("cancel rollback", () => {
         finishedNotePaths: [],
       }),
     ).toEqual(["/course/notes/Lecture.md.partial", "/course/notes/Lecture.pdf.partial"])
+  })
+
+  it("treats only staged note files as unfinished", () => {
+    expect(isUnfinishedNoteFile("Lecture.md.partial")).toBe(true)
+    expect(isUnfinishedNoteFile("Lecture.pdf.partial")).toBe(true)
+    expect(isUnfinishedNoteFile("Lecture.md")).toBe(false)
+    expect(isUnfinishedNoteFile("Lecture.pdf")).toBe(false)
+    expect(isUnfinishedNoteFile("transcript.json")).toBe(false)
   })
 
   it("does not delete a finished note while replacement notes are unfinished", () => {

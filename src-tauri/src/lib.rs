@@ -994,6 +994,10 @@ fn desktop_request(app: tauri::AppHandle, request: Value) -> Result<Value, Strin
             local_runtime::cancel_make_notes(&app_data_dir(), require_str(&request, "id")?)?;
             Ok(Value::Null)
         }
+        "markTranscriptFiled" => {
+            local_runtime::mark_transcript_filed(&app_data_dir(), require_str(&request, "id")?)?;
+            Ok(Value::Null)
+        }
         "setupLocal" => {
             let handle = app.clone();
             let pace = pace_of(&request);
@@ -1070,14 +1074,19 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|_app| {
-            // A sleep can leave whisper-cli running after the window reloads.
-            // Stop every copy started from this app except the job we can resume.
+            // A crash or a closed window leaves the run unfinished.
+            // Roll it back the same way Cancel does. Do not resume it.
             let _ = local_runtime::reconcile_on_launch(&app_data_dir());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![desktop_call])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|_app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                let _ = local_runtime::reconcile_on_launch(&app_data_dir());
+            }
+        });
 }
 
 #[cfg(test)]

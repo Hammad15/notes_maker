@@ -12,6 +12,7 @@ import { Ops } from "../platform/ops.ts"
 import type { FileStore } from "../platform/types.ts"
 import {
   cancelMakeNotes as cancelMakeNotesRuntime,
+  markTranscriptFiled as markTranscriptFiledRuntime,
   clearTranscriptionJob,
   localRuntimeStatus,
   prepareCloudAudio,
@@ -265,6 +266,9 @@ export function createNodeFileStore(appData = resolveAppDataDir(process.platform
     cancelMakeNotes(id) {
       return cancelMakeNotesRuntime(appData, id)
     },
+    markTranscriptFiled(id) {
+      return markTranscriptFiledRuntime(appData, id)
+    },
   }
 }
 
@@ -391,6 +395,9 @@ export async function dispatchDesktop(
       return null
     case Ops.cancelMakeNotes:
       await store.cancelMakeNotes(requiredString(body, "id"))
+      return null
+    case Ops.markTranscriptFiled:
+      await store.markTranscriptFiled(requiredString(body, "id"))
       return null
     case Ops.pickDirectory:
     case Ops.pickMedia:
