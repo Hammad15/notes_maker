@@ -807,5 +807,16 @@ describe("desktop dispatch", () => {
     expect(value).toBeNull()
     await expect(dispatchDesktop(store, { op: "readText", path: path.join(root, "appdata", "settings.json") })).resolves.toContain("local")
     await expect(dispatchDesktop(store, { op: "pickDirectory" })).rejects.toThrow(/tauri dev/)
+    await expect(
+      dispatchDesktop(store, { op: "startInstaller", url: "https://example.com/Setup.exe" }),
+    ).rejects.toThrow(/cannot be downloaded/)
+    if (process.platform !== "win32") {
+      await expect(
+        dispatchDesktop(store, {
+          op: "startInstaller",
+          url: "https://github.com/Hammad15/notes_maker/releases/download/v0.2.0/CreateNotes_0.2.0_x64-setup.exe",
+        }),
+      ).rejects.toThrow(/Windows/)
+    }
   })
 })

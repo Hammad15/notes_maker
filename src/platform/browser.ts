@@ -42,6 +42,9 @@ export function createBrowserHost(): Host {
       const opened = window.open(url, "_blank", "noopener,noreferrer")
       if (!opened) throw new Error("The browser blocked that link.")
     },
+    startInstaller: async (url) => {
+      await browserCall({ op: "startInstaller", url })
+    },
     setupLocal: async (pace, onProgress) => {
       onProgress?.({
         phase: "model",

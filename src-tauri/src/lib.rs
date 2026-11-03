@@ -1,10 +1,10 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
 use std::fs::{self, File};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, UNIX_EPOCH};
 use tauri::Emitter;
 use tauri_plugin_dialog::DialogExt;
 
@@ -627,6 +627,34 @@ async fn desktop_call(app: tauri::AppHandle, request: Value) -> Result<Value, St
                 Err(_) => Err("Could not prepare that recording. The worker thread stopped.".into()),
             };
         }
+        // The download can take a while. Keep it off the window thread, and
+        // do not start the installer until this command runs.
+        "startInstaller" => {
+            let url = require_str(&request, "url")?.to_string();
+            let file_name = installer_file_name(&url)?;
+            if Path::new(&file_name).components().count() != 1 {
+                return Err("That installer cannot be downloaded.".into());
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = file_name;
+                return Err("The Windows installer starts on Windows.".into());
+            }
+            #[cfg(windows)]
+            {
+                let dest = app_data_dir().join("updates").join(file_name);
+                return match tauri::async_runtime::spawn_blocking(move || {
+                    download_installer(&url, &dest)?;
+                    start_installer(&dest)?;
+                    Ok(Value::Null)
+                })
+                .await
+                {
+                    Ok(result) => result,
+                    Err(_) => Err("The installer did not start.".into()),
+                };
+            }
+        }
         _ => {}
     }
     desktop_request(app, request)
@@ -675,6 +703,230 @@ fn openable_url(url: &str) -> bool {
     }
     let lower = file.to_ascii_lowercase();
     lower.ends_with(".exe") || lower.ends_with(".msi")
+}
+
+const MAX_INSTALLER_BYTES: u64 = 512 * 1024 * 1024;
+
+fn installer_host(url: &str) -> Option<&str> {
+    let rest = url.strip_prefix("https://")?;
+    if rest.contains([' ', '\\']) {
+        return None;
+    }
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.is_empty() || authority.contains('@') {
+        return None;
+    }
+    let host = authority.split(':').next().unwrap_or("");
+    if host.is_empty() { None } else { Some(host) }
+}
+
+fn installer_host_allowed(host: &str) -> bool {
+    matches!(
+        host,
+        "github.com"
+            | "release-assets.githubusercontent.com"
+            | "objects.githubusercontent.com"
+            | "github-releases.githubusercontent.com"
+    )
+}
+
+fn decode_installer_name(raw: &str) -> Result<String, String> {
+    let bytes = raw.as_bytes();
+    let mut out = String::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len() {
+                return Err("That installer cannot be downloaded.".into());
+            }
+            let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).unwrap_or("");
+            let value = u8::from_str_radix(hex, 16)
+                .map_err(|_| "That installer cannot be downloaded.".to_string())?;
+            if value < 0x20 || value == b'/' || value == b'\\' {
+                return Err("That installer cannot be downloaded.".into());
+            }
+            out.push(char::from(value));
+            index += 3;
+        } else {
+            let ch = bytes[index] as char;
+            if ch == '/' || ch == '\\' {
+                return Err("That installer cannot be downloaded.".into());
+            }
+            out.push(ch);
+            index += 1;
+        }
+    }
+    Ok(out)
+}
+
+fn installer_file_name(url: &str) -> Result<String, String> {
+    if !openable_url(url) || !url.starts_with("https://") {
+        return Err("That installer cannot be downloaded.".into());
+    }
+    let raw = url.rsplit('/').next().unwrap_or("");
+    let name = decode_installer_name(raw)?;
+    let lower = name.to_ascii_lowercase();
+    if name.is_empty()
+        || name.contains(['/', '\\'])
+        || name.contains("..")
+        || (!lower.ends_with(".exe") && !lower.ends_with(".msi"))
+    {
+        return Err("That installer cannot be downloaded.".into());
+    }
+    Ok(name)
+}
+
+fn installer_redirect(current: &str, location: &str) -> Result<String, String> {
+    let location = location.trim();
+    let next = if location.starts_with("https://") {
+        location.to_string()
+    } else if location.starts_with('/') && !location.starts_with("//") {
+        let host = installer_host(current)
+            .ok_or_else(|| "That installer cannot be downloaded.".to_string())?;
+        format!("https://{host}{location}")
+    } else {
+        return Err("That installer cannot be downloaded.".into());
+    };
+    let host = installer_host(&next).ok_or_else(|| "That installer cannot be downloaded.".to_string())?;
+    if !installer_host_allowed(host) {
+        return Err("That installer cannot be downloaded.".into());
+    }
+    Ok(next)
+}
+
+fn installer_launch(path: &str) -> Result<(String, Vec<String>), String> {
+    let name = Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    let lower = name.to_ascii_lowercase();
+    let (program, args) = if lower.ends_with(".msi") {
+        ("msiexec".to_string(), vec!["/i".to_string(), path.to_string()])
+    } else if lower.ends_with(".exe") {
+        (path.to_string(), Vec::new())
+    } else {
+        return Err("That installer cannot be started.".into());
+    };
+    for arg in &args {
+        let flag = arg.to_ascii_lowercase();
+        if matches!(
+            flag.as_str(),
+            "/s" | "/quiet" | "/qn" | "/qb" | "/passive" | "/norestart" | "-s" | "--silent"
+        ) {
+            return Err("The installer cannot start unattended.".into());
+        }
+    }
+    Ok((program, args))
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn installer_agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(30))
+        .timeout_read(Duration::from_secs(180))
+        .redirects(0)
+        .build()
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn fetch_installer(url: &str) -> Result<ureq::Response, String> {
+    let mut current = url.to_string();
+    for hop in 0..=5 {
+        let host = installer_host(&current)
+            .ok_or_else(|| "That installer cannot be downloaded.".to_string())?;
+        if !installer_host_allowed(host) {
+            return Err("That installer cannot be downloaded.".into());
+        }
+        let response = installer_agent()
+            .get(&current)
+            .set("user-agent", "CreateNotes/0.1")
+            .set("accept", "application/octet-stream")
+            .call()
+            .map_err(|error| match error {
+                ureq::Error::Status(code, _) => {
+                    format!("The installer download was refused ({code}).")
+                }
+                _ => "The installer download did not finish.".into(),
+            })?;
+        let status = response.status();
+        if (300..400).contains(&status) {
+            if hop == 5 {
+                return Err("The installer download did not finish.".into());
+            }
+            let location = response.header("location").unwrap_or("").to_string();
+            current = installer_redirect(&current, &location)?;
+            continue;
+        }
+        if status != 200 {
+            return Err(format!("The installer download was refused ({status})."));
+        }
+        return Ok(response);
+    }
+    Err("The installer download did not finish.".into())
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn download_installer(url: &str, dest: &Path) -> Result<(), String> {
+    let response = fetch_installer(url)?;
+    let expected = response
+        .header("content-length")
+        .and_then(|value| value.parse::<u64>().ok());
+    if expected.is_some_and(|size| size == 0 || size > MAX_INSTALLER_BYTES) {
+        return Err("The installer download did not finish.".into());
+    }
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let partial = PathBuf::from(format!("{}.partial", dest.display()));
+    let _ = fs::remove_file(&partial);
+    let mut reader = response.into_reader();
+    let mut file = File::create(&partial).map_err(|error| error.to_string())?;
+    let mut buf = vec![0u8; 256 * 1024];
+    let mut received = 0u64;
+    loop {
+        let read = match reader.read(&mut buf) {
+            Ok(read) => read,
+            Err(error) => {
+                let _ = fs::remove_file(&partial);
+                return Err(error.to_string());
+            }
+        };
+        if read == 0 {
+            break;
+        }
+        received += read as u64;
+        if received > MAX_INSTALLER_BYTES || file.write_all(&buf[..read]).is_err() {
+            let _ = fs::remove_file(&partial);
+            return Err("The installer download did not finish.".into());
+        }
+    }
+    file.sync_all().ok();
+    drop(file);
+    if received == 0 || expected.is_some_and(|size| size != received) {
+        let _ = fs::remove_file(&partial);
+        return Err("The installer download did not finish.".into());
+    }
+    let _ = fs::remove_file(dest);
+    fs::rename(&partial, dest).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn start_installer(path: &Path) -> Result<(), String> {
+    let (program, args) = installer_launch(&path.to_string_lossy())?;
+    #[cfg(windows)]
+    {
+        Command::new(program)
+            .args(args)
+            .spawn()
+            .map_err(|_| "The installer did not start.".to_string())?;
+        return Ok(());
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (program, args);
+        Err("The Windows installer starts on Windows.".into())
+    }
 }
 
 fn desktop_request(app: tauri::AppHandle, request: Value) -> Result<Value, String> {
@@ -825,7 +1077,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod duration_tests {
-    use super::{duration_from_header, openable_url};
+    use super::{duration_from_header, installer_file_name, installer_launch, installer_redirect, openable_url};
     use serde_json::json;
 
     fn wav(seconds: u32) -> Vec<u8> {
@@ -949,6 +1201,44 @@ mod duration_tests {
             "https://user:pass@github.com/Hammad15/notes_maker/releases/download/v0.2.0/Setup.exe"
         ));
         assert!(!openable_url("https://example.com/Setup.exe"));
+    }
+
+    #[test]
+    fn installer_download_stays_on_github_and_starts_the_window() {
+        let setup = "https://github.com/Hammad15/notes_maker/releases/download/v0.2.0/Create%20Notes_0.2.0_x64-setup.exe";
+        assert_eq!(
+            installer_file_name(setup).unwrap(),
+            "Create Notes_0.2.0_x64-setup.exe"
+        );
+        assert!(installer_file_name("https://example.com/Setup.exe").is_err());
+        assert!(installer_file_name("mailto:person@school.test").is_err());
+        let asset = "https://release-assets.githubusercontent.com/github-production-release-asset/1/Setup.exe";
+        assert_eq!(
+            installer_redirect(setup, asset).unwrap(),
+            asset
+        );
+        assert!(installer_redirect(setup, "https://evil.example/Setup.exe").is_err());
+        assert!(installer_redirect(setup, "http://objects.githubusercontent.com/Setup.exe").is_err());
+        let exe = installer_launch("C:\\Users\\Ada\\AppData\\Local\\Study Notes\\updates\\Setup.exe").unwrap();
+        assert_eq!(exe.0, "C:\\Users\\Ada\\AppData\\Local\\Study Notes\\updates\\Setup.exe");
+        assert!(exe.1.is_empty());
+        let msi = installer_launch("C:\\Users\\Ada\\AppData\\Local\\Study Notes\\updates\\Create Notes.msi").unwrap();
+        assert_eq!(msi.0, "msiexec");
+        assert_eq!(
+            msi.1,
+            vec![
+                "/i".to_string(),
+                "C:\\Users\\Ada\\AppData\\Local\\Study Notes\\updates\\Create Notes.msi".to_string()
+            ]
+        );
+        for arg in exe.1.iter().chain(msi.1.iter()) {
+            let flag = arg.to_ascii_lowercase();
+            assert!(!matches!(
+                flag.as_str(),
+                "/s" | "/quiet" | "/qn" | "/qb" | "/passive" | "/norestart" | "-s" | "--silent"
+            ));
+        }
+        assert!(include_str!("lib.rs").contains("\"startInstaller\""));
     }
 
     #[test]

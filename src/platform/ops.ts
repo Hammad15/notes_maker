@@ -23,4 +23,5 @@ export const Ops = {
   clearTranscription: "clearTranscription",
   pickDirectory: "pickDirectory",
   pickMedia: "pickMedia",
+  startInstaller: "startInstaller",
 } as const

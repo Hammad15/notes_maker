@@ -1,5 +1,5 @@
-// GitHub releases are opened for the user. The Tauri updater installs a signed
-// bundle and does not fit this app.
+// A newer Windows installer is downloaded and started after the user confirms.
+// The Tauri updater installs a signed bundle and does not fit this app.
 
 export const APP_VERSION = "0.1.0"
 
@@ -40,6 +40,13 @@ function installerRank(name: string): number {
   return 0
 }
 
+const INSTALLER_HOSTS = new Set([
+  "github.com",
+  "release-assets.githubusercontent.com",
+  "objects.githubusercontent.com",
+  "github-releases.githubusercontent.com",
+])
+
 function releaseDownload(url: string): boolean {
   if (!url.startsWith(DOWNLOAD_PREFIX)) return false
   const rest = url.slice(DOWNLOAD_PREFIX.length)
@@ -64,6 +71,42 @@ function windowsInstaller(assets: unknown): { name: string; downloadUrl: string 
     if (!best || rank > best.rank) best = { name: record.name, downloadUrl: record.browser_download_url, rank }
   }
   return best
+}
+
+export function installerFileName(url: string): string | null {
+  if (!releaseDownload(url)) return null
+  const raw = url.slice(url.lastIndexOf("/") + 1)
+  let name: string
+  try {
+    name = decodeURIComponent(raw)
+  } catch {
+    return null
+  }
+  if (!name || name.includes("/") || name.includes("\\") || name.includes("..")) return null
+  const lower = name.toLowerCase()
+  if (!lower.endsWith(".exe") && !lower.endsWith(".msi")) return null
+  return name
+}
+
+export function installerRedirect(current: string, location: string): string | null {
+  let next: URL
+  try {
+    next = new URL(location, current)
+  } catch {
+    return null
+  }
+  if (next.protocol !== "https:" || next.username || next.password) return null
+  if (!INSTALLER_HOSTS.has(next.hostname)) return null
+  return next.toString()
+}
+
+/** The installer window is started with no unattended switches. */
+export function installerLaunch(filePath: string): { command: string; args: string[] } | null {
+  const base = filePath.split(/[\\/]/).pop() ?? ""
+  const lower = base.toLowerCase()
+  if (lower.endsWith(".msi")) return { command: "msiexec", args: ["/i", filePath] }
+  if (lower.endsWith(".exe")) return { command: filePath, args: [] }
+  return null
 }
 
 export function newerInstaller(payload: unknown, current = APP_VERSION): InstallerUpdate | null {

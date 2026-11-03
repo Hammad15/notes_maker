@@ -7,6 +7,7 @@ import { speechPace } from "../domain/localSpeech.ts"
 import { durationFromHeader } from "../domain/media.ts"
 import type { DirEntry, FileStat, MediaProbe } from "../domain/types.ts"
 import { WINDOWS_DIALOG_REQUIRED } from "../platform/dialogs.ts"
+import { downloadAndStartWindowsInstaller } from "./installerUpdate.ts"
 import { Ops } from "../platform/ops.ts"
 import type { FileStore } from "../platform/types.ts"
 import {
@@ -387,6 +388,9 @@ export async function dispatchDesktop(
     case Ops.pickDirectory:
     case Ops.pickMedia:
       throw new Error(WINDOWS_DIALOG_REQUIRED)
+    case Ops.startInstaller:
+      await downloadAndStartWindowsInstaller(await store.appDataDir(), requiredString(body, "url"))
+      return null
     default:
       throw new Error(`Unknown request ${op}.`)
   }

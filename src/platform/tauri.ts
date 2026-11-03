@@ -77,6 +77,9 @@ export function createTauriHost(): Host {
         }
       }
     },
+    startInstaller: async (url) => {
+      await tauriCall({ op: "startInstaller", url })
+    },
     watchTranscription: async (onProgress) => {
       const { listen } = await import("@tauri-apps/api/event")
       const stop = await listen<TranscriptionProgress>("local-transcribe-progress", (event) => {

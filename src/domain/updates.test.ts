@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs"
 import path from "node:path"
 import { describe, expect, it } from "vitest"
-import { APP_VERSION, newerInstaller, versionIsNewer } from "./updates"
+import { APP_VERSION, installerFileName, installerLaunch, installerRedirect, newerInstaller, versionIsNewer } from "./updates"
 
 const setup = "https://github.com/Hammad15/notes_maker/releases/download/v0.2.0/CreateNotes_0.2.0_x64-setup.exe"
 
@@ -64,5 +64,41 @@ describe("newerInstaller", () => {
         ]),
       ]),
     ).toBeNull()
+  })
+})
+
+describe("installer launch", () => {
+  it("names a GitHub Windows installer and follows only GitHub asset hosts", () => {
+    expect(installerFileName(setup)).toBe("CreateNotes_0.2.0_x64-setup.exe")
+    expect(
+      installerFileName(
+        "https://github.com/Hammad15/notes_maker/releases/download/v0.2.0/Create%20Notes.msi",
+      ),
+    ).toBe("Create Notes.msi")
+    expect(installerFileName("https://example.com/Setup.exe")).toBeNull()
+    expect(installerFileName("mailto:person@school.test")).toBeNull()
+    const asset = "https://objects.githubusercontent.com/github-production-release-asset-2e65be/Setup.exe"
+    expect(installerRedirect(setup, asset)).toBe(asset)
+    expect(installerRedirect(setup, "https://evil.example/Setup.exe")).toBeNull()
+    expect(installerRedirect(setup, "http://release-assets.githubusercontent.com/Setup.exe")).toBeNull()
+  })
+
+  it("starts the installer window with no unattended switches", () => {
+    const exe = "C:\\Users\\Ada\\AppData\\Local\\Study Notes\\updates\\Setup.exe"
+    expect(installerLaunch(exe)).toEqual({ command: exe, args: [] })
+    const msi = "C:\\Users\\Ada\\AppData\\Local\\Study Notes\\updates\\Create Notes.msi"
+    expect(installerLaunch(msi)).toEqual({ command: "msiexec", args: ["/i", msi] })
+    expect(installerLaunch(exe)?.args.join(" ")).not.toMatch(/\/(s|quiet|qn|qb|passive)\b/i)
+    expect(installerLaunch(msi)?.args.join(" ")).not.toMatch(/\/(s|quiet|qn|qb|passive)\b/i)
+  })
+
+  it("keeps the update banner from opening a browser on its own", () => {
+    const source = readFileSync(path.join(process.cwd(), "src/components/update-notice.tsx"), "utf8")
+    expect(source.includes("openUrl")).toBe(false)
+    expect(source.includes("window.open")).toBe(false)
+    expect(source.includes("startInstaller")).toBe(true)
+    const effect = source.slice(source.indexOf("useEffect"), source.indexOf("if (!update)"))
+    expect(effect.includes("startInstaller")).toBe(false)
+    expect(effect.includes("confirmInstall")).toBe(false)
   })
 })
