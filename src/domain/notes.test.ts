@@ -2,7 +2,7 @@ import { PDFDocument } from "pdf-lib"
 import { describe, expect, it } from "vitest"
 import { renderFull, renderRestyle } from "./compose"
 import { renderTranscript, studySections } from "./studyNotes"
-import { GroqKeyError, LocalSetupError, StudyError, messageOf } from "./errors"
+import { CloudNotesError, LocalSetupError, StudyError, messageOf } from "./errors"
 import { parseNoteFile, writeFrontmatter } from "./frontmatter"
 import { assertUsableFolderName, folderNameFromDisplay } from "./names"
 import { parentPath } from "./paths"
@@ -225,13 +225,13 @@ describe("study notes", () => {
 })
 
 describe("providers", () => {
-  it("keeps cloud work behind the Groq key", () => {
+  it("keeps cloud notes unavailable in this build", () => {
     const cloud = createProvider("cloud")
     const probe = { size: 1, durationSeconds: 1, title: null, chapters: [] }
-    expect(new GroqKeyError().message).toBe("The Groq API key is missing.")
-    expect(() => cloud.transcribe({ noteId: "n", title: "Lecture 3", probe })).toThrow(GroqKeyError)
-    expect(() => cloud.compose(content)).toThrow(GroqKeyError)
-    expect(() => cloud.restyle(content, "bullets", "")).toThrow(GroqKeyError)
+    expect(new CloudNotesError().message).toBe("Cloud notes are not available in this build.")
+    expect(() => cloud.transcribe({ noteId: "n", title: "Lecture 3", probe })).toThrow(CloudNotesError)
+    expect(() => cloud.compose(content)).toThrow(CloudNotesError)
+    expect(() => cloud.restyle(content, "bullets", "")).toThrow(CloudNotesError)
     const local = createProvider("local")
     expect(() =>
       local.transcribe({

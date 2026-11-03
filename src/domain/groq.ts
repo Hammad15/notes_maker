@@ -1,4 +1,4 @@
-import { StudyError } from "./errors.ts"
+import { CloudNotesError, StudyError } from "./errors.ts"
 import type { NotesLanguage } from "./language.ts"
 import { cleanSpokenText } from "./localSpeech.ts"
 import type { TranscriptSegment } from "./types.ts"
@@ -190,6 +190,13 @@ async function groqPost(
   model: string,
   fetchImpl: typeof fetch,
 ): Promise<GroqHttpResult> {
+  void url
+  void key
+  void body
+  void jsonBody
+  void model
+  void fetchImpl
+  throw new CloudNotesError()
   const host = new URL(url).host
   if (host !== "api.groq.com") {
     throw new StudyError("Cloud notes use Groq.", "GROQ")

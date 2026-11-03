@@ -108,7 +108,6 @@ interface LibraryState {
   chooseHome: (path: string) => Promise<void>
   setProvider: (provider: ProviderId) => Promise<void>
   setSpeechPace: (pace: SpeechPace) => Promise<void>
-  setGroqKey: (groqApiKey: string) => Promise<void>
   addCourse: (name: string) => Promise<CourseSummary>
   startMakeNotes: (input: MakeNotesInput) => void
   dismissJob: (id: string) => void
@@ -121,7 +120,6 @@ const EMPTY_SETTINGS: Settings = {
   provider: "local",
   lastMediaDirectory: null,
   speechPace: "clearer",
-  groqApiKey: "",
   languageCode: "en",
 }
 
@@ -238,16 +236,6 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       } catch {
         setLocalStatus(notReady(pace))
       }
-    },
-    [store],
-  )
-
-  const setGroqKey = useCallback(
-    async (groqApiKey: string) => {
-      const next = { ...settingsRef.current, groqApiKey }
-      settingsRef.current = next
-      setSettings(next)
-      await saveSettings(store, next)
     },
     [store],
   )
@@ -484,7 +472,6 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       chooseHome,
       setProvider,
       setSpeechPace,
-      setGroqKey,
       addCourse,
       startMakeNotes,
       dismissJob,
@@ -506,7 +493,6 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       chooseHome,
       setProvider,
       setSpeechPace,
-      setGroqKey,
       addCourse,
       startMakeNotes,
       dismissJob,
@@ -518,6 +504,6 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
 
 export function useLibrary(): LibraryState {
   const value = useContext(LibraryContext)
-  if (!value) throw new Error("Study Notes is missing its library.")
+  if (!value) throw new Error("Create Notes is missing its library.")
   return value
 }

@@ -606,7 +606,7 @@ export async function renderPdf(markdown: string): Promise<Uint8Array> {
   const pages = pdf.getPages()
   const footerSet = face.supported.get(regular) ?? new Set<number>()
   pages.forEach((target, index) => {
-    const label = fitToFont("Study Notes", footerSet)
+    const label = fitToFont("Create Notes", footerSet)
     target.drawText(label, { x: MARGIN, y: 36, size: 9, font: regular, color: muted })
     const pageLabel = String(index + 1)
     const width = regular.widthOfTextAtSize(pageLabel, 9)

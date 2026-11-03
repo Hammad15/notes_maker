@@ -722,7 +722,7 @@ fn desktop_request(app: tauri::AppHandle, request: Value) -> Result<Value, Strin
                 .unwrap_or("");
             let lower = name.to_ascii_lowercase();
             if !lower.ends_with(".pdf") && !lower.ends_with(".md") {
-                return Err("That file cannot be opened from Study Notes.".into());
+                return Err("That file cannot be opened from Create Notes.".into());
             }
             tauri_plugin_opener::open_path(path, None::<&str>)
                 .map_err(|error| error.to_string())?;

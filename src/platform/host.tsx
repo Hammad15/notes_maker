@@ -20,6 +20,6 @@ export function HostProvider({ children }: { children: ReactNode }) {
 
 export function useHost(): Host {
   const host = useContext(HostContext)
-  if (!host) throw new Error("Study Notes is missing its desktop host.")
+  if (!host) throw new Error("Create Notes is missing its desktop host.")
   return host
 }

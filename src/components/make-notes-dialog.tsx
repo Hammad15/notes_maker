@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react"
-import { MISSING_GROQ_KEY, messageOf } from "../domain/errors"
+import { CLOUD_NOTES_UNAVAILABLE, messageOf } from "../domain/errors"
 import { assertUsableFolderName } from "../domain/names"
 import { fileName } from "../domain/paths"
 import { isMediaFile } from "../domain/text"
@@ -220,9 +220,7 @@ export function MakeNotesDialog({
             </div>
             {settings.provider === "cloud" ? (
               <p className="rounded-lg bg-muted px-3 py-2 text-sm leading-relaxed text-muted-foreground">
-                {settings.groqApiKey.trim()
-                  ? "Groq transcribes this recording and writes the study notes."
-                  : `${MISSING_GROQ_KEY} Paste it under Cloud in the sidebar. Local notes still work.`}
+                {CLOUD_NOTES_UNAVAILABLE}
               </p>
             ) : localStatus && !localStatus.ready ? (
               <p className="text-sm text-muted-foreground">
@@ -242,8 +240,8 @@ export function MakeNotesDialog({
                 type="submit"
                 disabled={
                   checking ||
-                  (settings.provider === "local" && localStatus?.ready !== true) ||
-                  (settings.provider === "cloud" && settings.groqApiKey.trim().length === 0)
+                  settings.provider === "cloud" ||
+                  (settings.provider === "local" && localStatus?.ready !== true)
                 }
               >
                 Make notes

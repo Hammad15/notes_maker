@@ -1,4 +1,4 @@
-# Study Notes
+# Create Notes
 
 Desktop app for one student on a computer. Pick a home folder, create a course, and turn a video or audio file that is already on the computer into study notes. Notes are Markdown. Every save also writes a PDF beside the Markdown.
 
@@ -10,7 +10,7 @@ Press **Set up local notes** once in the sidebar. That button downloads the spee
 
 If a transcript already exists for the same recording and the same course or module, Make Notes does not run speech recognition again. It rewrites the study notes from that saved transcript. The raw transcript stays in the hidden `.study` folder. The Markdown note and the PDF are study notes.
 
-Cloud uses Groq. Speech is `whisper-large-v3-turbo`. Study notes are written with `openai/gpt-oss-120b`, the production model Groq serves in place of `llama-3.3-70b-versatile`. Choose **Cloud** in the sidebar and paste a key in the password field labeled **Groq API key**. That field is a temporary developer setting. The key is stored in Study Notes settings on this computer, not in the course folder. This build reads the key from that one setting. A later build can supply it from the environment or a provisioned secret instead of asking for it. That provisioning is not in this build. Without a key, Cloud says the Groq API key is missing. Local notes still work. Notes in this build are English. The language is a setting so another language can be added later.
+Cloud notes are not available in this build. Choosing **Cloud** in the sidebar says so, and Make Notes and Restyle stay off. This build does not ask for a Groq API key and does not call Groq. Local notes stay on this computer. Notes in this build are English. The language is a setting so another language can be added later.
 
 ## Run on Windows
 
@@ -23,7 +23,7 @@ npm install
 npm run tauri dev
 ```
 
-That opens the Study Notes window. The file dialogs come from the Tauri dialog plugin. Use that window. Do not pick files from a browser tab pointed at the dev server. The `.study` folder inside a course is marked hidden.
+That opens the Create Notes window. The file dialogs come from the Tauri dialog plugin. Use that window. Do not pick files from a browser tab pointed at the dev server. The `.study` folder inside a course is marked hidden.
 
 **Set up local notes** downloads the local speech files:
 
@@ -35,13 +35,13 @@ Those files land in `%LOCALAPPDATA%\Study Notes`, and the button writes `models\
 
 `npm run dev` only serves the UI at http://127.0.0.1:43127. Tauri starts it for you. Opening that address in a browser cannot show the Windows file dialog.
 
-Settings live outside the home folder:
+Settings live outside the home folder. The folder name stays Study Notes, so models and settings from the earlier build stay in place:
 
 - Windows: `%LOCALAPPDATA%\Study Notes\settings.json`
 - Linux: `~/.local/share/Study Notes/settings.json`
 - macOS: `~/Library/Application Support/Study Notes/settings.json`
 
-The Groq API key, when you paste one, is the `groqApiKey` field in that `settings.json` file. It is not written into `course.json`, notes, transcripts, or `.study`.
+`settings.json` holds the home folder, the notes choice, and the speech speed. It does not hold an API key. A key left in that file from an older build is removed the next time Create Notes loads settings.
 
 ## Run the desktop window on Linux or macOS
 
@@ -84,4 +84,16 @@ npm test
 
 ## Not in this build
 
-Login, payments, a theme picker, and the public WiX MSI installer.
+Cloud notes, login, payments, a theme picker, and the public WiX MSI installer.
+
+## License
+
+Create Notes is released under the MIT License. See [LICENSE](LICENSE).
+
+Dependency licenses were checked for the npm packages and the Rust crates. These are not permissive software licenses:
+
+- Mozilla Public License 2.0: `lightningcss` and its platform packages; Rust crates `cssparser`, `cssparser-macros`, `dtoa-short`, `option-ext`, and `selectors`
+- SIL Open Font License 1.1: `@fontsource/literata`, `@fontsource/outfit`, and the Liberation fonts bundled for PDF text
+- Creative Commons Attribution 4.0: `caniuse-lite`
+
+The other checked dependencies use a permissive license, or offer a permissive license as one of the choices. Third-party license texts are not copied into this file.

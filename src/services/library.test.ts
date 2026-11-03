@@ -3,9 +3,11 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { writeFrontmatter } from "../domain/frontmatter"
-import { GROQ_NOTES_MODEL, GROQ_WHISPER_MODEL } from "../domain/groq"
-import { estimateTokens, GROQ_REQUEST_TOKEN_BUDGET } from "../domain/lectureNotes"
-import { GroqKeyError } from "../domain/errors"
+import { GROQ_WHISPER_MODEL } from "../domain/groq"
+import { estimateTokens } from "../domain/lectureNotes"
+import { CloudNotesError } from "../domain/errors"
+import type { LocalNotesMessage } from "../domain/localSpeech"
+import type { FileStore } from "../platform/types"
 import { createNodeFileStore, dispatchDesktop, resolveAppDataDir } from "../server/nodeFs"
 import {
   createCourse,
@@ -13,11 +15,11 @@ import {
   deleteNote,
   findRecordingNote,
   getCourse,
+  loadSettings,
   makeNotes,
   readNote,
   renameCourse,
   restyleNote,
-  saveSettings,
   undoRestyle,
 } from "./library"
 
@@ -53,8 +55,6 @@ function wav(seconds = 1): Buffer {
   return buffer
 }
 
-const DEV_KEY = "gsk_dev_setting_only_7c1e9a"
-
 async function pathsContaining(dir: string, needle: string): Promise<string[]> {
   const hits: string[] = []
   const needleBytes = Buffer.from(needle)
@@ -75,49 +75,22 @@ async function pathsContaining(dir: string, needle: string): Promise<string[]> {
   return hits
 }
 
-function groqFetch(calls: string[]): typeof fetch {
-  return async (input, init) => {
-    const url = String(input)
-    calls.push(url)
-    expect(new URL(url).host).toBe("api.groq.com")
-    expect(url).not.toContain("api.openai.com")
-    const auth = new Headers(init?.headers).get("authorization") ?? ""
-    if (auth !== `Bearer ${DEV_KEY}`) {
-      return Response.json({ error: { message: "unauthorized" } }, { status: 401 })
-    }
-    if (url.includes("/audio/transcriptions")) {
-      const form = init?.body
-      if (!(form instanceof FormData)) throw new Error("expected form")
-      expect(form.get("model")).toBe(GROQ_WHISPER_MODEL)
-      expect(form.get("language")).toBe("en")
-      expect(form.get("response_format")).toBe("verbose_json")
-      return Response.json({
-        segments: [
-          { start: 0, end: 8, text: "Today we talk about cell division." },
-          { start: 8, end: 20, text: "Mitosis is the process where the cell divides." },
-        ],
-      })
-    }
-    return Response.json({
-      choices: [{ message: { content: notesChatContent(String(init?.body)) } }],
-    })
-  }
+function readyLocal(store: FileStore): void {
+  store.localStatus = async () => ({ ready: true, model: "ggml-base.en", missing: [] })
 }
 
-function notesChatContent(raw: string): string {
-  const posted = JSON.parse(raw) as {
-    model?: string
-    max_completion_tokens?: number
-    messages?: Array<{ role: string; content: string }>
-  }
-  expect(posted.model).toBe(GROQ_NOTES_MODEL)
-  expect(posted.model).not.toBe("llama-3.3-70b-versatile")
-  expect(posted.model).not.toMatch(/whisper-1/)
-  const messages = posted.messages ?? []
+function blockGroq(): { calls: number } {
+  const seen = { calls: 0 }
+  vi.stubGlobal("fetch", async () => {
+    seen.calls += 1
+    throw new Error("Groq must not run.")
+  })
+  return seen
+}
+
+function studyReply(messages: LocalNotesMessage[], version?: { n: number }): string {
   const system = messages.find((message) => message.role === "system")?.content ?? ""
   const user = messages.find((message) => message.role === "user")?.content ?? ""
-  const used = estimateTokens(messages.map((message) => message.content).join("\n")) + (posted.max_completion_tokens ?? 0)
-  expect(used).toBeLessThanOrEqual(GROQ_REQUEST_TOKEN_BUDGET)
   if (/compact summary/i.test(system)) {
     const points = [...user.matchAll(/point (\d+)/g)]
     const first = points[0]?.[1] ?? "0"
@@ -135,6 +108,7 @@ function notesChatContent(raw: string): string {
       sections: [{ title: "Elasticity", ranges: [{ start: 0, end: 100000 }] }],
     })
   }
+  if (version) return `## Cell division\n\n- Version ${version.n}.`
   const point = user.match(/point (\d+)/)?.[1]
   if (point) return `## Elasticity\n\n- Point ${point} belongs in the lecture.\n  - Detail ${point}.\n`
   if (/cell division|mitosis/i.test(user)) {
@@ -160,21 +134,31 @@ describe("course files", () => {
     await store.writeText(path.join(course.path, "notes", "module.json"), '{"id":"x","name":"Nope"}')
     await store.mkdir(path.join(course.path, "Loose"))
 
-    await saveSettings(store, {
-      homeDirectory: home,
-      provider: "cloud",
-      lastMediaDirectory: null,
-      speechPace: "clearer",
-      groqApiKey: DEV_KEY,
-      languageCode: "en",
-    })
-    const calls: string[] = []
-    vi.stubGlobal("fetch", groqFetch(calls))
+    readyLocal(store)
+    const groq = blockGroq()
+    let transcribed = 0
+    let notesCalls = 0
+    store.transcribeMedia = async () => {
+      transcribed += 1
+      return {
+        segments: [
+          { start: 0, end: 8, text: "Today we talk about cell division." },
+          { start: 8, end: 20, text: "Mitosis is the process where the cell divides." },
+        ],
+        durationSeconds: 20,
+        elapsedMs: 1000,
+        model: "ggml-base.en",
+      }
+    }
+    store.completeLocal = async (messages) => {
+      notesCalls += 1
+      return studyReply(messages)
+    }
     const filed = await makeNotes(store, {
       home,
       courseId: course.id,
       mediaPath: media,
-      provider: "cloud",
+      provider: "local",
       moduleId: null,
       moduleName: "Cells",
       newModuleName: "Cells",
@@ -204,38 +188,35 @@ describe("course files", () => {
       (await store.readText(path.join(course.path, ".study", "transcripts", `${filed.id}.json`))) ??
         "{}",
     )
-    expect(transcript.provider).toBe("cloud")
+    expect(transcript.provider).toBe("local")
     expect(transcript.transcribed).toBe(true)
-    expect(transcript.model).toBe(GROQ_WHISPER_MODEL)
+    expect(transcript.model).toBe("ggml-base.en")
     expect(transcript.segments.map((segment: { text: string }) => segment.text).join(" ")).toContain("Mitosis")
     expect(transcript.durationSeconds).toBeGreaterThan(1)
     expect(markdown).toContain("## Cell division")
     expect(markdown).not.toContain("## Transcript")
-    expect(markdown).not.toContain(DEV_KEY)
     expect(await store.stat(path.join(course.path, ".study"))).toMatchObject({ isDir: true })
-    expect(calls.filter((url) => url.includes("/audio/transcriptions"))).toHaveLength(1)
+    expect(transcribed).toBe(1)
+    expect(groq.calls).toBe(0)
 
     const rewritten = await makeNotes(store, {
       home,
       courseId: course.id,
       mediaPath: media,
-      provider: "cloud",
+      provider: "local",
       moduleId: filed.moduleId,
       moduleName: filed.moduleName,
       newModuleName: null,
     })
     expect(rewritten.id).toBe(filed.id)
-    expect(calls.filter((url) => url.includes("/audio/transcriptions"))).toHaveLength(1)
-    expect(calls.filter((url) => url.includes("/chat/completions")).length).toBeGreaterThanOrEqual(2)
-    const settingsText = await store.readText(path.join(data, "settings.json"))
-    expect(settingsText).toContain(DEV_KEY)
-    expect(await pathsContaining(course.path, DEV_KEY)).toEqual([])
+    expect(transcribed).toBe(1)
+    expect(notesCalls).toBeGreaterThanOrEqual(2)
 
     const styled = await restyleNote(store, {
       home,
       courseId: course.id,
       noteId: filed.id,
-      provider: "cloud",
+      provider: "local",
       preset: "bullets",
       prompt: "",
     })
@@ -278,42 +259,71 @@ describe("course files", () => {
     expect(await store.exists(path.join(course.path, ".study"))).toBe(false)
   })
 
-  it("keeps the transcript when Groq notes fail and does not transcribe again", async () => {
+  it("keeps the transcript when local notes fail and does not transcribe again", async () => {
     const home = path.join(root, "home")
     const store = createNodeFileStore(path.join(root, "appdata"))
     await store.mkdir(home)
     const course = await createCourse(store, home, "ISC 102")
     const media = path.join(root, "ISC 102 U06.mp3")
     await writeFile(media, wav(2))
-    await saveSettings(store, {
-      homeDirectory: home,
-      provider: "cloud",
-      lastMediaDirectory: null,
-      speechPace: "clearer",
-      groqApiKey: DEV_KEY,
-      languageCode: "en",
-    })
-    let chats = 0
-    const calls: string[] = []
-    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      calls.push(url)
-      const auth = new Headers(init?.headers).get("authorization") ?? ""
-      if (auth !== `Bearer ${DEV_KEY}`) return Response.json({ error: { message: "unauthorized" } }, { status: 401 })
-      if (url.includes("/audio/transcriptions")) {
-        return Response.json({
-          segments: [{ start: 0, end: 4, text: "Supply and demand." }],
-        })
+    readyLocal(store)
+    const groq = blockGroq()
+    let transcribed = 0
+    let notesCalls = 0
+    store.transcribeMedia = async () => {
+      transcribed += 1
+      return {
+        segments: [{ start: 0, end: 4, text: "Supply and demand." }],
+        durationSeconds: 4,
+        elapsedMs: 1000,
+        model: "ggml-base.en",
       }
-      chats += 1
-      if (chats === 1) {
-        return Response.json(
-          { error: { message: "The model `llama-3.3-70b-versatile` does not exist or you do not have access to it." } },
-          { status: 400 },
-        )
-      }
-      return Response.json({ choices: [{ message: { content: notesChatContent(String(init?.body)) } }] })
-    })
+    }
+    store.completeLocal = async (messages) => {
+      notesCalls += 1
+      if (notesCalls === 1) throw new Error("The notes model did not return study notes.")
+      return studyReply(messages)
+    }
+    const request = {
+      home,
+      courseId: course.id,
+      mediaPath: media,
+      provider: "local" as const,
+      moduleId: null,
+      moduleName: null,
+      newModuleName: null,
+    }
+    await expect(makeNotes(store, request)).rejects.toThrow(/did not return study notes/)
+    const transcriptDir = path.join(course.path, ".study", "transcripts")
+    const transcriptFiles = (await readdir(transcriptDir)).filter((name) => name.endsWith(".json"))
+    expect(transcriptFiles).toHaveLength(1)
+    expect(await store.readText(path.join(transcriptDir, transcriptFiles[0]))).toContain("Supply and demand.")
+    expect(await store.exists(path.join(course.path, "notes"))).toBe(false)
+    const filed = await makeNotes(store, request)
+    expect(transcribed).toBe(1)
+    expect(notesCalls).toBeGreaterThanOrEqual(2)
+    expect(groq.calls).toBe(0)
+    const markdown = await store.readText(filed.markdownPath)
+    expect(markdown).toContain("Demand meets supply.")
+    expect(markdown).not.toContain("## Transcript")
+    vi.unstubAllGlobals()
+  })
+
+  it("refuses cloud notes and drops a pasted key, even when a license file says entitled", async () => {
+    const home = path.join(root, "home")
+    const data = path.join(root, "appdata")
+    const store = createNodeFileStore(data)
+    await store.mkdir(home)
+    const course = await createCourse(store, home, "Biology 101")
+    const media = path.join(root, "lecture.mp3")
+    await writeFile(media, wav())
+    const pasted = "gsk_pasted_not_a_real_key"
+    await store.writeText(
+      path.join(data, "settings.json"),
+      `${JSON.stringify({ homeDirectory: home, provider: "cloud", groqApiKey: pasted, languageCode: "en" }, null, 2)}\n`,
+    )
+    await store.writeText(path.join(data, "license.json"), '{"entitled":true}\n')
+    const groq = blockGroq()
     const request = {
       home,
       courseId: course.id,
@@ -323,45 +333,30 @@ describe("course files", () => {
       moduleName: null,
       newModuleName: null,
     }
-    await expect(makeNotes(store, request)).rejects.toThrow(/llama-3\.3-70b-versatile/)
-    const transcriptDir = path.join(course.path, ".study", "transcripts")
-    const transcriptFiles = (await readdir(transcriptDir)).filter((name) => name.endsWith(".json"))
-    expect(transcriptFiles).toHaveLength(1)
-    expect(await store.readText(path.join(transcriptDir, transcriptFiles[0]))).toContain("Supply and demand.")
-    expect(await store.exists(path.join(course.path, "notes"))).toBe(false)
-    const filed = await makeNotes(store, request)
-    expect(calls.filter((url) => url.includes("/audio/transcriptions"))).toHaveLength(1)
-    expect(calls.filter((url) => url.includes("/chat/completions")).length).toBeGreaterThanOrEqual(2)
-    const markdown = await store.readText(filed.markdownPath)
-    expect(markdown).toContain("Demand meets supply.")
-    expect(markdown).not.toContain("## Transcript")
-    vi.unstubAllGlobals()
-  })
-
-  it("refuses cloud notes without a key, even when a license file says entitled", async () => {
-    const home = path.join(root, "home")
-    const store = createNodeFileStore(path.join(root, "appdata"))
-    await store.mkdir(home)
-    const course = await createCourse(store, home, "Biology 101")
-    const media = path.join(root, "lecture.mp3")
-    await writeFile(media, wav())
-    await store.writeText(
-      path.join(await store.appDataDir(), "license.json"),
-      '{"entitled":true}\n',
-    )
+    await expect(makeNotes(store, request)).rejects.toBeInstanceOf(CloudNotesError)
+    await expect(makeNotes(store, request)).rejects.toThrow("Cloud notes are not available in this build.")
     await expect(
-      makeNotes(store, {
+      restyleNote(store, {
         home,
         courseId: course.id,
-        mediaPath: media,
+        noteId: "missing",
         provider: "cloud",
-        moduleId: null,
-        moduleName: null,
-        newModuleName: null,
+        preset: "bullets",
+        prompt: pasted,
       }),
-    ).rejects.toBeInstanceOf(GroqKeyError)
+    ).rejects.toBeInstanceOf(CloudNotesError)
+    expect(groq.calls).toBe(0)
     expect(await store.exists(path.join(course.path, "notes"))).toBe(false)
     expect(await store.exists(path.join(course.path, ".study"))).toBe(false)
+    const loaded = await loadSettings(store)
+    expect(loaded).not.toHaveProperty("groqApiKey")
+    expect(loaded.provider).toBe("cloud")
+    const settingsText = (await store.readText(path.join(data, "settings.json"))) ?? ""
+    expect(settingsText).not.toContain(pasted)
+    expect(settingsText).not.toContain("groqApiKey")
+    expect(await pathsContaining(course.path, pasted)).toEqual([])
+    expect(await pathsContaining(data, pasted)).toEqual([])
+    vi.unstubAllGlobals()
   })
 
   it("writes study notes from a saved transcript with the local notes model", async () => {
@@ -484,14 +479,7 @@ describe("a saved long transcript", () => {
     const course = await createCourse(store, home, "ISC 102")
     const media = path.join(root, "ISC 102 U06.mp3")
     await writeFile(media, wav(2))
-    await saveSettings(store, {
-      homeDirectory: home,
-      provider: "cloud",
-      lastMediaDirectory: null,
-      speechPace: "clearer",
-      groqApiKey: DEV_KEY,
-      languageCode: "en",
-    })
+    readyLocal(store)
     const noteId = "u06"
     const segments: Array<{ start: number; end: number; text: string }> = []
     let index = 0
@@ -526,24 +514,22 @@ describe("a saved long transcript", () => {
       `${JSON.stringify({ noteId, mediaPath: media, courseId: course.id, moduleId: null }, null, 2)}\n`,
     )
     const kinds: string[] = []
-    const calls: string[] = []
-    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      calls.push(url)
-      expect(url).not.toContain("/audio/transcriptions")
-      const auth = new Headers(init?.headers).get("authorization") ?? ""
-      if (auth !== `Bearer ${DEV_KEY}`) return Response.json({ error: { message: "unauthorized" } }, { status: 401 })
-      const system = (JSON.parse(String(init?.body)) as { messages?: Array<{ content: string }> }).messages?.[0]?.content ?? ""
+    const groq = blockGroq()
+    store.transcribeMedia = async () => {
+      throw new Error("A saved transcript must not be transcribed again.")
+    }
+    store.completeLocal = async (messages) => {
+      const system = messages.find((message) => message.role === "system")?.content ?? ""
       if (/compact summary/i.test(system)) kinds.push("summary")
       else if (/outline of the whole lecture/i.test(system)) kinds.push("outline")
       else kinds.push("fill")
-      return Response.json({ choices: [{ message: { content: notesChatContent(String(init?.body)) } }] })
-    })
+      return studyReply(messages)
+    }
     const filed = await makeNotes(store, {
       home,
       courseId: course.id,
       mediaPath: media,
-      provider: "cloud",
+      provider: "local",
       moduleId: null,
       moduleName: null,
       newModuleName: null,
@@ -566,18 +552,18 @@ describe("a saved long transcript", () => {
     expect((await store.stat(filed.pdfPath))?.size).toBeGreaterThan(500)
     const savedTranscript = await store.readText(transcriptPath)
     expect(savedTranscript).toContain("point 0")
-    expect(calls.filter((url) => url.includes("/audio/transcriptions"))).toHaveLength(0)
+    expect(groq.calls).toBe(0)
 
     const styled = await restyleNote(store, {
       home,
       courseId: course.id,
       noteId,
-      provider: "cloud",
+      provider: "local",
       preset: "bullets",
       prompt: "",
     })
     expect(await store.readText(transcriptPath)).toBe(savedTranscript)
-    expect(calls.filter((url) => url.includes("/audio/transcriptions"))).toHaveLength(0)
+    expect(groq.calls).toBe(0)
     expect(styled.body).toContain("## Elasticity")
     expect(styled.body).not.toContain("## Transcript")
     expect(await store.stat(styled.pdfPath)).toMatchObject({ isDir: false })
@@ -597,19 +583,12 @@ describe("a recording that already has a note", () => {
     const cells = await createModule(store, home, course.id, "Cells")
     const media = path.join(root, "Lecture 3.wav")
     await writeFile(media, wav(2))
-    await saveSettings(store, {
-      homeDirectory: home,
-      provider: "cloud",
-      lastMediaDirectory: null,
-      speechPace: "clearer",
-      groqApiKey: DEV_KEY,
-      languageCode: "en",
-    })
+    readyLocal(store)
     const request = {
       home,
       courseId: course.id,
       mediaPath: media,
-      provider: "cloud" as const,
+      provider: "local" as const,
       moduleId: null,
       moduleName: null,
       newModuleName: null,
@@ -647,33 +626,25 @@ describe("a recording that already has a note", () => {
     expect(await findRecordingNote(store, { ...request, newModuleName: "Week two" })).toBeNull()
 
     const version = { n: 1 }
-    const calls: string[] = []
-    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      calls.push(url)
-      expect(new URL(url).host).toBe("api.groq.com")
-      const auth = new Headers(init?.headers).get("authorization") ?? ""
-      if (auth !== `Bearer ${DEV_KEY}`) return Response.json({ error: { message: "unauthorized" } }, { status: 401 })
-      if (url.includes("/audio/transcriptions")) {
-        return Response.json({
-          segments: [
-            { start: 0, end: 8, text: "Today we talk about cell division." },
-            { start: 8, end: 20, text: "Mitosis is the process where the cell divides." },
-          ],
-        })
+    const groq = blockGroq()
+    let transcribed = 0
+    store.transcribeMedia = async () => {
+      transcribed += 1
+      return {
+        segments: [
+          { start: 0, end: 8, text: "Today we talk about cell division." },
+          { start: 8, end: 20, text: "Mitosis is the process where the cell divides." },
+        ],
+        durationSeconds: 20,
+        elapsedMs: 1000,
+        model: "ggml-base.en",
       }
-      const system =
-        (JSON.parse(String(init?.body)) as { messages?: Array<{ content: string }> }).messages?.[0]?.content ?? ""
-      const content = /outline of the whole lecture/i.test(system)
-        ? '{"sections":[{"title":"Cell division","start":0,"end":20}]}'
-        : `## Cell division\n\n- Version ${version.n}.`
-      return Response.json({ choices: [{ message: { content } }] })
-    })
-    const whisperCalls = () => calls.filter((url) => url.includes("/audio/transcriptions")).length
+    }
+    store.completeLocal = async (messages) => studyReply(messages, version)
 
     const filed = await makeNotes(store, { ...request, noteChoice: "add" })
     expect(filed.id).toBe(orphanId)
-    expect(whisperCalls()).toBe(0)
+    expect(transcribed).toBe(0)
     expect((await findRecordingNote(store, request))?.id).toBe(filed.id)
     expect(await findRecordingNote(store, { ...request, moduleId: cells.id })).toBeNull()
     expect(await findRecordingNote(store, { ...request, newModuleName: "Week two" })).toBeNull()
@@ -695,7 +666,7 @@ describe("a recording that already has a note", () => {
     expect(await store.readText(filed.markdownPath)).toBe(kept)
     expect((await store.stat(filed.pdfPath))?.size).toBe(keptPdf)
     expect(await store.readText(added.markdownPath)).toContain("Version 3.")
-    expect(whisperCalls()).toBe(0)
+    expect(transcribed).toBe(0)
     expect((await getCourse(store, home, course.id)).notes).toHaveLength(2)
     expect((await findRecordingNote(store, request))?.id).toBe(added.id)
     const originalTranscript = await store.readText(path.join(study, "transcripts", `${filed.id}.json`))
@@ -722,7 +693,7 @@ describe("a recording that already has a note", () => {
       moduleName: cells.name,
     })
     expect(inModule.moduleId).toBe(cells.id)
-    expect(whisperCalls()).toBe(1)
+    expect(transcribed).toBe(1)
     expect((await findRecordingNote(store, { ...request, moduleId: cells.id }))?.id).toBe(inModule.id)
     expect((await findRecordingNote(store, request))?.id).toBe(added.id)
     const moduleMarkdown = await store.readText(inModule.markdownPath)
@@ -740,11 +711,12 @@ describe("a recording that already has a note", () => {
     expect(moduleAdded.fileStem.endsWith(" (2)")).toBe(true)
     expect(await store.readText(inModule.markdownPath)).toBe(moduleMarkdown)
     expect((await store.stat(inModule.pdfPath))?.size).toBe(modulePdf)
-    expect(whisperCalls()).toBe(1)
+    expect(transcribed).toBe(1)
     expect((await findRecordingNote(store, { ...request, moduleId: cells.id }))?.id).toBe(moduleAdded.id)
     const detail = await getCourse(store, home, course.id)
     expect(detail.notes).toHaveLength(4)
     expect(detail.modules[0]?.noteCount).toBe(2)
+    expect(groq.calls).toBe(0)
     vi.unstubAllGlobals()
   })
 })

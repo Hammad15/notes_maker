@@ -1,20 +1,11 @@
 import { withNoteHeader } from "../domain/compose"
 import { renderPdf } from "../domain/pdf"
 import { parseNoteFile, writeFrontmatter, type NoteMeta } from "../domain/frontmatter"
-import { GroqKeyError, LocalSetupError, StudyError } from "../domain/errors"
-import {
-  CLOUD_CHUNK_SECONDS,
-  CLOUD_WHISPER_SPEED,
-  completeChat,
-  GROQ_WHISPER_MODEL,
-  restyleInstruction,
-  transcribeChunk,
-  type PreparedAudio,
-} from "../domain/groq"
+import { CloudNotesError, LocalSetupError, StudyError } from "../domain/errors"
+import { restyleInstruction } from "../domain/groq"
 import { writeLectureNotes, type NoteStyle } from "../domain/lectureNotes"
 import { localLanguageSupported, notesLanguage } from "../domain/language"
 import {
-  chunkTranscriptionPercent,
   notesRunPercent,
   sameSavedRecording,
   speechPace,
@@ -42,8 +33,6 @@ export interface Settings {
   provider: ProviderId
   lastMediaDirectory: string | null
   speechPace: SpeechPace
-  /** Temporary developer setting. Not written into a course. */
-  groqApiKey: string
   languageCode: string
 }
 
@@ -130,7 +119,6 @@ const EMPTY_SETTINGS: Settings = {
   provider: "local",
   lastMediaDirectory: null,
   speechPace: "clearer",
-  groqApiKey: "",
   languageCode: "en",
 }
 
@@ -147,20 +135,24 @@ async function writeJson(store: FileStore, path: string, value: unknown): Promis
 export async function loadSettings(store: FileStore): Promise<Settings> {
   const text = await store.readText(settingsPath(await store.appDataDir()))
   if (!text) return { ...EMPTY_SETTINGS }
+  let json: Record<string, unknown>
   try {
-    const json = JSON.parse(text) as Partial<Settings>
-    return {
-      homeDirectory: typeof json.homeDirectory === "string" ? json.homeDirectory : null,
-      provider: json.provider === "cloud" ? "cloud" : "local",
-      lastMediaDirectory:
-        typeof json.lastMediaDirectory === "string" ? json.lastMediaDirectory : null,
-      speechPace: speechPace(json.speechPace),
-      groqApiKey: typeof json.groqApiKey === "string" ? json.groqApiKey : "",
-      languageCode: typeof json.languageCode === "string" && json.languageCode.trim() ? json.languageCode.trim() : "en",
-    }
+    const parsed: unknown = JSON.parse(text)
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { ...EMPTY_SETTINGS }
+    json = parsed as Record<string, unknown>
   } catch {
     return { ...EMPTY_SETTINGS }
   }
+  const languageCode = json.languageCode
+  const settings: Settings = {
+    homeDirectory: typeof json.homeDirectory === "string" ? json.homeDirectory : null,
+    provider: json.provider === "cloud" ? "cloud" : "local",
+    lastMediaDirectory: typeof json.lastMediaDirectory === "string" ? json.lastMediaDirectory : null,
+    speechPace: speechPace(json.speechPace),
+    languageCode: typeof languageCode === "string" && languageCode.trim() ? languageCode.trim() : "en",
+  }
+  if (Object.prototype.hasOwnProperty.call(json, "groqApiKey")) await saveSettings(store, settings)
+  return settings
 }
 
 export async function saveSettings(store: FileStore, settings: Settings): Promise<void> {
@@ -175,18 +167,6 @@ export async function saveSettings(store: FileStore, settings: Settings): Promis
   await run
 }
 
-/**
- * The only read of the Groq key. This build uses the developer setting stored
- * in Study Notes settings on this computer. A later build can supply the key
- * from the environment or a provisioned secret in this function, instead of
- * asking the student. Do not read the key anywhere else.
- */
-export async function readGroqKey(store: FileStore): Promise<string> {
-  await pendingSettingsWrite
-  const settings = await loadSettings(store)
-  return settings.groqApiKey.trim()
-}
-
 export async function assertWritableDirectory(store: FileStore, dir: string): Promise<void> {
   const stat = await store.stat(dir)
   if (!stat?.isDir) throw new StudyError("Choose a folder.", "HOME")
@@ -194,7 +174,7 @@ export async function assertWritableDirectory(store: FileStore, dir: string): Pr
   try {
     await store.writeText(probe, "ok")
   } catch {
-    throw new StudyError("Study Notes cannot save courses in that folder.", "HOME")
+    throw new StudyError("Create Notes cannot save courses in that folder.", "HOME")
   }
   try {
     await store.remove(probe)
@@ -609,93 +589,6 @@ async function findSavedTranscript(
   return best ? { transcript: best.transcript, note: best.note } : null
 }
 
-function chunkBudgetMs(index: number, chunkCount: number, durationSeconds: number | null): number {
-  let seconds = CLOUD_CHUNK_SECONDS
-  if (chunkCount <= 1) seconds = durationSeconds && durationSeconds > 0 ? durationSeconds : 60
-  else if (index === chunkCount - 1 && durationSeconds != null && durationSeconds > index * CLOUD_CHUNK_SECONDS) {
-    seconds = durationSeconds - index * CLOUD_CHUNK_SECONDS
-  }
-  return Math.max(1000, Math.round((seconds * 1000) / CLOUD_WHISPER_SPEED))
-}
-
-async function transcribeWithGroq(
-  store: FileStore,
-  mediaPath: string,
-  key: string,
-  languageCode: string,
-  durationSeconds: number | null,
-  onProgress?: (progress: TranscriptionProgress) => void,
-): Promise<TranscriptSegment[]> {
-  const prepared: PreparedAudio = await store.prepareCloudAudio(mediaPath)
-  const language = notesLanguage(languageCode)
-  const startedMs = Date.now()
-  const segments: TranscriptSegment[] = []
-  try {
-    const chunks = prepared.chunks
-    if (chunks.length === 0) throw new StudyError("Could not prepare that recording.", "MEDIA")
-    for (let index = 0; index < chunks.length; index += 1) {
-      const budgetMs = chunkBudgetMs(index, chunks.length, durationSeconds)
-      const chunkStarted = Date.now()
-      const publish = (elapsedMs: number) => {
-        onProgress?.({
-          phase: "transcribing",
-          label: "Transcribing the recording",
-          percent: chunkTranscriptionPercent(index, chunks.length, elapsedMs, budgetMs),
-          startedMs,
-        })
-      }
-      publish(0)
-      const timer = setInterval(() => publish(Date.now() - chunkStarted), 1000)
-      try {
-        const chunk = chunks[index]
-        const bytes = await store.readBytes(chunk.path)
-        const filename = chunk.path.split(/[\\/]/).pop() || "audio.wav"
-        segments.push(...(await transcribeChunk(key, bytes, filename, language, chunk.startSeconds)))
-        onProgress?.({
-          phase: "transcribing",
-          label: "Transcribing the recording",
-          percent: Math.round(((index + 1) / chunks.length) * 100),
-          startedMs,
-        })
-      } finally {
-        clearInterval(timer)
-      }
-    }
-  } finally {
-    for (const chunk of prepared.chunks) {
-      if (prepared.temporaryDirectory && chunk.path.startsWith(prepared.temporaryDirectory)) {
-        try {
-          await store.remove(chunk.path)
-        } catch {
-          // The prepared audio is in app data, not the course.
-        }
-      }
-    }
-  }
-  if (!segments.some((segment) => segment.text.trim())) {
-    throw new StudyError("No speech was found in that recording.", "TRANSCRIPT")
-  }
-  return segments
-}
-
-async function notesFromGroq(
-  key: string,
-  languageCode: string,
-  content: NoteContent,
-  style?: NoteStyle | null,
-  onStep?: (done: number, total: number) => void,
-): Promise<string> {
-  const body = await writeLectureNotes({
-    language: notesLanguage(languageCode),
-    content,
-    style,
-    onStep,
-    writer: "groq",
-    complete: (messages, maxCompletionTokens) => completeChat(key, messages, globalThis.fetch, maxCompletionTokens),
-  })
-  return withNoteHeader(content, body)
-}
-
 async function notesFromLocal(
   store: FileStore,
   languageCode: string,
@@ -719,12 +612,11 @@ export async function makeNotes(
   input: MakeNotesInput,
   hooks?: { onWriting?: () => void; onProgress?: (progress: TranscriptionProgress) => void },
 ): Promise<NoteInfo> {
+  if (input.provider === "cloud") throw new CloudNotesError()
   const course = await findCourse(store, input.home, input.courseId)
   const settings = await loadSettings(store)
   const pace = speechPace(settings.speechPace)
   const language = notesLanguage(settings.languageCode)
-  const groqKey = input.provider === "cloud" ? await readGroqKey(store) : ""
-  if (input.provider === "cloud" && !groqKey) throw new GroqKeyError()
   const stat = await store.stat(input.mediaPath)
   if (!stat || stat.isDir || !isMediaFile(input.mediaPath)) {
     throw new StudyError("Choose a video or audio file.", "MEDIA")
@@ -742,33 +634,9 @@ export async function makeNotes(
   if (saved) {
     transcript = saved.transcript
     existingNote = addingBeside ? null : saved.note
-  } else if (input.provider === "cloud") {
-    const segments = await transcribeWithGroq(
-      store,
-      input.mediaPath,
-      groqKey,
-      language.code,
-      probe.durationSeconds,
-      hooks?.onProgress,
-    )
-    transcript = {
-      noteId: "",
-      provider: "cloud",
-      createdAt: new Date().toISOString(),
-      durationSeconds: probe.durationSeconds,
-      transcribed: true,
-      segments,
-      chapters: probe.chapters.filter(
-        (chapter) => Number.isFinite(chapter.start) && Number.isFinite(chapter.end),
-      ),
-      model: GROQ_WHISPER_MODEL,
-    }
   } else {
     if (!localLanguageSupported(language)) {
-      throw new StudyError(
-        "Local notes in this build use the English speech models. Cloud can transcribe another language.",
-        "LANGUAGE",
-      )
+      throw new StudyError("Local notes in this build use the English speech models.", "LANGUAGE")
     }
     const noteId = crypto.randomUUID()
     transcript = await transcribeLocal(store, input.mediaPath, { noteId, title, probe }, {
@@ -869,10 +737,7 @@ export async function makeNotes(
   }
   let body: string
   try {
-    body =
-      input.provider === "cloud"
-        ? await notesFromGroq(groqKey, language.code, content, null, publishWriting)
-        : await notesFromLocal(store, language.code, content, null, publishWriting)
+    body = await notesFromLocal(store, language.code, content, null, publishWriting)
   } finally {
     clearInterval(notesTimer)
   }
@@ -1035,6 +900,7 @@ export async function restyleNote(
     prompt: string
   },
 ): Promise<NoteDocument> {
+  if (input.provider === "cloud") throw new CloudNotesError()
   const note = await readNote(store, input.home, input.courseId, input.noteId)
   const course = await findCourse(store, input.home, input.courseId)
   const settings = await loadSettings(store)
@@ -1048,43 +914,25 @@ export async function restyleNote(
     note.chapters,
     note.transcriptProduced,
   )
+  const pace = speechPace(settings.speechPace)
+  const runtime = await store.localStatus(pace)
+  if (!runtime.ready) throw new LocalSetupError()
+  const language = notesLanguage(settings.languageCode)
   let body: string
-  if (input.provider === "cloud") {
-    const key = await readGroqKey(store)
-    if (!key) throw new GroqKeyError()
-    const language = notesLanguage(settings.languageCode)
-    if (content.transcriptProduced && content.segments.some((segment) => segment.text.trim())) {
-      body = await notesFromGroq(key, language.code, content, {
-        preset: input.preset,
-        prompt: input.prompt,
-      })
-    } else {
-      const text = await completeChat(key, [
+  if (content.transcriptProduced && content.segments.some((segment) => segment.text.trim())) {
+    body = await notesFromLocal(store, language.code, content, {
+      preset: input.preset,
+      prompt: input.prompt,
+    })
+  } else {
+    const text = await store.completeLocal(
+      [
         { role: "system", content: restyleInstruction(language, input.preset, input.prompt) },
         { role: "user", content: note.body },
-      ])
-      body = withNoteHeader(content, text)
-    }
-  } else {
-    const pace = speechPace(settings.speechPace)
-    const runtime = await store.localStatus(pace)
-    if (!runtime.ready) throw new LocalSetupError()
-    const language = notesLanguage(settings.languageCode)
-    if (content.transcriptProduced && content.segments.some((segment) => segment.text.trim())) {
-      body = await notesFromLocal(store, language.code, content, {
-        preset: input.preset,
-        prompt: input.prompt,
-      })
-    } else {
-      const text = await store.completeLocal(
-        [
-          { role: "system", content: restyleInstruction(language, input.preset, input.prompt) },
-          { role: "user", content: note.body },
-        ],
-        1500,
-      )
-      body = withNoteHeader(content, text)
-    }
+      ],
+      1500,
+    )
+    body = withNoteHeader(content, text)
   }
   const current = await store.readText(note.markdownPath)
   if (!current) throw new StudyError("That note could not be read.", "NOTE")

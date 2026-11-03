@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest"
-import { StudyError } from "./errors"
+import { CloudNotesError, StudyError } from "./errors"
 import {
   chatText,
   completeChat,
+  groqCallDetail,
   GROQ_CHAT_URL,
   GROQ_NOTES_MODEL,
   GROQ_ORIGIN,
@@ -58,79 +59,26 @@ describe("Groq speech and notes", () => {
     expect(english).not.toMatch(/Hijrah|Biʿthah|Bi.thah|ISC\s*102/i)
   })
 
-  it("sends one chunk and refuses a key echoed in an error", async () => {
+  it("does not send a pasted key or a transcript to Groq", async () => {
     const key = "gsk_secret_value"
-    const calls: Array<{ url: string; model: FormDataEntryValue | null; language: FormDataEntryValue | null }> = []
-    const fetchImpl: typeof fetch = async (input, init) => {
-      const url = String(input)
-      const form = init?.body
-      if (!(form instanceof FormData)) throw new Error("expected form")
-      calls.push({ url, model: form.get("model"), language: form.get("language") })
-      const auth = new Headers(init?.headers).get("authorization") ?? ""
-      expect(auth).toBe(`Bearer ${key}`)
-      return Response.json({ text: "Mitosis begins." })
-    }
-    const segments = await transcribeChunk(key, new Uint8Array([1, 2, 3]), "clip.wav", notesLanguage("en"), 0, fetchImpl)
-    expect(segments).toEqual([{ start: 0, end: 0, text: "Mitosis begins." }])
-    expect(calls).toEqual([
-      { url: GROQ_TRANSCRIPTIONS_URL, model: GROQ_WHISPER_MODEL, language: "en" },
-    ])
-
-    const refused: typeof fetch = async () =>
-      new Response(JSON.stringify({ error: { message: `bad ${key}` } }), { status: 400 })
-    try {
-      await completeChat(key, [{ role: "user", content: "The lecture says Hijrah in 622." }], refused)
-      throw new Error("expected Groq to refuse")
-    } catch (error) {
-      expect(error).toBeInstanceOf(StudyError)
-      const failure = error as StudyError
-      expect(failure.message).toBe("Groq refused the request (400).")
-      expect(failure.detail).toContain(`model: ${GROQ_NOTES_MODEL}`)
-      expect(failure.detail).toContain("status: 400")
-      expect(failure.detail).toContain("body:")
-      expect(failure.detail).not.toContain(key)
-      expect(failure.detail).not.toContain("Hijrah")
-    }
-    const denied: typeof fetch = async () => new Response("{}", { status: 401 })
-    await expect(transcribeChunk(key, new Uint8Array([1]), "clip.wav", notesLanguage("en"), 0, denied)).rejects.toThrow(
-      "Groq refused that API key.",
-    )
-  })
-
-  it("caps the completion and retries a rate limit without an upgrade pitch", async () => {
-    const key = "gsk_secret_value"
-    const bodies: Array<{ max_completion_tokens?: number }> = []
-    let tries = 0
-    const fetchImpl: typeof fetch = async (_input, init) => {
-      tries += 1
-      bodies.push(JSON.parse(String(init?.body)) as { max_completion_tokens?: number })
-      if (tries === 1) {
-        return new Response(
-          JSON.stringify({
-            error: {
-              message:
-                "Rate limit reached. Please try again in 0.01s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing",
-            },
-          }),
-          { status: 429 },
-        )
-      }
+    const request = "Transcript for this section:\n[00:00] The year 622 was spoken."
+    let calls = 0
+    const fetchImpl: typeof fetch = async () => {
+      calls += 1
       return Response.json({ choices: [{ message: { content: "## Cells" } }] })
     }
-    await expect(completeChat(key, [{ role: "user", content: "notes" }], fetchImpl, 400)).resolves.toBe("## Cells")
-    expect(tries).toBe(2)
-    expect(bodies[0]?.max_completion_tokens).toBe(400)
-
-    const blocked: typeof fetch = async () =>
-      new Response(
-        JSON.stringify({
-          error: { message: "Rate limit reached. Need more tokens? Upgrade to Dev Tier today." },
-        }),
-        { status: 429, headers: { "retry-after": "0" } },
-      )
-    await expect(completeChat(key, [{ role: "user", content: "notes" }], blocked, 200)).rejects.toThrow(
-      /^Rate limit reached\.$/,
-    )
+    await expect(completeChat(key, [{ role: "user", content: request }], fetchImpl)).rejects.toBeInstanceOf(CloudNotesError)
+    await expect(
+      transcribeChunk(key, new Uint8Array([1, 2, 3]), "clip.wav", notesLanguage("en"), 0, fetchImpl),
+    ).rejects.toThrow("Cloud notes are not available in this build.")
+    expect(calls).toBe(0)
+    const detail = groqCallDetail(GROQ_NOTES_MODEL, 400, `bad ${key}`, key)
+    expect(detail).toContain(`model: ${GROQ_NOTES_MODEL}`)
+    expect(detail).toContain("status: 400")
+    expect(detail).not.toContain(key)
+    expect(detail).toContain("[redacted]")
+    expect(detail).not.toContain(request)
+    expect(detail).not.toContain("The year 622 was spoken")
   })
 
   it("reads the chat text and keeps notes Groq placed beside an empty content field", () => {
@@ -161,33 +109,4 @@ describe("Groq speech and notes", () => {
     }).toThrow(StudyError)
   })
 
-  it("logs an empty study-notes reply with the model, status, and body", async () => {
-    const key = "gsk_secret_value"
-    const fetchImpl: typeof fetch = async () =>
-      Response.json({
-        model: GROQ_NOTES_MODEL,
-        choices: [{ message: { content: null, reasoning: "This slice has no heading." } }],
-      })
-    await expect(
-      completeChat(key, [{ role: "user", content: "Transcript for this section:\n[00:00] The year 622 was spoken." }], fetchImpl),
-    ).rejects.toMatchObject({
-      message: "Groq did not return study notes.",
-      code: "NOTES",
-    })
-    try {
-      await completeChat(
-        key,
-        [{ role: "user", content: "Transcript for this section:\n[00:00] The year 622 was spoken." }],
-        fetchImpl,
-      )
-    } catch (error) {
-      expect(error).toBeInstanceOf(StudyError)
-      const detail = (error as StudyError).detail ?? ""
-      expect(detail).toContain(`model: ${GROQ_NOTES_MODEL}`)
-      expect(detail).toContain("status: 200")
-      expect(detail).toContain("This slice has no heading.")
-      expect(detail).not.toContain(key)
-      expect(detail).not.toContain("The year 622 was spoken")
-    }
-  })
 })

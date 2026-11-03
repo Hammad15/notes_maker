@@ -2,7 +2,7 @@ import { useEffect, useState, type FormEvent } from "react"
 import { Link, useParams } from "react-router-dom"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import { messageOf } from "../domain/errors"
+import { CLOUD_NOTES_UNAVAILABLE, messageOf } from "../domain/errors"
 import { fileName } from "../domain/paths"
 import { formatRange } from "../domain/text"
 import type { Preset } from "../domain/types"
@@ -184,13 +184,7 @@ export function NoteScreen() {
       >
         <h2 className="font-serif text-2xl">Restyle these notes</h2>
         <p className="mt-2 text-sm text-muted-foreground">
-          {settings.provider === "cloud"
-            ? settings.groqApiKey.trim()
-              ? note.transcriptProduced
-                ? "Restyle asks Groq to rewrite these notes from the saved transcript. One previous copy is kept."
-                : "Restyle asks Groq to rewrite these notes. One previous copy is kept."
-              : "The Groq API key is missing. Paste it under Cloud in the sidebar."
-            : "Restyle uses local notes. One previous copy is kept."}
+          {settings.provider === "cloud" ? CLOUD_NOTES_UNAVAILABLE : "Restyle uses local notes. One previous copy is kept."}
         </p>
         <div className="mt-4 flex flex-wrap gap-2">
           {PRESETS.map((item) => (
@@ -214,7 +208,7 @@ export function NoteScreen() {
         />
         {formError ? <p className="mt-3 text-sm text-destructive">{formError}</p> : null}
         <div className="mt-4 flex flex-col gap-2 sm:flex-row">
-          <Button type="submit" disabled={busy}>
+          <Button type="submit" disabled={busy || settings.provider === "cloud"}>
             {busy ? "Restyling…" : "Restyle notes"}
           </Button>
           <Button

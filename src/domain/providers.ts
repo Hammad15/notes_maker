@@ -1,4 +1,4 @@
-import { GroqKeyError, LocalSetupError } from "./errors"
+import { CloudNotesError, LocalSetupError } from "./errors"
 import type { MediaProbe, NoteContent, Preset, ProviderId, Transcript } from "./types"
 
 export interface TranscribeInput {
@@ -52,15 +52,15 @@ class CloudProvider implements NotesProvider {
   readonly id = "cloud" as const
 
   transcribe(_input: TranscribeInput): Transcript {
-    throw new GroqKeyError()
+    throw new CloudNotesError()
   }
 
   compose(_content: NoteContent): string {
-    throw new GroqKeyError()
+    throw new CloudNotesError()
   }
 
   restyle(_content: NoteContent, _preset: Preset | null, _prompt: string): string {
-    throw new GroqKeyError()
+    throw new CloudNotesError()
   }
 }
 

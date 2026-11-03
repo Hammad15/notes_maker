@@ -1,14 +1,12 @@
 import { NavLink, useNavigate } from "react-router-dom"
 import { Plus } from "lucide-react"
-import { MISSING_GROQ_KEY } from "../domain/errors"
+import { CLOUD_NOTES_UNAVAILABLE } from "../domain/errors"
 import { barPercent, localJobMessage, NOTES_MODEL, speechModel, type SpeechPace } from "../domain/localSpeech"
 import { truncateMiddle } from "../domain/paths"
 import { WINDOWS_DIALOG_REQUIRED } from "../platform/dialogs"
 import { useHost } from "../platform/host"
 import { useLibrary } from "../state/library-context"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import { useState } from "react"
 import { NameDialog } from "./name-dialog"
 
@@ -18,11 +16,9 @@ function setupPercent(received: number, total: number | null): string {
 }
 
 function ProviderSwitch() {
-  const { settings, setProvider, setSpeechPace, setGroqKey, localStatus, setupProgress, setupError, setupLocal } =
-    useLibrary()
+  const { settings, setProvider, setSpeechPace, localStatus, setupProgress, setupError, setupLocal } = useLibrary()
   const [error, setError] = useState<string | null>(null)
   const localReady = localStatus?.ready === true
-  const keyMissing = settings.groqApiKey.trim().length === 0
   const pace = settings.speechPace
   return (
     <fieldset className="grid gap-2">
@@ -88,31 +84,7 @@ function ProviderSwitch() {
           </div>
         </>
       ) : (
-        <div className="grid gap-2">
-          <p className="text-xs leading-relaxed text-muted-foreground">
-            Groq transcribes the recording and writes the study notes. This developer setting is temporary.
-          </p>
-          <Label htmlFor="groq-api-key">Groq API key</Label>
-          <Input
-            id="groq-api-key"
-            type="password"
-            autoComplete="off"
-            spellCheck={false}
-            value={settings.groqApiKey}
-            placeholder="Paste a Groq key"
-            onChange={(event) => {
-              setError(null)
-              void setGroqKey(event.target.value).catch((err: unknown) => {
-                setError(err instanceof Error ? err.message : "Could not save the key.")
-              })
-            }}
-          />
-          <p className="text-xs leading-relaxed text-muted-foreground">
-            {keyMissing
-              ? MISSING_GROQ_KEY
-              : "The key stays in Study Notes settings on this computer. It is not saved in the course."}
-          </p>
-        </div>
+        <p className="text-xs leading-relaxed text-muted-foreground">{CLOUD_NOTES_UNAVAILABLE}</p>
       )}
       {settings.provider === "local" && localStatus && !localReady ? (
         <Button
@@ -211,7 +183,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <div className="md:grid md:min-h-screen md:grid-cols-[250px_minmax(0,1fr)]">
         <aside className="flex flex-col gap-6 border-b border-sidebar-border bg-sidebar px-5 py-5 md:border-r md:border-b-0">
           <div>
-            <p className="font-serif text-xl tracking-tight">Study Notes</p>
+            <p className="font-serif text-xl tracking-tight">Create Notes</p>
             <p className="mt-1 text-xs text-muted-foreground">One computer, one student.</p>
           </div>
           <div className="grid gap-2">
