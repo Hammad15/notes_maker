@@ -3,6 +3,7 @@ name = "study-notes"
 version = "0.1.0"
 description = "Create Notes on this computer"
 authors = ["Hammad15"]
+license = "GPL-3.0-only"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

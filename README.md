@@ -88,9 +88,9 @@ Cloud notes, login, payments, a theme picker, and the public WiX MSI installer.
 
 ## License
 
-Create Notes is released under the MIT License. See [LICENSE](LICENSE).
+Create Notes is released under the GNU General Public License version 3. See [LICENSE](LICENSE).
 
-Dependency licenses were checked for the npm packages and the Rust crates. These are not permissive software licenses:
+Third-party code keeps its own license. Dependency licenses were checked for the npm packages and the Rust crates. These are not permissive software licenses:
 
 - Mozilla Public License 2.0: `lightningcss` and its platform packages; Rust crates `cssparser`, `cssparser-macros`, `dtoa-short`, `option-ext`, and `selectors`
 - SIL Open Font License 1.1: `@fontsource/literata`, `@fontsource/outfit`, and the Liberation fonts bundled for PDF text

@@ -33,6 +33,8 @@
   "bundle": {
     "active": true,
     "publisher": "Hammad15",
+    "license": "GPL-3.0-only",
+    "licenseFile": "../LICENSE",
     "targets": "all",
     "windows": {
       "wix": {
