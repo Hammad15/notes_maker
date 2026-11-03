@@ -200,8 +200,6 @@ export interface SavedTranscription extends ActiveTranscription {
   pace: SpeechPace
   language: string
   transcribeStartedMs: number
-  /** The course already has this run's transcript, so a later launch can drop the temp copy. */
-  transcriptFiled?: boolean
 }
 
 export interface WhisperProcess {
@@ -423,7 +421,6 @@ export function parseSavedTranscription(raw: string): SavedTranscription | null 
     wavPath: row.wavPath || "",
     startedMs: typeof row.startedMs === "number" ? row.startedMs : 0,
     durationSeconds: typeof row.durationSeconds === "number" ? row.durationSeconds : null,
-    transcriptFiled: row.transcriptFiled === true,
   }
 }
 

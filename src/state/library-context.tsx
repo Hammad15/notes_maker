@@ -412,6 +412,31 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     [host, refreshCourses, store],
   )
 
+  useEffect(() => {
+    if (!ready) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const saved = await store.activeTranscription()
+        if (!saved || cancelled) return
+        startMakeNotes({
+          home: saved.home,
+          courseId: saved.courseId,
+          mediaPath: saved.mediaPath,
+          provider: "local",
+          moduleId: saved.moduleId,
+          moduleName: saved.moduleName,
+          newModuleName: saved.newModuleName,
+        })
+      } catch {
+        // No transcription was in progress.
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [ready, startMakeNotes, store])
+
   const cancelJob = useCallback(
     (id: string) => {
       requestNoteCancel(id)

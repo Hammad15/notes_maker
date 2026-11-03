@@ -6,7 +6,7 @@ import path from "node:path"
 import { finished } from "node:stream/promises"
 import { execFile, spawn, type ChildProcess } from "node:child_process"
 import { promisify } from "node:util"
-import { NOTES_CANCELLED, isUnfinishedNoteFile } from "../domain/cancelNotes.ts"
+import { NOTES_CANCELLED } from "../domain/cancelNotes.ts"
 import { LocalSetupError, StudyError } from "../domain/errors.ts"
 import { CLOUD_CHUNK_BYTES, CLOUD_CHUNK_SECONDS, type PreparedAudio } from "../domain/groq.ts"
 import {
@@ -598,7 +598,7 @@ function wavSeconds(size: number): number | null {
 }
 
 const PROCESS_SNAPSHOT_SCRIPT =
-  "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'whisper-cli.exe' -or $_.Name -eq 'ffmpeg.exe' -or $_.Name -eq 'llama-cli.exe' } | ForEach-Object { $cmd = $_.CommandLine; if ($null -eq $cmd) { $cmd = '' }; $cmd = ($cmd -replace \"`t\", ' ' -replace \"`r|`n\", ' '); $exe = $_.ExecutablePath; if ($null -eq $exe) { $exe = '' }; Write-Output (('{0}`t{1}`t{2}' -f $_.ProcessId, $exe, $cmd)) }"
+  "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'whisper-cli.exe' -or $_.Name -eq 'ffmpeg.exe' } | ForEach-Object { $cmd = $_.CommandLine; if ($null -eq $cmd) { $cmd = '' }; $cmd = ($cmd -replace \"`t\", ' ' -replace \"`r|`n\", ' '); $exe = $_.ExecutablePath; if ($null -eq $exe) { $exe = '' }; Write-Output (('{0}`t{1}`t{2}' -f $_.ProcessId, $exe, $cmd)) }"
 
 function jobFile(appData: string): string {
   return path.join(appData, "transcription-job.json")
@@ -963,72 +963,17 @@ export async function clearTranscriptionJob(appData: string, id: string): Promis
   if (currentFlight?.id === id) currentFlight = null
 }
 
-/** A launch or a closed app rolls an interrupted run back. It does not resume. */
 export async function reconcileTranscriptionOnLaunch(appData: string): Promise<void> {
-  if (currentFlight && !currentFlight.settled) return
-  await abandonInterruptedNotes(appData)
-}
-
-export async function markTranscriptFiled(appData: string, id: string): Promise<void> {
-  await updateJob(appData, id, (job) => {
-    job.transcriptFiled = true
-  })
-}
-
-/**
- * Same rollback as Cancel. A partial transcript is deleted. Once the transcript
- * is filed, unfinished notes are deleted and the run is not started again.
- * A finished note is left in place.
- */
-export async function abandonInterruptedNotes(appData: string): Promise<void> {
   const saved = await readJob(appData)
-  const snapshot = await processSnapshot().catch(() => "")
-  await stopOwned(whisperExe(appData), null, snapshot)
+  const snapshot = await processSnapshot()
+  const own = whisperExe(appData)
+  const processes = parseProcessSnapshot(snapshot)
+  const keep = saved?.pid && whisperPidsToStop(processes, own, null).includes(saved.pid) ? saved.pid : null
+  await stopOwned(own, keep, snapshot)
   await stopOwned(ffmpegExe(appData), null, snapshot)
-  await stopOwned(path.join(notesBin(appData), LLAMA_ENGINE.file), null, snapshot)
-  const homes = new Set<string>()
-  if (saved?.home) homes.add(saved.home)
-  const settingsHome = await readSettingsHome(appData)
-  if (settingsHome) homes.add(settingsHome)
-  for (const home of homes) await removeUnfinishedNotes(home)
-  if (!saved) return
-  const ready = await jsonReady(saved.jsonPath)
-  if (ready && !saved.transcriptFiled) return
-  await removeWork(appData, saved)
-  await fs.rm(jobFile(appData), { force: true })
-}
-
-async function readSettingsHome(appData: string): Promise<string | null> {
-  try {
-    const json = JSON.parse(await fs.readFile(path.join(appData, "settings.json"), "utf8")) as { homeDirectory?: unknown }
-    return typeof json.homeDirectory === "string" && json.homeDirectory.trim() ? json.homeDirectory : null
-  } catch {
-    return null
-  }
-}
-
-async function removeUnfinishedNotes(home: string): Promise<void> {
-  const root = path.resolve(home)
-  if (root === path.parse(root).root) return
-  await walk(root)
-  async function walk(dir: string) {
-    const relative = path.relative(root, dir)
-    if (relative.startsWith("..") || path.isAbsolute(relative)) return
-    let entries
-    try {
-      entries = await fs.readdir(dir, { withFileTypes: true })
-    } catch {
-      return
-    }
-    for (const entry of entries) {
-      const full = path.join(dir, entry.name)
-      if (entry.isDirectory()) {
-        await walk(full)
-        continue
-      }
-      if (!entry.isFile() || !isUnfinishedNoteFile(entry.name)) continue
-      await fs.rm(full, { force: true })
-    }
+  if (saved && keep == null) {
+    saved.pid = null
+    await writeJob(appData, saved)
   }
 }
 

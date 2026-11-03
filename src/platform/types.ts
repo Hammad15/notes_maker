@@ -35,7 +35,6 @@ export interface FileStore {
   activeTranscription(): Promise<ActiveTranscription | null>
   clearTranscription(id: string): Promise<void>
   cancelMakeNotes(id: string): Promise<void>
-  markTranscriptFiled(id: string): Promise<void>
 }
 
 export interface Host {

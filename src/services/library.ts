@@ -776,7 +776,6 @@ export async function makeNotes(
     }
     await store.writeText(joinPath(study, "sources", `${noteId}.json`), `${JSON.stringify(source, null, 2)}\n`)
   }
-  if (input.jobId) await store.markTranscriptFiled(input.jobId)
   throwIfNoteCancelled(input.jobId)
   const notesStarted = Date.now()
   const afterTranscription = saved == null
