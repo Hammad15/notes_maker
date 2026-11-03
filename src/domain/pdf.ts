@@ -241,11 +241,6 @@ const boldItalicUrl = new URL("./fonts/LiberationSerif-BoldItalic.ttf", import.m
 const monoUrl = new URL("./fonts/LiberationMono-Regular.ttf", import.meta.url)
 
 async function readFont(url: URL): Promise<Uint8Array> {
-  if (url.protocol === "file:") {
-    const fs = await import("node:fs/promises")
-    const { fileURLToPath } = await import("node:url")
-    return new Uint8Array(await fs.readFile(fileURLToPath(url)))
-  }
   const response = await fetch(url)
   if (!response.ok) throw new Error("Could not load a PDF font.")
   return new Uint8Array(await response.arrayBuffer())

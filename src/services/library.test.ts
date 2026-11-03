@@ -79,9 +79,17 @@ function readyLocal(store: FileStore): void {
   store.localStatus = async () => ({ ready: true, model: "ggml-base.en", missing: [] })
 }
 
+function requestHref(input: RequestInfo | URL): string {
+  if (input instanceof URL) return input.href
+  if (typeof input === "string") return input
+  return input.url
+}
+
 function blockGroq(): { calls: number } {
   const seen = { calls: 0 }
-  vi.stubGlobal("fetch", async () => {
+  const native = globalThis.fetch
+  vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (requestHref(input).startsWith("file:")) return native(input, init)
     seen.calls += 1
     throw new Error("Groq must not run.")
   })
@@ -416,7 +424,9 @@ describe("course files", () => {
     await expect(makeNotes(store, request)).rejects.toThrow(/Set up local notes/)
     expect(await store.exists(path.join(course.path, "notes"))).toBe(false)
     let groqCalls = 0
-    vi.stubGlobal("fetch", async () => {
+    const nativeFetch = globalThis.fetch
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (requestHref(input).startsWith("file:")) return nativeFetch(input, init)
       groqCalls += 1
       return Response.json({ error: { message: "Groq must not run for local notes." } }, { status: 500 })
     })
