@@ -6,6 +6,7 @@ import path from "node:path"
 import { finished } from "node:stream/promises"
 import { execFile, spawn, type ChildProcess } from "node:child_process"
 import { promisify } from "node:util"
+import { NOTES_CANCELLED } from "../domain/cancelNotes.ts"
 import { LocalSetupError, StudyError } from "../domain/errors.ts"
 import { CLOUD_CHUNK_BYTES, CLOUD_CHUNK_SECONDS, type PreparedAudio } from "../domain/groq.ts"
 import {
@@ -428,11 +429,65 @@ function notesFailureDetail(error: unknown): string {
   return [`model: ${NOTES_MODEL.name}`, ...lines].join("\n").slice(0, 1500)
 }
 
+type NotesRun = {
+  jobId: string
+  pid: number | null
+  cancelled: boolean
+  child: ChildProcess | null
+}
+
+let notesRun: NotesRun | null = null
+
+function runNotesModel(cli: string, args: string[], cwd: string, run: NotesRun | null): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cli, args, {
+      cwd,
+      windowsHide: true,
+      stdio: ["ignore", "ignore", "pipe"],
+    })
+    if (run) {
+      run.child = child
+      run.pid = child.pid ?? null
+    }
+    let stderr = ""
+    child.stderr?.setEncoding("utf8")
+    child.stderr?.on("data", (chunk: string) => {
+      stderr = `${stderr}${chunk}`.slice(-8000)
+    })
+    let settled = false
+    const finish = (error: Error | null) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (!error) {
+        resolve()
+        return
+      }
+      Object.assign(error, { stderr })
+      reject(error)
+    }
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL")
+      finish(new Error("The notes model stopped before it finished the notes."))
+    }, 15 * 60_000)
+    child.once("error", (error) => finish(error))
+    child.once("exit", (code) => {
+      if (run?.cancelled) {
+        finish(new StudyError(NOTES_CANCELLED, "CANCELLED"))
+        return
+      }
+      if (code === 0) finish(null)
+      else finish(new Error("The notes model stopped before it finished the notes."))
+    })
+  })
+}
+
 /** One llama.cpp turn. The prompt stays in files so a long lecture fits on Windows. */
 export async function completeLocalNotes(
   appData: string,
   messages: LocalNotesMessage[],
   maxCompletionTokens: number,
+  jobId?: string,
 ): Promise<string> {
   if (!(await notesEngineReady(notesBin(appData))) || !(await notesModelReady(appData))) throw new LocalSetupError()
   const system = messages
@@ -454,9 +509,12 @@ export async function completeLocalNotes(
   await fs.writeFile(userPath, user, "utf8")
   const predict = Math.max(1, Math.floor(maxCompletionTokens))
   const cli = path.join(notesBin(appData), LLAMA_ENGINE.file)
+  const run: NotesRun | null = jobId ? { jobId, pid: null, cancelled: false, child: null } : null
+  if (run) notesRun = run
   let failed: unknown = null
   try {
-    await execFileAsync(
+    if (run?.cancelled) throw new StudyError(NOTES_CANCELLED, "CANCELLED")
+    await runNotesModel(
       cli,
       [
         "-m",
@@ -485,18 +543,18 @@ export async function completeLocalNotes(
         "--output-file",
         outPath,
       ],
-      {
-        windowsHide: true,
-        timeout: 15 * 60_000,
-        maxBuffer: 8 * 1024 * 1024,
-        cwd: notesBin(appData),
-      },
+      notesBin(appData),
+      run,
     )
   } catch (error) {
     failed = error
   } finally {
+    if (run && notesRun === run) notesRun = null
     await fs.rm(systemPath, { force: true })
     await fs.rm(userPath, { force: true })
+  }
+  if (run?.cancelled || (failed instanceof StudyError && failed.code === "CANCELLED")) {
+    throw new StudyError(NOTES_CANCELLED, "CANCELLED")
   }
   let raw = ""
   try {
@@ -866,6 +924,30 @@ export async function readActiveTranscription(appData: string): Promise<ActiveTr
   }
 }
 
+/** Stop this run. A partial transcript is removed. A finished transcript stays. */
+export async function cancelMakeNotes(appData: string, id: string): Promise<void> {
+  if (!id) return
+  const flight = currentFlight
+  if (flight && flight.id === id && !flight.settled) {
+    flight.cancelled = true
+    if (flight.pid) await killPid(flight.pid)
+  }
+  if (notesRun && notesRun.jobId === id) {
+    notesRun.cancelled = true
+    if (notesRun.pid) await killPid(notesRun.pid)
+    try {
+      notesRun.child?.kill("SIGKILL")
+    } catch {
+      // The notes model already exited.
+    }
+  }
+  const saved = await readJob(appData)
+  if (saved?.id !== id) return
+  if (await jsonReady(saved.jsonPath)) return
+  await removeWork(appData, saved)
+  await fs.rm(jobFile(appData), { force: true })
+}
+
 export async function clearTranscriptionJob(appData: string, id: string): Promise<void> {
   const saved = await readJob(appData)
   if (saved?.id === id) {
@@ -985,7 +1067,7 @@ async function attachJob(appData: string, saved: SavedTranscription, pid: number
   }
   if (flight.cancelled) {
     await killPid(pid)
-    throw new Error(TRANSCRIPTION_REPLACED)
+    if (!(await jsonReady(job.jsonPath))) throw new Error(TRANSCRIPTION_REPLACED)
   }
   const done = (await readJob(appData)) ?? job
   done.pid = null
@@ -1064,17 +1146,21 @@ async function startFresh(
     const left = whisperPidsToStop(parseProcessSnapshot(await processSnapshot()), own, null)
     if (left.length > 0) throw new Error("A transcription is already running. Wait for it to finish.")
   }
-  await runChild(
-    own,
-    ["-m", modelPath(appData, speechPace(request.pace)), "-f", wav, "-l", request.language?.trim() || "en", "-t", String(whisperThreadCount(os.availableParallelism(), speechPace(request.pace))), "-oj", "-of", jsonBase, "-np", "-pp", "-ng"],
-    flight,
-    appData,
-    stderrPath,
-    stdoutPath,
-    binDir(appData),
-    "Could not transcribe that recording.",
-  )
-  if (flight.cancelled) throw new Error(TRANSCRIPTION_REPLACED)
+  try {
+    await runChild(
+      own,
+      ["-m", modelPath(appData, speechPace(request.pace)), "-f", wav, "-l", request.language?.trim() || "en", "-t", String(whisperThreadCount(os.availableParallelism(), speechPace(request.pace))), "-oj", "-of", jsonBase, "-np", "-pp", "-ng"],
+      flight,
+      appData,
+      stderrPath,
+      stdoutPath,
+      binDir(appData),
+      "Could not transcribe that recording.",
+    )
+  } catch (error) {
+    if (!(flight.cancelled && (await jsonReady(jsonPath)))) throw error
+  }
+  if (flight.cancelled && !(await jsonReady(jsonPath))) throw new Error(TRANSCRIPTION_REPLACED)
   const done = (await readJob(appData)) ?? job
   done.pid = null
   done.phase = "writing"

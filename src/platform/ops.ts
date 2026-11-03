@@ -21,6 +21,7 @@ export const Ops = {
   transcribeMedia: "transcribeMedia",
   activeTranscription: "activeTranscription",
   clearTranscription: "clearTranscription",
+  cancelMakeNotes: "cancelMakeNotes",
   pickDirectory: "pickDirectory",
   pickMedia: "pickMedia",
   startInstaller: "startInstaller",

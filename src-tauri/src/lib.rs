@@ -605,9 +605,10 @@ async fn desktop_call(app: tauri::AppHandle, request: Value) -> Result<Value, St
                 .get("maxCompletionTokens")
                 .and_then(Value::as_u64)
                 .unwrap_or(1200);
+            let job_id = optional_string(&request, "jobId").unwrap_or_default();
             let app_data = app_data_dir();
             return match tauri::async_runtime::spawn_blocking(move || {
-                local_runtime::complete_local_notes(&app_data, &messages, max)
+                local_runtime::complete_local_notes(&app_data, &messages, max, &job_id)
             })
             .await
             {
@@ -987,6 +988,10 @@ fn desktop_request(app: tauri::AppHandle, request: Value) -> Result<Value, Strin
         "activeTranscription" => Ok(local_runtime::active_job_json(&app_data_dir())),
         "clearTranscription" => {
             local_runtime::clear_job(&app_data_dir(), require_str(&request, "id")?)?;
+            Ok(Value::Null)
+        }
+        "cancelMakeNotes" => {
+            local_runtime::cancel_make_notes(&app_data_dir(), require_str(&request, "id")?)?;
             Ok(Value::Null)
         }
         "setupLocal" => {

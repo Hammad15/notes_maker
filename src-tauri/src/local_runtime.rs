@@ -116,6 +116,7 @@ const LONG_RECORDING_SECONDS: f64 = 30.0 * 60.0;
 const MIN_LONG_ELAPSED_MS: u128 = 60_000;
 const SETUP_REQUIRED: &str = "Press Set up local notes before making notes.";
 const REPLACED: &str = "Transcription was replaced by a different recording.";
+const NOTES_CANCELLED: &str = "Note making was cancelled.";
 #[cfg(windows)]
 const PROCESS_SNAPSHOT_SCRIPT: &str = r#"Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'whisper-cli.exe' -or $_.Name -eq 'ffmpeg.exe' } | ForEach-Object { $cmd = $_.CommandLine; if ($null -eq $cmd) { $cmd = '' }; $cmd = ($cmd -replace "`t", ' ' -replace "`r|`n", ' '); $exe = $_.ExecutablePath; if ($null -eq $exe) { $exe = '' }; Write-Output (('{0}`t{1}`t{2}' -f $_.ProcessId, $exe, $cmd)) }"#;
 
@@ -631,10 +632,22 @@ fn notes_prompt(messages: &Value) -> Result<(String, String), String> {
     Ok((system.join("\n\n"), user_text))
 }
 
+struct NotesRun {
+    job_id: String,
+    pid: Mutex<u32>,
+    cancelled: Mutex<bool>,
+}
+
+fn notes_slot() -> &'static Mutex<Option<Arc<NotesRun>>> {
+    static SLOT: OnceLock<Mutex<Option<Arc<NotesRun>>>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
+}
+
 pub(crate) fn complete_local_notes(
     app_data: &Path,
     messages: &Value,
     max_tokens: u64,
+    job_id: &str,
 ) -> Result<String, String> {
     if !notes_engine_ready(&notes_bin(app_data)) || !notes_model_ready(app_data)? {
         return Err(SETUP_REQUIRED.into());
@@ -680,15 +693,39 @@ pub(crate) fn complete_local_notes(
         .arg(&user_path)
         .arg("--output-file")
         .arg(&out_path);
-    let ran = run_command(
+    let run = Arc::new(NotesRun {
+        job_id: job_id.to_string(),
+        pid: Mutex::new(0),
+        cancelled: Mutex::new(false),
+    });
+    if !job_id.is_empty() {
+        *lock_mutex(notes_slot()) = Some(run.clone());
+    }
+    let stop = run.clone();
+    let spawned = run.clone();
+    let ran = run_command_watched(
         command,
-        Duration::from_secs(15 * 60),
+        Some(Duration::from_secs(15 * 60)),
         "The notes model stopped before it finished the notes.",
+        &mut |_| {},
+        &|| *lock_mutex(&stop.cancelled),
+        &mut |pid| {
+            *lock_mutex(&spawned.pid) = pid;
+        },
     );
+    if !job_id.is_empty() {
+        let mut slot = lock_mutex(notes_slot());
+        if slot.as_ref().map(|item| item.job_id.as_str()) == Some(job_id) {
+            *slot = None;
+        }
+    }
     let output = fs::read_to_string(&out_path).unwrap_or_default();
     let _ = fs::remove_file(&system_path);
     let _ = fs::remove_file(&user_path);
     let _ = fs::remove_file(&out_path);
+    if *lock_mutex(&run.cancelled) {
+        return Err(NOTES_CANCELLED.into());
+    }
     let cleaned = clean_notes_reply(&output);
     if !cleaned.is_empty() {
         return Ok(cleaned);
@@ -1423,6 +1460,44 @@ pub(crate) fn reconcile_on_launch(app_data: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Stop this run. A partial transcript is removed. A finished transcript stays.
+pub(crate) fn cancel_make_notes(app_data: &Path, id: &str) -> Result<(), String> {
+    if id.is_empty() {
+        return Ok(());
+    }
+    {
+        let guard = lock_gate();
+        if let Some(flight) = guard.as_ref() {
+            if flight.job_id == id {
+                flight.cancel();
+                let pid = flight.pid();
+                if pid > 4 {
+                    kill_pid(pid);
+                }
+            }
+        }
+    }
+    {
+        let guard = lock_mutex(notes_slot());
+        if let Some(run) = guard.as_ref() {
+            if run.job_id == id {
+                *lock_mutex(&run.cancelled) = true;
+                let pid = *lock_mutex(&run.pid);
+                if pid > 4 {
+                    kill_pid(pid);
+                }
+            }
+        }
+    }
+    if let Some(job) = read_saved(app_data) {
+        if job.id == id && !json_ready(&job.json_path) {
+            remove_work_files(app_data, &job);
+            let _ = fs::remove_file(job_file(app_data));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn clear_job(app_data: &Path, id: &str) -> Result<(), String> {
     let finished = {
         let guard = lock_gate();
@@ -1622,15 +1697,21 @@ fn run_owned(
             if let Some(percent) = job.percent {
                 progress("transcribing", "Transcribing the recording", Some(percent), started);
             }
-            wait_for_pid(pid, Path::new(&job.stderr_path), flight, job.percent, |percent| {
+            if let Err(error) = wait_for_pid(pid, Path::new(&job.stderr_path), flight, job.percent, |percent| {
                 progress("transcribing", "Transcribing the recording", Some(percent), started);
                 update_saved(app_data, &job.id, |saved| {
                     saved.phase = "transcribing".into();
                     saved.label = "Transcribing the recording".into();
                     saved.percent = forward_percent(saved.percent, percent);
                 });
-            })?;
-            stopped(flight)?;
+            }) {
+                if !(flight.cancelled() && json_ready(&job.json_path)) {
+                    return Err(error);
+                }
+            }
+            if flight.cancelled() && !json_ready(&job.json_path) {
+                return Err(REPLACED.into());
+            }
             let mut done = read_saved(app_data).unwrap_or(job);
             done.pid = None;
             done.phase = "writing".into();
@@ -1842,8 +1923,15 @@ fn start_fresh(
         });
     });
     flight.set_pid(0);
-    waited?;
-    stopped(flight)?;
+    if let Err(error) = waited {
+        let ready = json_ready(&json_path.to_string_lossy());
+        if !(flight.cancelled() && ready) {
+            return Err(error);
+        }
+    }
+    if flight.cancelled() && !json_ready(&json_path.to_string_lossy()) {
+        return Err(REPLACED.into());
+    }
     let mut done = read_saved(app_data).unwrap_or(job);
     done.pid = None;
     done.phase = "writing".into();
@@ -2421,6 +2509,87 @@ mod tests {
         let elapsed = transcript["elapsedMs"].as_u64().unwrap();
         assert!(elapsed < 15 * 60 * 1000, "short clip took {elapsed} ms");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cancel_removes_a_partial_transcript_and_keeps_a_finished_one() {
+        let root = std::env::temp_dir().join(format!("create-notes-cancel-{}", super::now_ms()));
+        let tmp = root.join("tmp");
+        let notes = root.join("notes");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::create_dir_all(&notes).unwrap();
+        let finished = notes.join("Lecture.md");
+        std::fs::write(&finished, "finished note\n").unwrap();
+
+        let partial_json = tmp.join("partial.json");
+        let partial_wav = tmp.join("partial.wav");
+        std::fs::write(&partial_json, "{").unwrap();
+        std::fs::write(&partial_wav, "wav").unwrap();
+        super::write_saved(&root, &saved_job(&root, "partial", &partial_json, &partial_wav)).unwrap();
+        super::cancel_make_notes(&root, "partial").unwrap();
+        assert!(!partial_json.exists());
+        assert!(!partial_wav.exists());
+        assert!(!super::job_file(&root).exists());
+        assert_eq!(std::fs::read_to_string(&finished).unwrap(), "finished note\n");
+
+        let complete_json = tmp.join("complete.json");
+        let complete_wav = tmp.join("complete.wav");
+        std::fs::write(
+            &complete_json,
+            r#"{"transcription":[{"offsets":{"from":0,"to":1000},"text":"Cells divide."}]}"#,
+        )
+        .unwrap();
+        std::fs::write(&complete_wav, "wav").unwrap();
+        super::write_saved(
+            &root,
+            &saved_job(&root, "complete", &complete_json, &complete_wav),
+        )
+        .unwrap();
+        super::cancel_make_notes(&root, "complete").unwrap();
+        assert!(complete_json.exists());
+        assert!(complete_wav.exists());
+        assert!(super::job_file(&root).exists());
+        assert_eq!(std::fs::read_to_string(&finished).unwrap(), "finished note\n");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn saved_job(
+        root: &std::path::Path,
+        id: &str,
+        json_path: &std::path::Path,
+        wav: &std::path::Path,
+    ) -> super::SavedJob {
+        super::SavedJob {
+            id: id.into(),
+            media_path: "lecture.mp3".into(),
+            home: root.to_string_lossy().into_owned(),
+            course_id: "course".into(),
+            module_id: None,
+            module_name: None,
+            new_module_name: None,
+            phase: "transcribing".into(),
+            label: "Transcribing the recording".into(),
+            percent: Some(10),
+            pid: None,
+            stderr_path: root
+                .join("tmp")
+                .join(format!("{id}.stderr"))
+                .to_string_lossy()
+                .into_owned(),
+            stdout_path: root
+                .join("tmp")
+                .join(format!("{id}.stdout"))
+                .to_string_lossy()
+                .into_owned(),
+            json_path: json_path.to_string_lossy().into_owned(),
+            wav_path: wav.to_string_lossy().into_owned(),
+            started_ms: 1,
+            duration_seconds: None,
+            pace: "clearer".into(),
+            language: "en".into(),
+            transcribe_started_ms: 1,
+            model: "ggml-base.en".into(),
+        }
     }
 
     #[cfg(windows)]

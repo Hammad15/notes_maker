@@ -8,6 +8,7 @@ import {
   useState,
   type ReactNode,
 } from "react"
+import { notesWereCancelled } from "../domain/cancelNotes"
 import { StudyError, messageOf } from "../domain/errors"
 import type { LocalRuntimeStatus, SetupProgress, TranscriptionProgress, TranscriptionTarget } from "../domain/localSpeech"
 import {
@@ -29,6 +30,7 @@ import {
   listCourses,
   loadSettings,
   makeNotes,
+  requestNoteCancel,
   saveSettings,
   type CourseSummary,
   type MakeNotesInput,
@@ -110,6 +112,7 @@ interface LibraryState {
   setSpeechPace: (pace: SpeechPace) => Promise<void>
   addCourse: (name: string) => Promise<CourseSummary>
   startMakeNotes: (input: MakeNotesInput) => void
+  cancelJob: (id: string) => void
   dismissJob: (id: string) => void
   dismissTour: () => Promise<void>
 }
@@ -369,7 +372,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
           })
           setJobs((current) => current.filter((job) => job.id !== id))
         } catch (err) {
-          if (transcriptionWasReplaced(err)) {
+          if (transcriptionWasReplaced(err) || notesWereCancelled(err)) {
             setJobs((current) => current.filter((job) => job.id !== id))
             return
           }
@@ -434,6 +437,17 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     }
   }, [ready, startMakeNotes, store])
 
+  const cancelJob = useCallback(
+    (id: string) => {
+      requestNoteCancel(id)
+      setJobs((current) => current.filter((job) => job.id !== id))
+      void store.cancelMakeNotes(id).catch(() => {
+        // The run already stopped, or there was nothing left to remove.
+      })
+    },
+    [store],
+  )
+
   const dismissJob = useCallback((id: string) => {
     setJobs((current) => current.filter((job) => job.id !== id))
   }, [])
@@ -484,6 +498,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       setSpeechPace,
       addCourse,
       startMakeNotes,
+      cancelJob,
       dismissJob,
       dismissTour,
     }),
@@ -506,6 +521,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       setSpeechPace,
       addCourse,
       startMakeNotes,
+      cancelJob,
       dismissJob,
       dismissTour,
     ],

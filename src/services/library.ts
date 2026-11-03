@@ -1,3 +1,4 @@
+import { NOTES_CANCELLED, notesWereCancelled, pathsToRemoveOnCancel } from "../domain/cancelNotes"
 import { withNoteHeader } from "../domain/compose"
 import { renderPdf } from "../domain/pdf"
 import { parseNoteFile, writeFrontmatter, type NoteMeta } from "../domain/frontmatter"
@@ -125,6 +126,21 @@ const EMPTY_SETTINGS: Settings = {
 }
 
 let pendingSettingsWrite: Promise<void> = Promise.resolve()
+
+const cancelledJobs = new Set<string>()
+
+/** The progress cancel control asks the in-flight run to stop and roll back. */
+export function requestNoteCancel(jobId: string): void {
+  if (jobId) cancelledJobs.add(jobId)
+}
+
+function throwIfNoteCancelled(jobId: string | undefined): void {
+  if (jobId && cancelledJobs.has(jobId)) throw new StudyError(NOTES_CANCELLED, "CANCELLED")
+}
+
+function forgetNoteCancel(jobId: string | undefined): void {
+  if (jobId) cancelledJobs.delete(jobId)
+}
 
 function settingsPath(appData: string): string {
   return joinPath(appData, "settings.json")
@@ -598,16 +614,53 @@ async function notesFromLocal(
   content: NoteContent,
   style?: NoteStyle | null,
   onStep?: (done: number, total: number) => void,
+  jobId?: string,
 ): Promise<string> {
   const body = await writeLectureNotes({
     language: notesLanguage(languageCode),
     content,
     style,
-    onStep,
+    onStep: (done, total) => {
+      throwIfNoteCancelled(jobId)
+      onStep?.(done, total)
+    },
     writer: "local",
-    complete: (messages, maxCompletionTokens) => store.completeLocal(messages, maxCompletionTokens),
+    complete: (messages, maxCompletionTokens) => {
+      throwIfNoteCancelled(jobId)
+      return store.completeLocal(messages, maxCompletionTokens, jobId)
+    },
   })
   return withNoteHeader(content, body)
+}
+
+function partialNotePath(filePath: string): string {
+  return `${filePath}.partial`
+}
+
+/** Stage the note, then copy it into place. Cancel deletes the staged files only. */
+async function writeFinishedNote(
+  store: FileStore,
+  markdownPath: string,
+  pdfPath: string,
+  markdown: string,
+  pdf: Uint8Array,
+  jobId: string | undefined,
+  incomplete: string[],
+): Promise<void> {
+  const partialMarkdown = partialNotePath(markdownPath)
+  const partialPdf = partialNotePath(pdfPath)
+  incomplete.push(partialMarkdown, partialPdf)
+  await store.writeText(partialMarkdown, markdown)
+  await store.writeBytes(partialPdf, pdf)
+  throwIfNoteCancelled(jobId)
+  await store.writeText(markdownPath, markdown)
+  await store.writeBytes(pdfPath, pdf)
+  const markdownIndex = incomplete.indexOf(partialMarkdown)
+  if (markdownIndex >= 0) incomplete.splice(markdownIndex, 1)
+  const pdfIndex = incomplete.indexOf(partialPdf)
+  if (pdfIndex >= 0) incomplete.splice(pdfIndex, 1)
+  await store.remove(partialMarkdown)
+  await store.remove(partialPdf)
 }
 
 export async function makeNotes(
@@ -632,11 +685,20 @@ export async function makeNotes(
   const addingBeside = input.noteChoice === "add" && saved?.note != null
   const probe = await store.probeMedia(input.mediaPath)
   const title = titleFromMediaPath(input.mediaPath)
+  const rollback = {
+    transcriptionComplete: saved != null,
+    partialTranscriptPaths: [] as string[],
+    incompleteNotePaths: [] as string[],
+    finishedNotePaths: saved?.note ? [saved.note.markdownPath, saved.note.pdfPath] : [],
+  }
+  try {
+  throwIfNoteCancelled(input.jobId)
   let transcript: Transcript
   let existingNote: NoteInfo | null = null
   if (saved) {
     transcript = saved.transcript
     existingNote = addingBeside ? null : saved.note
+    rollback.transcriptionComplete = true
   } else {
     if (!localLanguageSupported(language)) {
       throw new StudyError("Local notes in this build use the English speech models.", "LANGUAGE")
@@ -653,6 +715,7 @@ export async function makeNotes(
       pace,
       language: language.code,
     })
+    rollback.transcriptionComplete = true
   }
   hooks?.onWriting?.()
 
@@ -713,6 +776,7 @@ export async function makeNotes(
     }
     await store.writeText(joinPath(study, "sources", `${noteId}.json`), `${JSON.stringify(source, null, 2)}\n`)
   }
+  throwIfNoteCancelled(input.jobId)
   const notesStarted = Date.now()
   const afterTranscription = saved == null
   const notesTimer = setInterval(() => {
@@ -740,7 +804,7 @@ export async function makeNotes(
   }
   let body: string
   try {
-    body = await notesFromLocal(store, language.code, content, null, publishWriting)
+    body = await notesFromLocal(store, language.code, content, null, publishWriting, input.jobId)
   } finally {
     clearInterval(notesTimer)
   }
@@ -753,10 +817,20 @@ export async function makeNotes(
     updatedAt,
     provider: input.provider,
   }
+  const markdown = writeFrontmatter(meta, body)
+  const pdf = await renderPdf(body)
   if (existingNote) {
-    await store.writeText(existingNote.markdownPath, writeFrontmatter(meta, body))
-    await store.writeBytes(existingNote.pdfPath, await renderPdf(body))
+    await writeFinishedNote(
+      store,
+      existingNote.markdownPath,
+      existingNote.pdfPath,
+      markdown,
+      pdf,
+      input.jobId,
+      rollback.incompleteNotePaths,
+    )
     await touchCourse(store, course, updatedAt)
+    forgetNoteCancel(input.jobId)
     return {
       ...existingNote,
       title: content.title,
@@ -771,9 +845,9 @@ export async function makeNotes(
   const markdownPath = joinPath(notesDir, `${stem}.md`)
   const pdfPath = joinPath(notesDir, `${stem}.pdf`)
   await store.mkdir(notesDir)
-  await store.writeText(markdownPath, writeFrontmatter(meta, body))
-  await store.writeBytes(pdfPath, await renderPdf(body))
+  await writeFinishedNote(store, markdownPath, pdfPath, markdown, pdf, input.jobId, rollback.incompleteNotePaths)
   await touchCourse(store, course, updatedAt)
+  forgetNoteCancel(input.jobId)
   return {
     id: noteId,
     title: content.title,
@@ -788,6 +862,23 @@ export async function makeNotes(
     provider: input.provider,
     hasHistory: false,
     mediaFileName: fileName(input.mediaPath),
+  }
+  } catch (error) {
+    const cancelled = (!!input.jobId && cancelledJobs.has(input.jobId)) || notesWereCancelled(error)
+    if (cancelled) {
+      for (const target of pathsToRemoveOnCancel(rollback)) {
+        try {
+          await store.remove(target)
+        } catch {
+          // The partial file is already gone.
+        }
+      }
+      forgetNoteCancel(input.jobId)
+      if (notesWereCancelled(error)) throw error
+      throw new StudyError(NOTES_CANCELLED, "CANCELLED")
+    }
+    forgetNoteCancel(input.jobId)
+    throw error
   }
 }
 
