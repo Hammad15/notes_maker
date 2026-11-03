@@ -1,4 +1,4 @@
-export const FEEDBACK_EMAIL = "feedback@example.com"
+export const FEEDBACK_EMAIL = "createnotes@protonmail.com"
 
 export function feedbackMailto(message: string, replyEmail: string): string {
   const text = message.trim()
