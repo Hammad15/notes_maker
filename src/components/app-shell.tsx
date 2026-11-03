@@ -146,9 +146,6 @@ function JobBanner() {
                 style={{ width: `${barPercent(job.progress) ?? 0}%` }}
               />
             </div>
-            <p className="mt-2 text-xs text-muted-foreground">
-              This window stays open until the notes and PDF are saved.
-            </p>
           </div>
         ) : (
           <div
