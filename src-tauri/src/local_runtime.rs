@@ -689,12 +689,14 @@ pub(crate) fn complete_local_notes(
     let _ = fs::remove_file(&system_path);
     let _ = fs::remove_file(&user_path);
     let _ = fs::remove_file(&out_path);
+    // llama writes the prompt into the output file before it generates. A timeout
+    // still leaves that prompt on disk, and it is not a finished reply.
+    if let Err(error) = ran {
+        return Err(error);
+    }
     let cleaned = clean_notes_reply(&output);
     if !cleaned.is_empty() {
         return Ok(cleaned);
-    }
-    if ran.is_err() {
-        return Err("The notes model stopped before it finished the notes.".into());
     }
     Err("The notes model did not return study notes.".into())
 }

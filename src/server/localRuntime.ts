@@ -505,8 +505,8 @@ export async function completeLocalNotes(
     raw = ""
   }
   await fs.rm(outPath, { force: true })
-  const text = cleanNotesReply(raw)
-  if (text) return text
+  // llama writes the prompt into the output file before it generates. A timeout
+  // still leaves that prompt on disk, and it is not a finished reply.
   if (failed) {
     throw new StudyError(
       "The notes model stopped before it finished the notes.",
@@ -514,6 +514,8 @@ export async function completeLocalNotes(
       notesFailureDetail(failed),
     )
   }
+  const text = cleanNotesReply(raw)
+  if (text) return text
   throw new StudyError("The notes model did not return study notes.", "NOTES", `model: ${NOTES_MODEL.name}`)
 }
 
