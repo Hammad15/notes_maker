@@ -185,6 +185,12 @@ describe("transcription stays usable", () => {
     expect(writingPercent(0, 0, false)).toBe(1)
     expect(writingPercent(0, 4, false)).toBe(1)
     expect(writingPercent(1, 4, false)).toBe(24)
+    expect(writingPercent(0, 4, false, 10 * 60_000)).toBe(13)
+    expect(writingPercent(0, 4, false, 60 * 60_000)).toBe(21)
+    expect(writingPercent(0, 0, false, 10 * 60_000)).toBe(54)
+    expect(writingPercent(0, 0, false, 60 * 60_000)).toBeLessThan(95)
+    expect(writingPercent(0, 0, true, 10 * 60_000)).toBe(95)
+    expect(writingPercent(0, 0, true, 60 * 60_000)).toBeLessThan(99)
     const lectureWritingStarted = 1_700_000_000_000
     const transcriptionStarted = lectureWritingStarted - 160 * 60_000
     const afterHalfHour = lectureWritingStarted + 30 * 60_000

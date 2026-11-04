@@ -780,11 +780,12 @@ export async function makeNotes(
   const afterTranscription = saved == null
   let writingDone = 0
   let writingTotal = 0
+  let stepStartedMs = notesStarted
   const publishWritingProgress = () => {
     hooks?.onProgress?.({
       phase: "writing",
       label: "Writing the notes and PDF",
-      percent: writingPercent(writingDone, writingTotal, afterTranscription),
+      percent: writingPercent(writingDone, writingTotal, afterTranscription, Date.now() - stepStartedMs),
       jobId: input.jobId,
       writingDone,
       writingTotal,
@@ -793,6 +794,7 @@ export async function makeNotes(
   }
   const notesTimer = setInterval(publishWritingProgress, 1000)
   const publishWriting = (done: number, total: number) => {
+    if (done !== writingDone) stepStartedMs = Date.now()
     writingDone = done
     writingTotal = total
     publishWritingProgress()

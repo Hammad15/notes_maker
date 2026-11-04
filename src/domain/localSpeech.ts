@@ -327,16 +327,37 @@ export function notesRunPercent(elapsedMs: number, afterTranscription: boolean):
   return Math.min(99, TRANSCRIPTION_PERCENT_END + Math.round((elapsed / budget) * 9))
 }
 
-/** Bar position from finished notes steps. 90–99 after transcription, otherwise 0–95. */
-export function writingPercent(done: number, total: number, afterTranscription: boolean): number {
+/** A running notes step eases through its own slice and stops short of the next one. */
+const WRITING_STEP_EASE_MS = 12 * 60 * 1000
+
+function writingStepFraction(elapsedMs: number): number {
+  if (!Number.isFinite(elapsedMs) || elapsedMs <= 0) return 0
+  return Math.min(0.9, 1 - Math.exp(-elapsedMs / WRITING_STEP_EASE_MS))
+}
+
+/**
+ * Bar position from finished notes steps, plus the step that is still running.
+ * 90–99 after transcription, otherwise 1–95. The running step never fills its slice.
+ */
+export function writingPercent(
+  done: number,
+  total: number,
+  afterTranscription: boolean,
+  stepElapsedMs = 0,
+): number {
   const safeDone = Number.isFinite(done) ? Math.max(0, done) : 0
   const safeTotal = Number.isFinite(total) ? Math.max(0, total) : 0
-  const fraction = safeTotal > 0 ? Math.min(1, safeDone / safeTotal) : 0
+  const steps = Math.max(1, safeTotal)
+  const finished = Math.min(safeDone, steps)
+  const running = finished < steps
+  const start = finished / steps
+  const end = running ? (finished + 1) / steps : 1
+  const position = running ? start + (end - start) * writingStepFraction(stepElapsedMs) : 1
   if (afterTranscription) {
-    return Math.min(99, TRANSCRIPTION_PERCENT_END + Math.round(fraction * (99 - TRANSCRIPTION_PERCENT_END)))
+    return Math.min(99, TRANSCRIPTION_PERCENT_END + Math.round(position * (99 - TRANSCRIPTION_PERCENT_END)))
   }
-  if (fraction <= 0) return 1
-  return Math.min(95, Math.max(1, Math.round(fraction * 95)))
+  if (position <= 0) return 1
+  return Math.min(95, Math.max(1, Math.round(position * 95)))
 }
 
 /**
