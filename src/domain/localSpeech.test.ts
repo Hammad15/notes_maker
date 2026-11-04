@@ -15,6 +15,8 @@ import {
   chunkTranscriptionPercent,
   notesRunPercent,
   remainingSeconds,
+  writingPercent,
+  writingRemainingSeconds,
   scaleTranscriptionPercent,
   sameSavedRecording,
   SPEECH_MODEL,
@@ -176,6 +178,64 @@ describe("transcription stays usable", () => {
     expect(notesRunPercent(0, false)).toBe(0)
     expect(notesRunPercent(1_000, false)).toBe(5)
     expect(notesRunPercent(0, true)).toBe(90)
+    expect(notesRunPercent(20_000, true)).toBe(99)
+    expect(writingPercent(0, 0, true)).toBe(90)
+    expect(writingPercent(1, 4, true)).toBe(92)
+    expect(writingPercent(4, 4, true)).toBe(99)
+    expect(writingPercent(0, 4, false)).toBe(0)
+    expect(writingPercent(1, 4, false)).toBe(24)
+    const lectureWritingStarted = 1_700_000_000_000
+    const transcriptionStarted = lectureWritingStarted - 160 * 60_000
+    const afterHalfHour = lectureWritingStarted + 30 * 60_000
+    expect(writingRemainingSeconds(lectureWritingStarted, 0, 4, afterHalfHour)).toBeNull()
+    expect(writingRemainingSeconds(lectureWritingStarted, 1, 4, afterHalfHour)).toBe(5400)
+    expect(
+      localJobMessage(
+        "ISC 102 U05.mp3",
+        {
+          phase: "writing",
+          label: "Writing the notes and PDF",
+          percent: 99,
+          startedMs: transcriptionStarted,
+          writingDone: 0,
+          writingTotal: 0,
+          writingStartedMs: lectureWritingStarted,
+        },
+        afterHalfHour,
+      ),
+    ).toBe("Writing the notes and PDF for ISC 102 U05.mp3…")
+    expect(
+      barPercent(
+        {
+          phase: "writing",
+          label: "Writing the notes and PDF",
+          percent: 90,
+          startedMs: transcriptionStarted,
+          writingDone: 0,
+          writingTotal: 0,
+          writingStartedMs: lectureWritingStarted,
+        },
+        afterHalfHour,
+      ),
+    ).toBe(90)
+    expect(
+      localJobMessage(
+        "ISC 102 U05.mp3",
+        {
+          phase: "writing",
+          label: "Writing the notes and PDF",
+          percent: 92,
+          startedMs: transcriptionStarted,
+          writingDone: 1,
+          writingTotal: 4,
+          writingStartedMs: lectureWritingStarted,
+        },
+        afterHalfHour,
+      ),
+    ).toBe("Writing the notes and PDF for ISC 102 U05.mp3… 92% · about 1 hr 30 min left")
+    expect(
+      remainingSeconds(transcriptionStarted, 99, afterHalfHour),
+    ).toBe(115)
     const started = 1_700_000_000_000
     expect(remainingSeconds(started, 25, started + 60_000)).toBe(180)
     expect(remainingSeconds(started, 0, started + 60_000)).toBeNull()

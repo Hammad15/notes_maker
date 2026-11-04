@@ -163,6 +163,10 @@ export interface TranscriptionProgress {
   percent: number | null
   jobId?: string
   startedMs?: number | null
+  /** Finished notes-model steps. The writing countdown uses these, not the 90–99 bar. */
+  writingDone?: number | null
+  writingTotal?: number | null
+  writingStartedMs?: number | null
 }
 
 /** The recording plus where the notes will be filed. */
@@ -305,7 +309,10 @@ export function chunkTranscriptionPercent(
   return Math.max(0, Math.min(99, Math.round(start + (end - start) * fraction)))
 }
 
-/** Overall percent while the notes request is in flight. */
+/**
+ * Short heartbeat for a notes request that has no step count yet.
+ * Reaches 99 after 20 seconds, so it must not drive the writing countdown.
+ */
 export function notesRunPercent(elapsedMs: number, afterTranscription: boolean): number {
   const budget = 20_000
   const elapsed = Math.max(0, elapsedMs)
@@ -316,9 +323,60 @@ export function notesRunPercent(elapsedMs: number, afterTranscription: boolean):
   return Math.min(99, TRANSCRIPTION_PERCENT_END + Math.round((elapsed / budget) * 9))
 }
 
-/** The bar may move only when both the percent and the time remaining are known. */
+/** Bar position from finished notes steps. 90–99 after transcription, otherwise 0–95. */
+export function writingPercent(done: number, total: number, afterTranscription: boolean): number {
+  const safeDone = Number.isFinite(done) ? Math.max(0, done) : 0
+  const safeTotal = Number.isFinite(total) ? Math.max(0, total) : 0
+  const fraction = safeTotal > 0 ? Math.min(1, safeDone / safeTotal) : 0
+  if (afterTranscription) {
+    return Math.min(99, TRANSCRIPTION_PERCENT_END + Math.round(fraction * (99 - TRANSCRIPTION_PERCENT_END)))
+  }
+  if (fraction <= 0) return 0
+  return Math.min(95, Math.max(1, Math.round(fraction * 95)))
+}
+
+/**
+ * Seconds left from finished notes steps.
+ * No estimate until one step has finished. A percent pinned at 99 is not a rate.
+ */
+export function writingRemainingSeconds(
+  startedMs: number | null | undefined,
+  done: number | null | undefined,
+  total: number | null | undefined,
+  now = Date.now(),
+): number | null {
+  if (startedMs == null || done == null || total == null) return null
+  if (!Number.isFinite(startedMs) || !Number.isFinite(done) || !Number.isFinite(total)) return null
+  if (done <= 0 || total <= 0 || done >= total) return null
+  const elapsed = now - startedMs
+  if (elapsed < 1000) return null
+  const remaining = Math.round((elapsed * (total - done)) / done / 1000)
+  if (!Number.isFinite(remaining) || remaining < 0) return null
+  return remaining
+}
+
+function writingStepsKnown(progress: TranscriptionProgress): boolean {
+  return progress.phase === "writing" && typeof progress.writingTotal === "number"
+}
+
+/**
+ * The bar may move only when the time remaining is known.
+ * Writing holds the post-transcription percent until the first notes step finishes,
+ * and does not turn that hold into a countdown.
+ */
 export function barPercent(progress?: TranscriptionProgress | null, now = Date.now()): number | null {
   if (progress?.percent == null) return null
+  if (writingStepsKnown(progress)) {
+    if (progress.percent <= 0) return null
+    const remaining = writingRemainingSeconds(
+      progress.writingStartedMs,
+      progress.writingDone,
+      progress.writingTotal,
+      now,
+    )
+    if (remaining == null) return progress.percent >= TRANSCRIPTION_PERCENT_END ? progress.percent : null
+    return progress.percent
+  }
   if (remainingSeconds(progress.startedMs, progress.percent, now) == null) return null
   return progress.percent
 }
@@ -429,6 +487,18 @@ export function localJobMessage(
   progress?: TranscriptionProgress | null,
   now = Date.now(),
 ): string {
+  if (progress && writingStepsKnown(progress)) {
+    const measured = barPercent(progress, now)
+    const remaining = writingRemainingSeconds(
+      progress.writingStartedMs,
+      progress.writingDone,
+      progress.writingTotal,
+      now,
+    )
+    const suffix =
+      measured == null || remaining == null ? "" : ` ${measured}% · ${formatRemaining(remaining)}`
+    return `Writing the notes and PDF for ${fileLabel}…${suffix}`
+  }
   const measured = barPercent(progress, now)
   const remaining = measured == null ? null : remainingSeconds(progress?.startedMs, measured, now)
   const suffix =

@@ -6,10 +6,9 @@ import { restyleInstruction } from "../domain/groq"
 import { writeLectureNotes, type NoteStyle } from "../domain/lectureNotes"
 import { localLanguageSupported, notesLanguage } from "../domain/language"
 import {
-  notesRunPercent,
   sameSavedRecording,
   speechPace,
-  TRANSCRIPTION_PERCENT_END,
+  writingPercent,
   type SpeechPace,
   type TranscriptionProgress,
 } from "../domain/localSpeech"
@@ -715,28 +714,24 @@ export async function makeNotes(
   }
   const notesStarted = Date.now()
   const afterTranscription = saved == null
-  const notesTimer = setInterval(() => {
+  let writingDone = 0
+  let writingTotal = 0
+  const publishWritingProgress = () => {
     hooks?.onProgress?.({
       phase: "writing",
       label: "Writing the notes and PDF",
-      percent: notesRunPercent(Date.now() - notesStarted, afterTranscription),
+      percent: writingPercent(writingDone, writingTotal, afterTranscription),
       jobId: input.jobId,
+      writingDone,
+      writingTotal,
+      writingStartedMs: notesStarted,
     })
-  }, 1000)
+  }
+  const notesTimer = setInterval(publishWritingProgress, 1000)
   const publishWriting = (done: number, total: number) => {
-    const fraction = total > 0 ? Math.min(1, done / total) : 0
-    const stepped = afterTranscription
-      ? Math.min(99, TRANSCRIPTION_PERCENT_END + Math.round(fraction * (99 - TRANSCRIPTION_PERCENT_END)))
-      : fraction <= 0
-        ? 0
-        : Math.min(95, Math.max(1, Math.round(fraction * 95)))
-    const timed = notesRunPercent(Date.now() - notesStarted, afterTranscription)
-    hooks?.onProgress?.({
-      phase: "writing",
-      label: "Writing the notes and PDF",
-      percent: Math.max(timed, stepped),
-      jobId: input.jobId,
-    })
+    writingDone = done
+    writingTotal = total
+    publishWritingProgress()
   }
   let body: string
   try {

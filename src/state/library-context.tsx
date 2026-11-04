@@ -16,6 +16,7 @@ import {
   scaleTranscriptionPercent,
   speechModel,
   speechPace,
+  TRANSCRIPTION_PERCENT_END,
   transcriptionWasReplaced,
   type SpeechPace,
 } from "../domain/localSpeech"
@@ -78,9 +79,21 @@ function mergeProgress(job: Job, progress: TranscriptionProgress): Job {
       },
     }
   }
+  if (progress.phase === "writing") {
+    return {
+      ...job,
+      progress: {
+        ...progress,
+        percent: progress.percent,
+        startedMs: progress.startedMs ?? job.progress?.startedMs ?? null,
+        writingDone: progress.writingDone ?? job.progress?.writingDone ?? null,
+        writingTotal: progress.writingTotal ?? job.progress?.writingTotal ?? null,
+        writingStartedMs: progress.writingStartedMs ?? job.progress?.writingStartedMs ?? null,
+      },
+    }
+  }
   const current = job.progress?.percent ?? null
-  const incoming =
-    progress.phase === "writing" ? progress.percent : scaleTranscriptionPercent(progress.percent)
+  const incoming = scaleTranscriptionPercent(progress.percent)
   return {
     ...job,
     progress: {
@@ -358,8 +371,11 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
                     progress: {
                       phase: "writing",
                       label: "Writing the notes and PDF",
-                      percent: continued ? Math.min(99, Math.max(previous, 90)) : null,
+                      percent: continued ? TRANSCRIPTION_PERCENT_END : null,
                       startedMs: job.progress?.startedMs ?? Date.now(),
+                      writingDone: 0,
+                      writingTotal: 0,
+                      writingStartedMs: Date.now(),
                       jobId: id,
                     },
                   }
