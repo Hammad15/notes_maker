@@ -703,9 +703,10 @@ pub(crate) fn complete_local_notes(
     }
     let stop = run.clone();
     let spawned = run.clone();
+    // One section can spend longer than 15 minutes in CPU prompt processing and still be working.
     let ran = run_command_watched(
         command,
-        Some(Duration::from_secs(15 * 60)),
+        Some(Duration::from_secs(60 * 60)),
         "The notes model stopped before it finished the notes.",
         &mut |_| {},
         &|| *lock_mutex(&stop.cancelled),

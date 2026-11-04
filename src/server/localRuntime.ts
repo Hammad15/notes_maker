@@ -466,10 +466,11 @@ function runNotesModel(cli: string, args: string[], cwd: string, run: NotesRun |
       Object.assign(error, { stderr })
       reject(error)
     }
+    // One section can spend longer than 15 minutes in CPU prompt processing and still be working.
     const timer = setTimeout(() => {
       child.kill("SIGKILL")
       finish(new Error("The notes model stopped before it finished the notes."))
-    }, 15 * 60_000)
+    }, 60 * 60_000)
     child.once("error", (error) => finish(error))
     child.once("exit", (code) => {
       if (run?.cancelled) {
