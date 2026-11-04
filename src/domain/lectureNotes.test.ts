@@ -4,6 +4,7 @@ import {
   estimateTokens,
   GROQ_REQUEST_TOKEN_BUDGET,
   LOCAL_REQUEST_TOKEN_BUDGET,
+  localStudyNotesPrompt,
   mergeMarkdownSections,
   packSpeech,
   requestTokens,
@@ -288,5 +289,34 @@ describe("one lecture outline", () => {
     expect(groq.body).toContain("## Prices")
     expect(local.body).toContain("## Prices")
     expect(local.body).toContain("Buyers move through the market.")
+  })
+
+  it("gives local notes a shorter study prompt than Groq", async () => {
+    const prompts: string[] = []
+    const run = (writer: "groq" | "local") =>
+      writeLectureNotes({
+        language: { code: "en", name: "English" },
+        writer,
+        content: content([{ start: 0, end: 5, text: "Cells divide once." }]),
+        complete: async (messages) => {
+          const system = messages[0]?.content ?? ""
+          if (/compact summary/i.test(system)) return "0-5 | Cells divide once."
+          if (/outline of the whole lecture/i.test(system)) {
+            return JSON.stringify({ sections: [{ title: "Cells", ranges: [{ start: 0, end: 5 }] }] })
+          }
+          prompts.push(system)
+          return "## Cells\n\n- Cells divide once.\n"
+        },
+      })
+    await run("groq")
+    await run("local")
+    expect(prompts).toHaveLength(2)
+    expect(prompts[1]).toBe(localStudyNotesPrompt({ code: "en", name: "English" }))
+    expect(prompts[1]).toBe(
+      "Write study notes in English. Study notes only. Do not copy transcript lines. Cut repeated points.",
+    )
+    expect(prompts[0]).toContain("Keep the density of the speech")
+    expect(prompts[1].length).toBeLessThan(prompts[0].length)
+    expect(prompts[1]).not.toContain("Keep the density of the speech")
   })
 })

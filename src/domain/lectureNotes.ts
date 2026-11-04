@@ -488,7 +488,13 @@ function summarySystem(language: NotesLanguage): string {
   ].join(" ")
 }
 
-function fillSystem(language: NotesLanguage, style: NoteStyle | null): string {
+/** Shorter than Groq's study-notes prompt. Qwen copies a long prompt and the transcript. */
+export function localStudyNotesPrompt(language: NotesLanguage): string {
+  return `Write study notes in ${language.name}. Study notes only. Do not copy transcript lines. Cut repeated points.`
+}
+
+function fillSystem(language: NotesLanguage, style: NoteStyle | null, writer: NotesWriter): string {
+  if (writer === "local" && !style) return localStudyNotesPrompt(language)
   const shape = style ? restyleInstruction(language, style.preset, style.prompt) : studyNotesInstruction(language)
   const layout =
     style?.preset === "table"
@@ -734,7 +740,7 @@ export async function writeLectureNotes(request: LectureNotesRequest): Promise<s
   const covered = coverLecture(sections, segments).filter((section) => section.segments.length > 0)
   if (covered.length === 0) throw new StudyError(emptyOutlineMessage(writer), "NOTES")
 
-  const system = fillSystem(request.language, request.style ?? null)
+  const system = fillSystem(request.language, request.style ?? null, writer)
   const lectureOutline = outlineList(sections)
   const pieces = covered.map((section) => {
     const header = [
