@@ -1,5 +1,6 @@
 import { NavLink, useNavigate } from "react-router-dom"
-import { Plus } from "lucide-react"
+import { Plus, X } from "lucide-react"
+import { CANCEL_NOTE_HELP } from "../domain/cancelNotes"
 import { CLOUD_NOTES_UNAVAILABLE } from "../domain/errors"
 import { barPercent, localJobMessage, type SpeechPace } from "../domain/localSpeech"
 import { WINDOWS_DIALOG_REQUIRED } from "../platform/dialogs"
@@ -52,7 +53,7 @@ function ProviderSwitch() {
       {settings.provider === "local" ? (
           <fieldset className="grid gap-1">
             <legend className="text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase">Speed</legend>
-            <div className="grid grid-cols-2 gap-1 rounded-lg bg-muted p-1">
+            <div className="mt-2 grid grid-cols-2 gap-1 rounded-lg bg-muted p-1">
               {(["faster", "clearer"] as const satisfies readonly SpeechPace[]).map((id) => (
                 <button
                   key={id}
@@ -127,7 +128,7 @@ function ProviderSwitch() {
 }
 
 function JobBanner() {
-  const { jobs, dismissJob } = useLibrary()
+  const { jobs, dismissJob, cancelJob } = useLibrary()
   if (jobs.length === 0) return null
   return (
     <div className="mx-auto grid w-full max-w-4xl gap-2 px-5 pt-5 md:px-10">
@@ -139,16 +140,24 @@ function JobBanner() {
             aria-live="polite"
             className="rounded-lg border border-border bg-card px-4 py-3 text-sm"
           >
-            <p>{localJobMessage(job.label, job.progress)}</p>
+            <div className="flex items-start justify-between gap-3">
+              <p className="min-w-0 flex-1">{localJobMessage(job.label, job.progress)}</p>
+              <button
+                type="button"
+                title={CANCEL_NOTE_HELP}
+                aria-label={CANCEL_NOTE_HELP}
+                className="grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+                onClick={() => cancelJob(job.id)}
+              >
+                <X className="size-4" aria-hidden="true" />
+              </button>
+            </div>
             <div className="mt-2 h-1 overflow-hidden rounded-full bg-muted" aria-hidden="true">
               <div
                 className="h-full bg-primary"
                 style={{ width: `${barPercent(job.progress) ?? 0}%` }}
               />
             </div>
-            <p className="mt-2 text-xs text-muted-foreground">
-              This window stays open until the notes and PDF are saved.
-            </p>
           </div>
         ) : (
           <div

@@ -17,6 +17,7 @@ import {
   getCourse,
   loadSettings,
   makeNotes,
+  requestNoteCancel,
   readNote,
   renameCourse,
   restyleNote,
@@ -741,6 +742,122 @@ describe("a recording that already has a note", () => {
     expect(detail.modules[0]?.noteCount).toBe(2)
     expect(groq.calls).toBe(0)
     vi.unstubAllGlobals()
+  })
+})
+
+describe("cancelling note making", () => {
+  it("keeps the transcript, drops unfinished notes, and leaves a finished note", async () => {
+    const home = path.join(root, "home")
+    const store = createNodeFileStore(path.join(root, "appdata"))
+    await store.mkdir(home)
+    const course = await createCourse(store, home, "Biology 101")
+    const media = path.join(root, "Lecture 3.wav")
+    await writeFile(media, wav(2))
+    readyLocal(store)
+    blockGroq()
+    const request = {
+      home,
+      courseId: course.id,
+      mediaPath: media,
+      provider: "local" as const,
+      moduleId: null,
+      moduleName: null,
+      newModuleName: null,
+    }
+    store.transcribeMedia = async () => ({
+      segments: [
+        { start: 0, end: 8, text: "Today we talk about cell division." },
+        { start: 8, end: 20, text: "Mitosis is the process where the cell divides." },
+      ],
+      durationSeconds: 20,
+      elapsedMs: 1000,
+      model: "ggml-base.en",
+    })
+    store.completeLocal = async (messages) => studyReply(messages)
+    const finished = await makeNotes(store, request)
+    const finishedMarkdown = await store.readText(finished.markdownPath)
+    const finishedPdf = (await store.stat(finished.pdfPath))?.size
+    const jobId = "cancel-replace"
+    store.completeLocal = async () => {
+      requestNoteCancel(jobId)
+      return "## Cell division\n\n- This replacement should not be saved.\n"
+    }
+    await expect(makeNotes(store, { ...request, noteChoice: "replace", jobId })).rejects.toThrow(/cancelled/i)
+    expect(await store.readText(finished.markdownPath)).toBe(finishedMarkdown)
+    expect((await store.stat(finished.pdfPath))?.size).toBe(finishedPdf)
+    expect(await store.exists(`${finished.markdownPath}.partial`)).toBe(false)
+    expect(await store.exists(`${finished.pdfPath}.partial`)).toBe(false)
+    const keptTranscript = await store.readText(path.join(course.path, ".study", "transcripts", `${finished.id}.json`))
+    expect(keptTranscript).toContain("Mitosis")
+
+    const freshMedia = path.join(root, "Lecture 4.wav")
+    await writeFile(freshMedia, wav(2))
+    const freshJob = "cancel-fresh"
+    store.completeLocal = async () => {
+      requestNoteCancel(freshJob)
+      return "## Supply\n\n- These notes are not finished.\n"
+    }
+    await expect(
+      makeNotes(store, { ...request, mediaPath: freshMedia, jobId: freshJob }),
+    ).rejects.toThrow(/cancelled/i)
+    const detail = await getCourse(store, home, course.id)
+    expect(detail.notes.map((note) => note.id)).toEqual([finished.id])
+    expect(await store.readText(finished.markdownPath)).toBe(finishedMarkdown)
+    const transcripts = (await store.list(path.join(course.path, ".study", "transcripts"))).map((entry) => entry.name)
+    expect(transcripts.some((name) => name.endsWith(".json") && name !== `${finished.id}.json`)).toBe(true)
+    const partials = await pathsContaining(course.path, "These notes are not finished")
+    expect(partials).toEqual([])
+  })
+
+  it("drops a partial transcription and does not remove a finished note", async () => {
+    const home = path.join(root, "home")
+    const store = createNodeFileStore(path.join(root, "appdata"))
+    await store.mkdir(home)
+    const course = await createCourse(store, home, "Biology 101")
+    const media = path.join(root, "Lecture 3.wav")
+    await writeFile(media, wav(2))
+    readyLocal(store)
+    blockGroq()
+    store.transcribeMedia = async () => ({
+      segments: [{ start: 0, end: 4, text: "Cells divide." }],
+      durationSeconds: 4,
+      elapsedMs: 1000,
+      model: "ggml-base.en",
+    })
+    store.completeLocal = async (messages) => studyReply(messages)
+    const finished = await makeNotes(store, {
+      home,
+      courseId: course.id,
+      mediaPath: media,
+      provider: "local",
+      moduleId: null,
+      moduleName: null,
+      newModuleName: null,
+    })
+    const finishedMarkdown = await store.readText(finished.markdownPath)
+    const other = path.join(root, "Lecture 5.wav")
+    await writeFile(other, wav(2))
+    const jobId = "cancel-transcribe"
+    store.transcribeMedia = async () => {
+      requestNoteCancel(jobId)
+      throw new Error("Transcription was replaced by a different recording.")
+    }
+    await expect(
+      makeNotes(store, {
+        home,
+        courseId: course.id,
+        mediaPath: other,
+        provider: "local",
+        moduleId: null,
+        moduleName: null,
+        newModuleName: null,
+        jobId,
+      }),
+    ).rejects.toThrow(/cancelled/i)
+    expect(await store.readText(finished.markdownPath)).toBe(finishedMarkdown)
+    expect((await getCourse(store, home, course.id)).notes).toHaveLength(1)
+    const transcripts = await store.list(path.join(course.path, ".study", "transcripts"))
+    expect(transcripts.map((entry) => entry.name)).toEqual([`${finished.id}.json`])
   })
 })
 

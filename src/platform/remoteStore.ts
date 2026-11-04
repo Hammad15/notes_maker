@@ -53,8 +53,8 @@ export function createRemoteStore(call: Caller): FileStore {
       for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
       return bytes
     },
-    completeLocal: (messages: LocalNotesMessage[], maxCompletionTokens: number) =>
-      call<string>({ op: Ops.completeLocal, messages, maxCompletionTokens }),
+    completeLocal: (messages: LocalNotesMessage[], maxCompletionTokens: number, jobId?: string) =>
+      call<string>({ op: Ops.completeLocal, messages, maxCompletionTokens, jobId }),
     transcribeMedia: (path, request: TranscriptionRequest) =>
       call<TranscriptionResult>({
         op: Ops.transcribeMedia,
@@ -71,6 +71,9 @@ export function createRemoteStore(call: Caller): FileStore {
     activeTranscription: () => call<ActiveTranscription | null>({ op: Ops.activeTranscription }),
     clearTranscription: async (id) => {
       await call({ op: Ops.clearTranscription, id })
+    },
+    cancelMakeNotes: async (id) => {
+      await call({ op: Ops.cancelMakeNotes, id })
     },
   }
 }

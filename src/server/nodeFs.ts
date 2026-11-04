@@ -11,6 +11,7 @@ import { downloadAndStartWindowsInstaller } from "./installerUpdate.ts"
 import { Ops } from "../platform/ops.ts"
 import type { FileStore } from "../platform/types.ts"
 import {
+  cancelMakeNotes as cancelMakeNotesRuntime,
   clearTranscriptionJob,
   localRuntimeStatus,
   prepareCloudAudio,
@@ -243,8 +244,8 @@ export function createNodeFileStore(appData = resolveAppDataDir(process.platform
     setupLocal(pace) {
       return setupLocalRuntime(appData, speechPace(pace))
     },
-    completeLocal(messages, maxCompletionTokens) {
-      return completeLocalNotes(appData, messages, maxCompletionTokens)
+    completeLocal(messages, maxCompletionTokens, jobId) {
+      return completeLocalNotes(appData, messages, maxCompletionTokens, jobId)
     },
     prepareCloudAudio(target) {
       return prepareCloudAudio(appData, target)
@@ -260,6 +261,9 @@ export function createNodeFileStore(appData = resolveAppDataDir(process.platform
     },
     clearTranscription(id) {
       return clearTranscriptionJob(appData, id)
+    },
+    cancelMakeNotes(id) {
+      return cancelMakeNotesRuntime(appData, id)
     },
   }
 }
@@ -360,7 +364,7 @@ export async function dispatchDesktop(
       return store.setupLocal(speechPace(body.pace))
     case Ops.completeLocal: {
       const max = typeof body.maxCompletionTokens === "number" ? body.maxCompletionTokens : 1200
-      return store.completeLocal(localMessages(body.messages), max)
+      return store.completeLocal(localMessages(body.messages), max, optionalString(body, "jobId") ?? undefined)
     }
     case Ops.prepareCloudAudio:
       return store.prepareCloudAudio(requiredString(body, "path"))
@@ -384,6 +388,9 @@ export async function dispatchDesktop(
       return store.activeTranscription()
     case Ops.clearTranscription:
       await store.clearTranscription(requiredString(body, "id"))
+      return null
+    case Ops.cancelMakeNotes:
+      await store.cancelMakeNotes(requiredString(body, "id"))
       return null
     case Ops.pickDirectory:
     case Ops.pickMedia:
