@@ -28,7 +28,7 @@ function ProviderSwitch() {
       <legend className="text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase">
         Notes
       </legend>
-      <div className="grid grid-cols-2 gap-1 rounded-lg bg-muted p-1">
+      <div className="mt-2 grid grid-cols-2 gap-1 rounded-lg bg-muted p-1">
         {(["local", "cloud"] as const).map((id) => (
           <button
             key={id}
@@ -51,7 +51,7 @@ function ProviderSwitch() {
         ))}
       </div>
       {settings.provider === "local" ? (
-          <fieldset className="grid gap-1">
+          <fieldset className="mt-3 grid gap-1">
             <legend className="text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase">Speed</legend>
             <div className="mt-2 grid grid-cols-2 gap-1 rounded-lg bg-muted p-1">
               {(["faster", "clearer"] as const satisfies readonly SpeechPace[]).map((id) => (
@@ -140,16 +140,16 @@ function JobBanner() {
             aria-live="polite"
             className="rounded-lg border border-border bg-card px-4 py-3 text-sm"
           >
-            <div className="flex items-start justify-between gap-3">
+            <div className="flex items-center justify-between gap-3">
               <p className="min-w-0 flex-1">{localJobMessage(job.label, job.progress)}</p>
               <button
                 type="button"
                 title={CANCEL_NOTE_HELP}
                 aria-label={CANCEL_NOTE_HELP}
-                className="grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+                className="grid size-10 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
                 onClick={() => cancelJob(job.id)}
               >
-                <X className="size-4" aria-hidden="true" />
+                <X className="size-6" aria-hidden="true" />
               </button>
             </div>
             <div className="mt-2 h-1 overflow-hidden rounded-full bg-muted" aria-hidden="true">
