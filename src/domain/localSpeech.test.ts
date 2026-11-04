@@ -182,7 +182,8 @@ describe("transcription stays usable", () => {
     expect(writingPercent(0, 0, true)).toBe(90)
     expect(writingPercent(1, 4, true)).toBe(92)
     expect(writingPercent(4, 4, true)).toBe(99)
-    expect(writingPercent(0, 4, false)).toBe(0)
+    expect(writingPercent(0, 0, false)).toBe(1)
+    expect(writingPercent(0, 4, false)).toBe(1)
     expect(writingPercent(1, 4, false)).toBe(24)
     const lectureWritingStarted = 1_700_000_000_000
     const transcriptionStarted = lectureWritingStarted - 160 * 60_000
@@ -203,7 +204,7 @@ describe("transcription stays usable", () => {
         },
         afterHalfHour,
       ),
-    ).toBe("Writing the notes and PDF for ISC 102 U05.mp3…")
+    ).toBe("Writing the notes and PDF for ISC 102 U05.mp3… 99%")
     expect(
       barPercent(
         {
@@ -218,6 +219,35 @@ describe("transcription stays usable", () => {
         afterHalfHour,
       ),
     ).toBe(90)
+    expect(
+      barPercent(
+        {
+          phase: "writing",
+          label: "Writing the notes and PDF",
+          percent: 1,
+          startedMs: transcriptionStarted,
+          writingDone: 0,
+          writingTotal: 4,
+          writingStartedMs: lectureWritingStarted,
+        },
+        afterHalfHour,
+      ),
+    ).toBe(1)
+    expect(
+      localJobMessage(
+        "ISC 102 U05.mp3",
+        {
+          phase: "writing",
+          label: "Writing the notes and PDF",
+          percent: 1,
+          startedMs: transcriptionStarted,
+          writingDone: 0,
+          writingTotal: 4,
+          writingStartedMs: lectureWritingStarted,
+        },
+        afterHalfHour,
+      ),
+    ).toBe("Writing the notes and PDF for ISC 102 U05.mp3… 1%")
     expect(
       localJobMessage(
         "ISC 102 U05.mp3",

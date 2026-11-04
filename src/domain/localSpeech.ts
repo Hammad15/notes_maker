@@ -335,7 +335,7 @@ export function writingPercent(done: number, total: number, afterTranscription: 
   if (afterTranscription) {
     return Math.min(99, TRANSCRIPTION_PERCENT_END + Math.round(fraction * (99 - TRANSCRIPTION_PERCENT_END)))
   }
-  if (fraction <= 0) return 0
+  if (fraction <= 0) return 1
   return Math.min(95, Math.max(1, Math.round(fraction * 95)))
 }
 
@@ -364,21 +364,13 @@ function writingStepsKnown(progress: TranscriptionProgress): boolean {
 }
 
 /**
- * The bar may move only when the time remaining is known.
- * Writing holds the post-transcription percent until the first notes step finishes,
- * and does not turn that hold into a countdown.
+ * The bar shows a percent only when that percent is known.
+ * Writing shows its step percent before a step finishes. The countdown waits.
  */
 export function barPercent(progress?: TranscriptionProgress | null, now = Date.now()): number | null {
   if (progress?.percent == null) return null
   if (writingStepsKnown(progress)) {
     if (progress.percent <= 0) return null
-    const remaining = writingRemainingSeconds(
-      progress.writingStartedMs,
-      progress.writingDone,
-      progress.writingTotal,
-      now,
-    )
-    if (remaining == null) return progress.percent >= TRANSCRIPTION_PERCENT_END ? progress.percent : null
     return progress.percent
   }
   if (remainingSeconds(progress.startedMs, progress.percent, now) == null) return null
@@ -493,14 +485,14 @@ export function localJobMessage(
 ): string {
   if (progress && writingStepsKnown(progress)) {
     const measured = barPercent(progress, now)
+    if (measured == null) return `Writing the notes and PDF for ${fileLabel}…`
     const remaining = writingRemainingSeconds(
       progress.writingStartedMs,
       progress.writingDone,
       progress.writingTotal,
       now,
     )
-    const suffix =
-      measured == null || remaining == null ? "" : ` ${measured}% · ${formatRemaining(remaining)}`
+    const suffix = remaining == null ? ` ${measured}%` : ` ${measured}% · ${formatRemaining(remaining)}`
     return `Writing the notes and PDF for ${fileLabel}…${suffix}`
   }
   const measured = barPercent(progress, now)
