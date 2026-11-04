@@ -1,6 +1,7 @@
 import { StudyError } from "./errors.ts"
 import { restyleInstruction, studyNotesInstruction } from "./groq.ts"
 import type { NotesLanguage } from "./language.ts"
+import { NOTES_CONTEXT_TOKENS } from "./localSpeech.ts"
 import { formatClock } from "./text.ts"
 import type { NoteContent, TranscriptSegment } from "./types.ts"
 
@@ -11,6 +12,21 @@ import type { NoteContent, TranscriptSegment } from "./types.ts"
  */
 export const GROQ_TPM_LIMIT = 8000
 export const GROQ_REQUEST_TOKEN_BUDGET = 6000
+
+/**
+ * Qwen2.5-3B. Smaller than Groq's request so a local section is split sooner.
+ * The hard cap is NOTES_CONTEXT_TOKENS.
+ */
+export const LOCAL_REQUEST_TOKEN_BUDGET = 4096
+
+const TOO_LONG = "That part of the lecture is still too long for one notes request."
+
+type NotesWriter = "groq" | "local"
+
+function requestLimits(writer: NotesWriter): { aim: number; limit: number } {
+  if (writer === "local") return { aim: LOCAL_REQUEST_TOKEN_BUDGET, limit: NOTES_CONTEXT_TOKENS }
+  return { aim: GROQ_REQUEST_TOKEN_BUDGET, limit: GROQ_TPM_LIMIT }
+}
 
 const OUTLINE_COMPLETION_TOKENS = 1200
 const SUMMARY_COMPLETION_TOKENS = 500
@@ -221,28 +237,82 @@ function timedTranscript(segments: TranscriptSegment[]): string {
     .join("\n")
 }
 
-function bodyBudget(system: string, header: string, completionTokens: number): number {
+function bodyBudget(system: string, header: string, completionTokens: number, writer: NotesWriter): number {
   const overhead = estimateTokens(system) + estimateTokens(header) + completionTokens + REQUEST_FRAMING_TOKENS + PACK_MARGIN_TOKENS
-  return Math.max(120, GROQ_REQUEST_TOKEN_BUDGET - overhead)
+  return Math.max(120, requestLimits(writer).aim - overhead)
 }
 
-function completionFor(messages: ChatMessage[], preferred: number): number {
+function completionFor(messages: ChatMessage[], preferred: number, writer: NotesWriter): number {
+  const { aim, limit } = requestLimits(writer)
   const input = requestTokens(messages, 0)
-  let completion = preferred
-  if (input + completion > GROQ_REQUEST_TOKEN_BUDGET) completion = GROQ_REQUEST_TOKEN_BUDGET - input
-  if (input + completion > GROQ_TPM_LIMIT) completion = GROQ_TPM_LIMIT - input
-  if (completion < 64 || input + completion > GROQ_TPM_LIMIT) {
-    throw new StudyError("That part of the lecture is still too long for one notes request.", "NOTES")
+  if (preferred < 64 || input + preferred > aim || input + preferred > limit) {
+    throw new StudyError(TOO_LONG, "NOTES")
   }
-  return completion
+  return preferred
+}
+
+function requestFits(messages: ChatMessage[], preferred: number, writer: NotesWriter): boolean {
+  try {
+    completionFor(messages, preferred, writer)
+    return true
+  } catch (error) {
+    if (error instanceof StudyError && error.message === TOO_LONG) return false
+    throw error
+  }
+}
+
+function splitText(text: string): [string, string] | null {
+  const trimmed = text.trim()
+  if (trimmed.length < 2) return null
+  const midpoint = Math.floor(trimmed.length / 2)
+  let cut = trimmed.lastIndexOf("\n", midpoint)
+  if (cut < 1) cut = trimmed.lastIndexOf(" ", midpoint)
+  if (cut < 1) cut = midpoint
+  const left = trimmed.slice(0, cut).trim()
+  const right = trimmed.slice(cut).trim()
+  if (!left || !right || left.length >= trimmed.length || right.length >= trimmed.length) return null
+  return [left, right]
+}
+
+function splitSegments(segments: TranscriptSegment[]): [TranscriptSegment[], TranscriptSegment[]] | null {
+  const spoken = spokenSegments(segments)
+  if (spoken.length === 0) return null
+  if (spoken.length === 1) {
+    const only = spoken[0]
+    const halves = splitText(only.text)
+    if (!halves) return null
+    const mid = only.start + (only.end - only.start) / 2
+    return [
+      [{ start: only.start, end: mid, text: halves[0] }],
+      [{ start: mid, end: only.end, text: halves[1] }],
+    ]
+  }
+  let total = 0
+  const costs = spoken.map((segment) => {
+    const cost = Math.max(1, estimateTokens(segment.text))
+    total += cost
+    return cost
+  })
+  let running = 0
+  let index = 1
+  for (let cursor = 0; cursor < spoken.length - 1; cursor += 1) {
+    running += costs[cursor]
+    index = cursor + 1
+    if (running >= total / 2) break
+  }
+  const left = spoken.slice(0, index)
+  const right = spoken.slice(index)
+  if (left.length === 0 || right.length === 0) return null
+  return [left, right]
 }
 
 async function completeWithinBudget(
   complete: LectureNotesRequest["complete"],
   messages: ChatMessage[],
   preferred: number,
+  writer: NotesWriter,
 ): Promise<string> {
-  const completion = completionFor(messages, preferred)
+  const completion = completionFor(messages, preferred, writer)
   return complete(messages, completion)
 }
 
@@ -654,8 +724,12 @@ export async function writeLectureNotes(request: LectureNotesRequest): Promise<s
     total = Math.max(total, done)
     report()
   }
+  const more = () => {
+    total += 1
+    report()
+  }
 
-  const sections = await buildOutline(request, where, title, segments, { plan, finish })
+  const sections = await buildOutline(request, where, title, segments, { plan, finish, more })
   if (sections.length === 0) throw new StudyError(emptyOutlineMessage(writer), "NOTES")
   const covered = coverLecture(sections, segments).filter((section) => section.segments.length > 0)
   if (covered.length === 0) throw new StudyError(emptyOutlineMessage(writer), "NOTES")
@@ -674,7 +748,7 @@ export async function writeLectureNotes(request: LectureNotesRequest): Promise<s
     return {
       title: section.title,
       header,
-      chunks: packSpeech(section.segments, bodyBudget(system, header, FILL_COMPLETION_TOKENS)),
+      chunks: packSpeech(section.segments, bodyBudget(system, header, FILL_COMPLETION_TOKENS, writer)),
     }
   })
   const fillCount = pieces.reduce((sum, piece) => sum + piece.chunks.length, 0)
@@ -682,30 +756,41 @@ export async function writeLectureNotes(request: LectureNotesRequest): Promise<s
 
   const written: Array<{ markdown: string; title: string }> = []
   let omitted: StudyError | null = null
+  const writeChunk = async (header: string, sectionTitle: string, chunk: TranscriptSegment[]) => {
+    const transcript = timedTranscript(chunk)
+    if (!transcript.trim()) return
+    const messages: ChatMessage[] = [
+      { role: "system", content: system },
+      { role: "user", content: `${header}\n${transcript}` },
+    ]
+    if (!requestFits(messages, FILL_COMPLETION_TOKENS, writer)) {
+      const parts = splitSegments(chunk)
+      if (!parts) throw new StudyError(TOO_LONG, "NOTES")
+      more()
+      await writeChunk(header, sectionTitle, parts[0])
+      await writeChunk(header, sectionTitle, parts[1])
+      return
+    }
+    let text = ""
+    try {
+      text = (await completeWithinBudget(request.complete, messages, FILL_COMPLETION_TOKENS, writer)).trim()
+    } catch (error) {
+      if (!omittedSection(error)) throw error
+      omitted = error
+      finish()
+      return
+    }
+    if (!text) {
+      omitted = omitted ?? new StudyError(emptyNotesMessage(writer), "NOTES")
+      finish()
+      return
+    }
+    written.push({ markdown: text, title: sectionTitle })
+    finish()
+  }
   for (const piece of pieces) {
     for (const chunk of piece.chunks) {
-      const transcript = timedTranscript(chunk)
-      if (!transcript.trim()) continue
-      const messages: ChatMessage[] = [
-        { role: "system", content: system },
-        { role: "user", content: `${piece.header}\n${transcript}` },
-      ]
-      let text = ""
-      try {
-        text = (await completeWithinBudget(request.complete, messages, FILL_COMPLETION_TOKENS)).trim()
-      } catch (error) {
-        if (!omittedSection(error)) throw error
-        omitted = error
-        finish()
-        continue
-      }
-      if (!text) {
-        omitted = omitted ?? new StudyError(emptyNotesMessage(writer), "NOTES")
-        finish()
-        continue
-      }
-      written.push({ markdown: text, title: piece.title })
-      finish()
+      await writeChunk(piece.header, piece.title, chunk)
     }
   }
   if (written.length === 0) {
@@ -742,6 +827,7 @@ function omittedSection(error: unknown): error is StudyError {
 interface Progress {
   plan: (count: number) => void
   finish: () => void
+  more: () => void
 }
 
 async function buildOutline(
@@ -751,26 +837,35 @@ async function buildOutline(
   segments: TranscriptSegment[],
   progress: Progress,
 ): Promise<LectureSection[]> {
+  const writer = notesWriter(request)
   const system = outlineSystem(request.language)
   const header = `Course: ${where}\nTitle: ${title}\n\nLecture:\n`
   const full = timedTranscript(segments)
-  const budget = bodyBudget(system, header, OUTLINE_COMPLETION_TOKENS)
-  let source = full
-  if (estimateTokens(full) > budget) {
-    source = await compactLecture(request, where, title, segments, progress)
+  const budget = bodyBudget(system, header, OUTLINE_COMPLETION_TOKENS, writer)
+  const compact = estimateTokens(full) > budget
+  const source = compact ? await compactLecture(request, where, title, segments, progress) : full
+  const outlineSource = async (part: string): Promise<LectureSection[]> => {
+    const user = compact
+      ? `Course: ${where}\nTitle: ${title}\n\nCompact summaries of the whole lecture, in order:\n${part}`
+      : `${header}${part}`
+    const messages: ChatMessage[] = [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ]
+    if (!requestFits(messages, OUTLINE_COMPLETION_TOKENS, writer)) {
+      const halves = splitText(part)
+      if (!halves) throw new StudyError(TOO_LONG, "NOTES")
+      progress.more()
+      const left = await outlineSource(halves[0])
+      const right = await outlineSource(halves[1])
+      return collapseSections([...left, ...right])
+    }
+    const text = await completeWithinBudget(request.complete, messages, OUTLINE_COMPLETION_TOKENS, writer)
+    return parseOutline(text)
   }
-  const messages: ChatMessage[] = [
-    { role: "system", content: system },
-    {
-      role: "user",
-      content: estimateTokens(full) > budget
-        ? `Course: ${where}\nTitle: ${title}\n\nCompact summaries of the whole lecture, in order:\n${source}`
-        : `${header}${source}`,
-    },
-  ]
-  const text = await completeWithinBudget(request.complete, messages, OUTLINE_COMPLETION_TOKENS)
+  const sections = await outlineSource(source)
   progress.finish()
-  return parseOutline(text)
+  return sections
 }
 
 async function compactLecture(
@@ -780,25 +875,39 @@ async function compactLecture(
   segments: TranscriptSegment[],
   progress: Progress,
 ): Promise<string> {
+  const writer = notesWriter(request)
   const system = summarySystem(request.language)
   const header = `Course: ${where}\nTitle: ${title}\n\nPart of the lecture:\n`
-  let pieces = packSpeech(segments, bodyBudget(system, header, SUMMARY_COMPLETION_TOKENS)).map((chunk) =>
+  const summarizePiece = async (piece: string): Promise<string> => {
+    const messages: ChatMessage[] = [
+      { role: "system", content: system },
+      { role: "user", content: `${header}${piece}` },
+    ]
+    if (!requestFits(messages, SUMMARY_COMPLETION_TOKENS, writer)) {
+      const halves = splitText(piece)
+      if (!halves) throw new StudyError(TOO_LONG, "NOTES")
+      progress.more()
+      const left = await summarizePiece(halves[0])
+      const right = await summarizePiece(halves[1])
+      return [left, right].filter(Boolean).join("\n")
+    }
+    return (await completeWithinBudget(request.complete, messages, SUMMARY_COMPLETION_TOKENS, writer)).trim()
+  }
+  let pieces = packSpeech(segments, bodyBudget(system, header, SUMMARY_COMPLETION_TOKENS, writer)).map((chunk) =>
     timedTranscript(chunk),
   )
   if (pieces.length === 0) pieces = [timedTranscript(segments)]
   let guard = 0
+  const outlineBudgetFor = () =>
+    bodyBudget(outlineSystem(request.language), `Course: ${where}\nTitle: ${title}\n\n`, OUTLINE_COMPLETION_TOKENS, writer)
   while (pieces.length > 1 && guard < 4) {
     guard += 1
-    const outlineBudget = bodyBudget(outlineSystem(request.language), `Course: ${where}\nTitle: ${title}\n\n`, OUTLINE_COMPLETION_TOKENS)
+    const outlineBudget = outlineBudgetFor()
     if (estimateTokens(pieces.join("\n")) <= outlineBudget) break
     progress.plan(pieces.length)
     const summaries: string[] = []
     for (const piece of pieces) {
-      const messages: ChatMessage[] = [
-        { role: "system", content: system },
-        { role: "user", content: `${header}${piece}` },
-      ]
-      summaries.push((await completeWithinBudget(request.complete, messages, SUMMARY_COMPLETION_TOKENS)).trim())
+      summaries.push(await summarizePiece(piece))
       progress.finish()
     }
     const joined = summaries.filter(Boolean).join("\n")
@@ -807,12 +916,8 @@ async function compactLecture(
     if (grouped.length === 1) return joined
     pieces = grouped.map((group) => group.join("\n"))
   }
-  if (pieces.length === 1 && estimateTokens(pieces[0]) > bodyBudget(outlineSystem(request.language), `Course: ${where}\nTitle: ${title}\n\n`, OUTLINE_COMPLETION_TOKENS)) {
-    const messages: ChatMessage[] = [
-      { role: "system", content: system },
-      { role: "user", content: `${header}${pieces[0]}` },
-    ]
-    const summary = (await completeWithinBudget(request.complete, messages, SUMMARY_COMPLETION_TOKENS)).trim()
+  if (pieces.length === 1 && estimateTokens(pieces[0]) > outlineBudgetFor()) {
+    const summary = await summarizePiece(pieces[0])
     progress.finish()
     return summary
   }

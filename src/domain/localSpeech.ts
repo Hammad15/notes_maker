@@ -110,7 +110,7 @@ export const LLAMA_ENGINE_FILES = [
   { file: "ggml-cpu-x64.dll", bytes: 870_912 },
 ] as const
 
-/** Prompt budget is 6000 tokens. This context also fits the completion. */
+/** Qwen2.5-3B context window. Local note requests stay under this. */
 export const NOTES_CONTEXT_TOKENS = 16_384
 
 export interface LocalNotesMessage {

@@ -3,6 +3,7 @@ import { StudyError } from "./errors"
 import {
   estimateTokens,
   GROQ_REQUEST_TOKEN_BUDGET,
+  LOCAL_REQUEST_TOKEN_BUDGET,
   mergeMarkdownSections,
   packSpeech,
   requestTokens,
@@ -252,5 +253,40 @@ describe("one lecture outline", () => {
     expect(body.match(/^## .+$/gm)).toEqual(["## Elasticity"])
     expect(body).toContain("  - Detail")
     expect((body.match(/^- Point /gm) ?? []).length).toBeGreaterThan(1)
+  })
+
+  it("splits a section only when it is too long for the model writing it", async () => {
+    let speech = "Prices and buyers"
+    while (estimateTokens(speech) < 3200) speech += " move through the market"
+    const segment = [{ start: 0, end: 400, text: speech }]
+    const run = async (writer: "groq" | "local") => {
+      const fills: number[] = []
+      const body = await writeLectureNotes({
+        language: { code: "en", name: "English" },
+        writer,
+        content: content(segment),
+        complete: async (messages, maxCompletionTokens) => {
+          const budget = writer === "local" ? LOCAL_REQUEST_TOKEN_BUDGET : GROQ_REQUEST_TOKEN_BUDGET
+          expect(requestTokens(messages, maxCompletionTokens)).toBeLessThanOrEqual(budget)
+          const system = messages[0]?.content ?? ""
+          const user = messages[1]?.content ?? ""
+          if (/compact summary/i.test(system)) return "0-400 | Prices and buyers move through the market."
+          if (/outline of the whole lecture/i.test(system)) {
+            return JSON.stringify({ sections: [{ title: "Prices", start: 0, end: 400 }] })
+          }
+          fills.push(estimateTokens(user))
+          return "## Prices\n\n- Buyers move through the market.\n"
+        },
+      })
+      return { fills, body }
+    }
+    expect(LOCAL_REQUEST_TOKEN_BUDGET).toBeLessThan(GROQ_REQUEST_TOKEN_BUDGET)
+    const groq = await run("groq")
+    const local = await run("local")
+    expect(groq.fills).toHaveLength(1)
+    expect(local.fills.length).toBeGreaterThan(groq.fills.length)
+    expect(groq.body).toContain("## Prices")
+    expect(local.body).toContain("## Prices")
+    expect(local.body).toContain("Buyers move through the market.")
   })
 })
