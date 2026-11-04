@@ -293,6 +293,22 @@ describe("one lecture outline", () => {
     expect(local.body).toContain("Buyers move through the market.")
   })
 
+  it("turns every local section into bullets and drops timestamp references", async () => {
+    const body = await writeLectureNotes({
+      language: { code: "en", name: "English" },
+      writer: "local",
+      content: content([{ start: 60, end: 856, text: "Abu Talib died in the tenth year." }]),
+      complete: async () =>
+        "Key points from the lecture:\n\n1. Abu Talib died in the 10th year.\n2. Khadija died at 14:16.\n",
+    })
+    expect(body).toBe(
+      "- Key points from the lecture:\n\n- Abu Talib died in the 10th year.\n- Khadija died.",
+    )
+    expect(body).not.toMatch(/\d+:\d{2}/)
+    expect(body).not.toMatch(/^## /m)
+    expect(body).not.toMatch(/^\d+\.\s/m)
+  })
+
   it("gives local notes a shorter study prompt than Groq", async () => {
     const prompts: string[] = []
     const run = (writer: "groq" | "local") =>
@@ -320,7 +336,7 @@ describe("one lecture outline", () => {
     expect(prompts).toHaveLength(2)
     expect(prompts[1]).toBe(localStudyNotesPrompt({ code: "en", name: "English" }))
     expect(prompts[1]).toBe(
-      "Write study notes in English. Study notes only. Do not copy transcript lines. Cut repeated points.",
+      "Write study notes in English. Study notes only. Use bullets. Do not copy transcript lines. Do not mention timestamps. Cut repeated points.",
     )
     expect(prompts[0]).toContain("Keep the density of the speech")
     expect(prompts[1].length).toBeLessThan(prompts[0].length)

@@ -88,11 +88,11 @@ const FFMPEG_ZIP_URL: &str =
 const FFMPEG_ZIP_BYTES: u64 = 114_768_076;
 const FFMPEG_ZIP_SHA256: &str = "60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba";
 
-const NOTES_MODEL_NAME: &str = "Qwen2.5-3B-Instruct";
-const NOTES_MODEL_FILE: &str = "qwen2.5-3b-instruct-q4_k_m.gguf";
-const NOTES_MODEL_BYTES: u64 = 2_104_932_768;
-const NOTES_MODEL_SHA256: &str = "626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d";
-const NOTES_MODEL_URL: &str = "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf";
+const NOTES_MODEL_NAME: &str = "Qwen2.5-7B-Instruct";
+const NOTES_MODEL_FILE: &str = "qwen2.5-7b-instruct-q4_k_m.gguf";
+const NOTES_MODEL_BYTES: u64 = 4_683_074_240;
+const NOTES_MODEL_SHA256: &str = "65b8fcd92af6b4fefa935c625d1ac27ea29dcb6ee14589c55a8f115ceaaa1423";
+const NOTES_MODEL_URL: &str = "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf";
 
 const NOTES_ENGINE_VERSION: &str = "b10599";
 const NOTES_ENGINE_EXE: &str = "llama-cli.exe";
@@ -656,6 +656,285 @@ fn timestamped_transcript_line(line: &str) -> bool {
     index == bytes.len() || bytes[index].is_ascii_whitespace()
 }
 
+fn clock_span(bytes: &[u8], start: usize) -> Option<usize> {
+    if start > 0 && bytes[start - 1].is_ascii_alphanumeric() {
+        return None;
+    }
+    let mut index = start;
+    let mut digits = 0;
+    while index < bytes.len() && bytes[index].is_ascii_digit() {
+        digits += 1;
+        index += 1;
+        if digits > 2 {
+            return None;
+        }
+    }
+    if digits == 0 || index >= bytes.len() || bytes[index] != b':' {
+        return None;
+    }
+    index += 1;
+    if index + 1 >= bytes.len() || !bytes[index].is_ascii_digit() || !bytes[index + 1].is_ascii_digit() {
+        return None;
+    }
+    index += 2;
+    if index < bytes.len() && bytes[index] == b':' {
+        if index + 2 >= bytes.len()
+            || !bytes[index + 1].is_ascii_digit()
+            || !bytes[index + 2].is_ascii_digit()
+        {
+            return None;
+        }
+        index += 3;
+    }
+    if index < bytes.len() && bytes[index].is_ascii_alphanumeric() {
+        return None;
+    }
+    Some(index)
+}
+
+fn extend_clock_range(bytes: &[u8], end: usize) -> usize {
+    let mut index = end;
+    while index < bytes.len() && (bytes[index] == b' ' || bytes[index] == b'\t') {
+        index += 1;
+    }
+    let rest = std::str::from_utf8(&bytes[index..]).unwrap_or("");
+    let lower = rest.to_ascii_lowercase();
+    for word in ["through", "to", "and", "–", "—", "-"] {
+        if !lower.starts_with(word) {
+            continue;
+        }
+        let mut next = index + word.len();
+        while next < bytes.len() && (bytes[next] == b' ' || bytes[next] == b'\t') {
+            next += 1;
+        }
+        if let Some(range_end) = clock_span(bytes, next) {
+            return range_end;
+        }
+    }
+    end
+}
+
+fn rewind_time_pointer(bytes: &[u8], clock_at: usize) -> usize {
+    let mut end = clock_at;
+    while end > 0 && (bytes[end - 1] == b' ' || bytes[end - 1] == b'\t') {
+        end -= 1;
+    }
+    let prefix = std::str::from_utf8(&bytes[..end]).unwrap_or("");
+    let lower = prefix.to_ascii_lowercase();
+    for word in [
+        "starting", "ending", "timestamp", "between", "around", "before", "after", "until", "about",
+        "from", "near", "till", "time", "the", "at",
+    ] {
+        if !lower.ends_with(word) {
+            continue;
+        }
+        let start = end - word.len();
+        let boundary = start == 0 || !bytes[start - 1].is_ascii_alphanumeric();
+        if !boundary {
+            continue;
+        }
+        return if word == "the" || word == "time" {
+            rewind_time_pointer(bytes, start)
+        } else {
+            start
+        };
+    }
+    clock_at
+}
+
+fn remove_phrase(input: &str, phrase: &str) -> String {
+    let lower_input = input.to_ascii_lowercase();
+    let needle = phrase.to_ascii_lowercase();
+    let bytes = input.as_bytes();
+    let mut out = String::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        let matched = lower_input[index..].starts_with(&needle);
+        let end = index + needle.len();
+        let boundary = index == 0 || !bytes[index - 1].is_ascii_alphanumeric();
+        let closed = end >= bytes.len() || !bytes[end].is_ascii_alphanumeric();
+        if matched && boundary && closed {
+            out.push(' ');
+            index = end;
+            continue;
+        }
+        let size = if bytes[index].is_ascii() { 1 } else { input[index..].chars().next().map(|ch| ch.len_utf8()).unwrap_or(1) };
+        out.push_str(&input[index..index + size]);
+        index += size;
+    }
+    out
+}
+
+fn tidy_timestamp_body(text: &str) -> String {
+    let mut body = text.to_string();
+    for phrase in [
+        "at this point in the recording",
+        "at that point in the recording",
+        "at the point in the recording",
+        "this point in the recording",
+        "that point in the recording",
+        "the point in the recording",
+        "this part in the recording",
+        "this moment in the recording",
+        "this timestamp in the recording",
+        "from this point in the recording",
+        "around this point in the recording",
+        "near this point in the recording",
+        "this point in the video",
+        "this point in the audio",
+        "at this point in the video",
+        "at that point in the video",
+        "at the point in the video",
+        "from this point in the video",
+        "earlier in the recording",
+        "later in the recording",
+        "earlier in the video",
+        "later in the video",
+        "earlier in the audio",
+        "later in the audio",
+        "this timestamp",
+        "that timestamp",
+        "the timestamp",
+        "timestamps",
+        "timestamp",
+    ] {
+        body = remove_phrase(&body, phrase);
+    }
+    let source = body;
+    let bytes = source.as_bytes();
+    let mut out = String::new();
+    let mut copied = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        if let Some(clock_end) = clock_span(bytes, index) {
+            let mut end = extend_clock_range(bytes, clock_end);
+            let mut start = rewind_time_pointer(bytes, index);
+            if start > 0 && (bytes[start - 1] == b'[' || bytes[start - 1] == b'(') {
+                start -= 1;
+            }
+            if end < bytes.len() && (bytes[end] == b']' || bytes[end] == b')') {
+                end += 1;
+            }
+            if start > copied {
+                out.push_str(&source[copied..start]);
+            }
+            out.push(' ');
+            copied = end;
+            index = end;
+            continue;
+        }
+        let size = if bytes[index].is_ascii() {
+            1
+        } else {
+            source[index..].chars().next().map(|ch| ch.len_utf8()).unwrap_or(1)
+        };
+        index += size;
+    }
+    if copied < source.len() {
+        out.push_str(&source[copied..]);
+    }
+    let mut tidy = String::new();
+    let mut spaced = false;
+    for ch in out.chars() {
+        if ch == ' ' || ch == '\t' {
+            if !spaced {
+                tidy.push(' ');
+            }
+            spaced = true;
+            continue;
+        }
+        spaced = false;
+        if matches!(ch, ',' | '.' | ';' | ':' | '!' | '?') {
+            while tidy.ends_with(' ') {
+                tidy.pop();
+            }
+        }
+        tidy.push(ch);
+    }
+    tidy.replace("( )", "")
+        .replace("()", "")
+        .replace("[ ]", "")
+        .replace("[]", "")
+        .trim()
+        .to_string()
+}
+
+fn shape_local_study_line(line: &str) -> String {
+    let trimmed = line.trim_end();
+    let hashes = trimmed.chars().take_while(|ch| *ch == '#').count();
+    if (1..=6).contains(&hashes) {
+        let rest = trimmed[hashes..].trim();
+        if !rest.is_empty() && trimmed.as_bytes().get(hashes) == Some(&b' ') {
+            let title = tidy_timestamp_body(rest);
+            if title.is_empty() || title.chars().all(|ch| ch == '-' || ch == '*' || ch == '+' || ch == '.') {
+                return String::new();
+            }
+            return format!("{} {}", "#".repeat(hashes), title);
+        }
+    }
+    let (indent, body) = {
+        let indent_len = line
+            .chars()
+            .take_while(|ch| *ch == ' ' || *ch == '\t')
+            .map(|ch| ch.len_utf8())
+            .sum();
+        line.split_at(indent_len)
+    };
+    let stripped = tidy_timestamp_body(body);
+    if stripped.is_empty() {
+        return String::new();
+    }
+    if stripped.starts_with('|') || is_rule(&stripped) {
+        return format!("{indent}{stripped}");
+    }
+    let item = strip_list_marker(&stripped);
+    if item.is_empty() {
+        return String::new();
+    }
+    format!("{indent}- {item}")
+}
+
+fn is_rule(text: &str) -> bool {
+    let mut chars = text.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if first != '-' && first != '*' && first != '_' {
+        return false;
+    }
+    let mut count = 1;
+    for ch in chars {
+        if ch != first {
+            return false;
+        }
+        count += 1;
+    }
+    count >= 3
+}
+
+fn strip_list_marker(text: &str) -> &str {
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() && bytes[index].is_ascii_digit() {
+        index += 1;
+    }
+    if index > 0 && index < bytes.len() && (bytes[index] == b'.' || bytes[index] == b')') {
+        let mut next = index + 1;
+        if next < bytes.len() && (bytes[next] == b' ' || bytes[next] == b'\t') {
+            while next < bytes.len() && (bytes[next] == b' ' || bytes[next] == b'\t') {
+                next += 1;
+            }
+            return &text[next..];
+        }
+    }
+    for marker in ["- ", "* ", "+ ", "• "] {
+        if let Some(rest) = text.strip_prefix(marker) {
+            return rest;
+        }
+    }
+    text
+}
+
 fn clean_notes_reply(raw: &str) -> String {
     let without_nulls = raw.replace('\u{0000}', "");
     let kept = match last_assistant_end(&without_nulls) {
@@ -676,7 +955,14 @@ fn clean_notes_reply(raw: &str) -> String {
         {
             continue;
         }
-        lines.push(line.trim_end());
+        if trimmed.is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+        let shaped = shape_local_study_line(line);
+        if !shaped.is_empty() {
+            lines.push(shaped);
+        }
     }
     while lines.first().is_some_and(|line| line.trim().is_empty()) {
         lines.remove(0);
@@ -684,7 +970,23 @@ fn clean_notes_reply(raw: &str) -> String {
     while lines.last().is_some_and(|line| line.trim().is_empty()) {
         lines.pop();
     }
-    lines.join("\n")
+    let mut collapsed = String::new();
+    let mut blank = 0;
+    for line in lines {
+        if line.trim().is_empty() {
+            blank += 1;
+            if blank <= 1 && !collapsed.is_empty() {
+                collapsed.push('\n');
+            }
+            continue;
+        }
+        blank = 0;
+        if !collapsed.is_empty() {
+            collapsed.push('\n');
+        }
+        collapsed.push_str(&line);
+    }
+    collapsed
 }
 
 fn notes_prompt(messages: &Value) -> Result<(String, String), String> {
@@ -2516,12 +2818,12 @@ mod tests {
 
     #[test]
     fn notes_model_is_qwen_and_replies_drop_engine_logs() {
-        assert_eq!(NOTES_MODEL_NAME, "Qwen2.5-3B-Instruct");
-        assert_eq!(NOTES_MODEL_FILE, "qwen2.5-3b-instruct-q4_k_m.gguf");
-        assert_eq!(NOTES_MODEL_BYTES, 2_104_932_768);
+        assert_eq!(NOTES_MODEL_NAME, "Qwen2.5-7B-Instruct");
+        assert_eq!(NOTES_MODEL_FILE, "qwen2.5-7b-instruct-q4_k_m.gguf");
+        assert_eq!(NOTES_MODEL_BYTES, 4_683_074_240);
         assert_eq!(
             NOTES_MODEL_SHA256,
-            "626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d"
+            "65b8fcd92af6b4fefa935c625d1ac27ea29dcb6ee14589c55a8f115ceaaa1423"
         );
         assert_eq!(NOTES_ENGINE_VERSION, "b10599");
         assert_eq!(NOTES_ENGINE_ZIP_BYTES, 18_061_865);
@@ -2533,7 +2835,13 @@ mod tests {
             clean_notes_reply(
                 "User:\nTranscript:\n[1:00] To my beloved ones,\n[14:16] She was given the glad tidings.\n\nAssistant:\nKey points.\n[2:00] Still copied.\n"
             ),
-            "Key points."
+            "- Key points."
+        );
+        assert_eq!(
+            clean_notes_reply(
+                "## 1:00 to 14:16\n\nKey points from the lecture:\n\n1. Abu Talib died in the 10th year.\n2. Khadija died at 14:16.\nSee this point in the recording.\n"
+            ),
+            "- Key points from the lecture:\n\n- Abu Talib died in the 10th year.\n- Khadija died.\n- See."
         );
     }
 

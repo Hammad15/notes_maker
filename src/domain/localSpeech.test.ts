@@ -432,12 +432,12 @@ describe("setup downloads", () => {
     expect(WHISPER_ENGINE.version).toBe("1.9.2")
     expect(WHISPER_ENGINE.zipUrl).toContain("whisper-bin-x64.zip")
     expect(NOTES_MODEL).toMatchObject({
-      name: "Qwen2.5-3B-Instruct",
-      file: "qwen2.5-3b-instruct-q4_k_m.gguf",
-      bytes: 2_104_932_768,
-      sha256: "626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d",
+      name: "Qwen2.5-7B-Instruct",
+      file: "qwen2.5-7b-instruct-q4_k_m.gguf",
+      bytes: 4_683_074_240,
+      sha256: "65b8fcd92af6b4fefa935c625d1ac27ea29dcb6ee14589c55a8f115ceaaa1423",
     })
-    expect(NOTES_MODEL.url).toContain("qwen2.5-3b-instruct-q4_k_m.gguf")
+    expect(NOTES_MODEL.url).toContain("Qwen2.5-7B-Instruct-Q4_K_M.gguf")
     expect(LLAMA_ENGINE.version).toBe("b10599")
     expect(LLAMA_ENGINE.zipBytes).toBe(18_061_865)
     expect(LLAMA_ENGINE.zipUrl).toContain("llama-b10599-bin-win-cpu-x64.zip")
@@ -448,7 +448,14 @@ describe("setup downloads", () => {
       cleanNotesReply(
         "User:\nTranscript:\n[1:00] To my beloved ones,\n[14:16] She was given the glad tidings.\n\nAssistant:\nKey points.\n[2:00] Still copied.\n",
       ),
-    ).toBe("Key points.")
+    ).toBe("- Key points.")
+    expect(
+      cleanNotesReply(
+        "## 1:00 to 14:16\n\nKey points from the lecture:\n\n1. Abu Talib died in the 10th year.\n2. Khadija died at 14:16.\nSee this point in the recording.\n",
+      ),
+    ).toBe(
+      "- Key points from the lecture:\n\n- Abu Talib died in the 10th year.\n- Khadija died.\n- See.",
+    )
     expect(FFMPEG_BUNDLE.version).toBe("9.0.2")
     expect(FFMPEG_BUNDLE.zipUrl).toContain("ffmpeg-9.0.2-essentials_build.zip")
   })

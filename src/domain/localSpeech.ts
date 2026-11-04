@@ -75,17 +75,18 @@ export const FFMPEG_BUNDLE = {
 } as const
 
 /**
- * Local study notes. Qwen2.5-3B-Instruct Q4_K_M, run by llama.cpp b10599.
+ * Local study notes. Qwen2.5-7B-Instruct Q4_K_M, run by llama.cpp b10599.
+ * The Qwen repo splits this quant, so setup downloads the single-file Q4_K_M.
  * The GGUF sha256 is the Hugging Face LFS oid. The engine lives in bin/notes
  * so its ggml DLLs do not replace the speech engine.
  * Keep the Rust copy in src-tauri/src/local_runtime.rs on these same bytes.
  */
 export const NOTES_MODEL = {
-  name: "Qwen2.5-3B-Instruct",
-  file: "qwen2.5-3b-instruct-q4_k_m.gguf",
-  bytes: 2_104_932_768,
-  sha256: "626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d",
-  url: "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf",
+  name: "Qwen2.5-7B-Instruct",
+  file: "qwen2.5-7b-instruct-q4_k_m.gguf",
+  bytes: 4_683_074_240,
+  sha256: "65b8fcd92af6b4fefa935c625d1ac27ea29dcb6ee14589c55a8f115ceaaa1423",
+  url: "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf",
 } as const
 
 export const LOCAL_HARDWARE_NOTE =
@@ -110,7 +111,7 @@ export const LLAMA_ENGINE_FILES = [
   { file: "ggml-cpu-x64.dll", bytes: 870_912 },
 ] as const
 
-/** Qwen2.5-3B context window. Local note requests stay under this. */
+/** Context passed to the local notes model. Requests stay under this. */
 export const NOTES_CONTEXT_TOKENS = 16_384
 
 export interface LocalNotesMessage {
@@ -120,6 +121,29 @@ export interface LocalNotesMessage {
 
 const NOTES_LOG_LINE = /^(?:llama_|ggml_|main:|build:|print_info:|load_backend:)/
 const TIMESTAMPED_TRANSCRIPT_LINE = /^\[\d{1,2}:\d{2}(?::\d{2})?\](?:\s|$)/
+const CLOCK = String.raw`\d{1,2}:\d{2}(?::\d{2})?`
+
+function timestampPatterns(): RegExp[] {
+  return [
+    new RegExp(String.raw`\[\s*${CLOCK}\s*\]`, "gi"),
+    new RegExp(String.raw`\(\s*${CLOCK}(?:\s*(?:to|through|–|—|-)\s*${CLOCK})?\s*\)`, "gi"),
+    new RegExp(String.raw`\b(?:from|between|at)\s+${CLOCK}\s*(?:to|through|and|–|—|-)\s*${CLOCK}\b`, "gi"),
+    new RegExp(String.raw`\b${CLOCK}\s*(?:to|through|–|—|-)\s*${CLOCK}\b`, "gi"),
+    new RegExp(
+      String.raw`\b(?:at|from|around|about|near|after|before|until|till|starting|ending)\s+(?:the\s+)?${CLOCK}(?:\s+(?:mark|point))?\b`,
+      "gi",
+    ),
+    new RegExp(String.raw`\b(?:timestamp|time)\s+${CLOCK}\b`, "gi"),
+    new RegExp(
+      String.raw`\b(?:(?:at|from|around|near)\s+)?(?:this|that|the)\s+(?:point|part|moment|timestamp)\s+in\s+the\s+(?:recording|video|audio)\b`,
+      "gi",
+    ),
+    new RegExp(String.raw`\b(?:earlier|later)\s+in\s+the\s+(?:recording|video|audio)\b`, "gi"),
+    new RegExp(String.raw`\b(?:this|that|the)\s+timestamps?\b`, "gi"),
+    new RegExp(String.raw`\btimestamps?\b`, "gi"),
+    new RegExp(String.raw`\b${CLOCK}\b`, "gi"),
+  ]
+}
 
 /** The reply after the last Assistant marker. The prompt before it is not notes. */
 function textAfterLastAssistant(raw: string): string {
@@ -147,7 +171,52 @@ export function cleanNotesReply(raw: string): string {
     if (TIMESTAMPED_TRANSCRIPT_LINE.test(trimmed)) return false
     return true
   })
-  return lines.join("\n").trim()
+  return shapeLocalStudyNotes(lines.join("\n"))
+}
+
+/** One line with recording times and "at this point in the recording" removed. */
+function stripTimestampText(text: string): string {
+  const indent = /^[ \t]*/.exec(text)?.[0] ?? ""
+  let body = text.slice(indent.length)
+  for (const pattern of timestampPatterns()) body = body.replace(pattern, " ")
+  body = body.replace(/[ \t]{2,}/g, " ").trim()
+  body = body.replace(/\s+([,.;:!?])/g, "$1")
+  body = body.replace(/\(\s*\)|\[\s*\]/g, "").trim()
+  body = body.replace(/^(?:[-*•+]|\d+[.)])\s*$/g, "").trim()
+  if (!body) return ""
+  return `${indent}${body}`
+}
+
+/**
+ * Every local study-notes reply: bullets in each section, including the opening,
+ * and no clock time, bracketed time, or phrase that points at a time in the recording.
+ */
+export function shapeLocalStudyNotes(markdown: string): string {
+  const lines = markdown.replace(/\u0000/g, "").split(/\r?\n/)
+  const out: string[] = []
+  for (const line of lines) {
+    const heading = /^(#{1,6})[ \t]+(.*)$/.exec(line.trimEnd())
+    if (heading) {
+      const title = stripTimestampText(heading[2]).trim()
+      if (!title) continue
+      out.push(`${heading[1]} ${title}`)
+      continue
+    }
+    const stripped = stripTimestampText(line)
+    if (!stripped.trim()) {
+      out.push("")
+      continue
+    }
+    const body = stripped.trim()
+    if (/^\|/.test(body) || /^([-*_])\1{2,}$/.test(body)) {
+      out.push(stripped.trimEnd())
+      continue
+    }
+    const indent = /^[ \t]*/.exec(stripped)?.[0] ?? ""
+    const item = body.replace(/^(?:[-*•+]|\d+[.)])\s+/, "")
+    out.push(item ? `${indent}- ${item}` : "")
+  }
+  return out.join("\n").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim()
 }
 
 /** A recording this long must not come back in under a minute. 57 minutes qualifies. */

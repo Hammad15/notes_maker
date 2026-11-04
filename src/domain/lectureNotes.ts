@@ -1,7 +1,7 @@
 import { StudyError } from "./errors.ts"
 import { restyleInstruction, studyNotesInstruction } from "./groq.ts"
 import type { NotesLanguage } from "./language.ts"
-import { NOTES_CONTEXT_TOKENS } from "./localSpeech.ts"
+import { NOTES_CONTEXT_TOKENS, shapeLocalStudyNotes } from "./localSpeech.ts"
 import { formatClock } from "./text.ts"
 import type { NoteContent, TranscriptSegment } from "./types.ts"
 
@@ -14,7 +14,7 @@ export const GROQ_TPM_LIMIT = 8000
 export const GROQ_REQUEST_TOKEN_BUDGET = 6000
 
 /**
- * Qwen2.5-3B section size. A step up from 4096 so a lecture is fewer chunks.
+ * Qwen2.5-7B section size. A step up from 4096 so a lecture is fewer chunks.
  * The reply is inside this budget, and the budget stays under the 16384 context.
  */
 export const LOCAL_REQUEST_TOKEN_BUDGET = 5120
@@ -496,7 +496,7 @@ function summarySystem(language: NotesLanguage): string {
 
 /** Shorter than Groq's study-notes prompt. Qwen copies a long prompt and the transcript. */
 export function localStudyNotesPrompt(language: NotesLanguage): string {
-  return `Write study notes in ${language.name}. Study notes only. Do not copy transcript lines. Cut repeated points.`
+  return `Write study notes in ${language.name}. Study notes only. Use bullets. Do not copy transcript lines. Do not mention timestamps. Cut repeated points.`
 }
 
 function fillSystem(language: NotesLanguage, style: NoteStyle | null, writer: NotesWriter): string {
@@ -840,7 +840,11 @@ export async function writeLectureNotes(request: LectureNotesRequest): Promise<s
       ? tableNote(written) || mergeMarkdownSections(written)
       : mergeMarkdownSections(written)
   const cleaned = withoutDisclaimers(merged.replace(/\n## Transcript\b[\s\S]*$/i, "")).trim()
-  if (!cleaned) {
+  const notes =
+    writer === "local" && request.style?.preset !== "table" && request.style?.preset !== "paragraphs"
+      ? shapeLocalStudyNotes(cleaned)
+      : cleaned
+  if (!notes) {
     const returned = written
       .map((part) => part.markdown.trim())
       .filter(Boolean)
@@ -851,7 +855,7 @@ export async function writeLectureNotes(request: LectureNotesRequest): Promise<s
       omitted?.detail ?? (returned ? `body: ${returned.slice(0, 8000)}` : null),
     )
   }
-  return cleaned
+  return notes
 }
 
 function omittedSection(error: unknown): error is StudyError {
