@@ -436,11 +436,9 @@ describe("course files", () => {
       const system = messages.find((message) => message.role === "system")?.content ?? ""
       const user = messages.find((message) => message.role === "user")?.content ?? ""
       expect(user).toContain("Mitosis")
-      if (/outline of the whole lecture/i.test(system)) {
-        return '{"sections":[{"title":"Cell division","ranges":[{"start":0,"end":80}]}]}'
-      }
-      expect(system).toContain("Do not invent dates.")
-      expect(system).toContain("Do not mention a transcript")
+      expect(system).not.toMatch(/compact summary|outline of the whole lecture/i)
+      expect(system).toContain("Study notes only.")
+      expect(system).toContain("Do not copy transcript lines.")
       return "## Cell division\n\n- Mitosis splits one cell into two daughter cells."
     }
     const filed = await makeNotes(store, request)
@@ -559,9 +557,8 @@ describe("a saved long transcript", () => {
       newModuleName: null,
     })
     expect(filed.id).toBe(noteId)
-    expect(kinds[0]).toBe("summary")
-    expect(kinds.filter((kind) => kind === "outline")).toEqual(["outline"])
-    expect(kinds.indexOf("fill")).toBeGreaterThan(kinds.indexOf("outline"))
+    expect(kinds.length).toBeGreaterThan(0)
+    expect(kinds.every((kind) => kind === "fill")).toBe(true)
     const notesDir = path.join(course.path, "notes")
     const names = await readdir(notesDir)
     expect(names.filter((name) => name.endsWith(".md"))).toHaveLength(1)

@@ -258,7 +258,7 @@ describe("one lecture outline", () => {
 
   it("splits a section only when it is too long for the model writing it", async () => {
     let speech = "Prices and buyers"
-    while (estimateTokens(speech) < 3200) speech += " move through the market"
+    while (estimateTokens(speech) < 3800) speech += " move through the market"
     const segment = [{ start: 0, end: 400, text: speech }]
     const run = async (writer: "groq" | "local") => {
       const fills: number[] = []
@@ -281,6 +281,8 @@ describe("one lecture outline", () => {
       })
       return { fills, body }
     }
+    expect(LOCAL_REQUEST_TOKEN_BUDGET).toBe(5120)
+    expect(LOCAL_REQUEST_TOKEN_BUDGET).toBeGreaterThan(4096)
     expect(LOCAL_REQUEST_TOKEN_BUDGET).toBeLessThan(GROQ_REQUEST_TOKEN_BUDGET)
     const groq = await run("groq")
     const local = await run("local")
@@ -300,11 +302,16 @@ describe("one lecture outline", () => {
         content: content([{ start: 0, end: 5, text: "Cells divide once." }]),
         complete: async (messages) => {
           const system = messages[0]?.content ?? ""
+          const user = messages[1]?.content ?? ""
           if (/compact summary/i.test(system)) return "0-5 | Cells divide once."
           if (/outline of the whole lecture/i.test(system)) {
             return JSON.stringify({ sections: [{ title: "Cells", ranges: [{ start: 0, end: 5 }] }] })
           }
           prompts.push(system)
+          if (writer === "local") {
+            expect(user).toContain("Cells divide once.")
+            expect(user).not.toContain("Outline of the whole lecture:")
+          }
           return "## Cells\n\n- Cells divide once.\n"
         },
       })

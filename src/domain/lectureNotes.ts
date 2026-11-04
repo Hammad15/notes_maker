@@ -14,10 +14,10 @@ export const GROQ_TPM_LIMIT = 8000
 export const GROQ_REQUEST_TOKEN_BUDGET = 6000
 
 /**
- * Qwen2.5-3B. Smaller than Groq's request so a local section is split sooner.
- * The hard cap is NOTES_CONTEXT_TOKENS.
+ * Qwen2.5-3B section size. A step up from 4096 so a lecture is fewer chunks.
+ * The reply is inside this budget, and the budget stays under the 16384 context.
  */
-export const LOCAL_REQUEST_TOKEN_BUDGET = 4096
+export const LOCAL_REQUEST_TOKEN_BUDGET = 5120
 
 const TOO_LONG = "That part of the lecture is still too long for one notes request."
 
@@ -235,6 +235,12 @@ function timedTranscript(segments: TranscriptSegment[]): string {
   return spokenSegments(segments)
     .map((segment) => `[${formatClock(segment.start)}] ${segment.text}`)
     .join("\n")
+}
+
+function chunkTitle(chunk: TranscriptSegment[]): string {
+  const start = chunk[0]?.start ?? 0
+  const end = chunk[chunk.length - 1]?.end ?? start
+  return `${formatClock(start)} to ${formatClock(end)}`
 }
 
 function bodyBudget(system: string, header: string, completionTokens: number, writer: NotesWriter): number {
@@ -712,6 +718,50 @@ function emptyOutlineMessage(writer: "groq" | "local"): string {
     : "Groq did not return an outline of the lecture."
 }
 
+type NotePiece = { title: string; header: string; chunks: TranscriptSegment[][] }
+
+function localPieces(where: string, title: string, segments: TranscriptSegment[], system: string): NotePiece[] {
+  const header = [`Course: ${where}`, `Title: ${title}`, "", "Transcript:"].join("\n")
+  const packed = packSpeech(segments, bodyBudget(system, header, FILL_COMPLETION_TOKENS, "local"))
+  const groups = packed.length > 0 ? packed : [segments]
+  return groups.map((chunk) => ({
+    title: chunkTitle(chunk),
+    header,
+    chunks: [chunk],
+  }))
+}
+
+async function groqPieces(
+  request: LectureNotesRequest,
+  where: string,
+  title: string,
+  segments: TranscriptSegment[],
+  system: string,
+  progress: Progress,
+): Promise<NotePiece[]> {
+  const writer = notesWriter(request)
+  const sections = await buildOutline(request, where, title, segments, progress)
+  if (sections.length === 0) throw new StudyError(emptyOutlineMessage(writer), "NOTES")
+  const covered = coverLecture(sections, segments).filter((section) => section.segments.length > 0)
+  if (covered.length === 0) throw new StudyError(emptyOutlineMessage(writer), "NOTES")
+  const lectureOutline = outlineList(sections)
+  return covered.map((section) => {
+    const header = [
+      `Course: ${where}`,
+      `Title: ${title}`,
+      "Outline of the whole lecture:",
+      lectureOutline,
+      `Section: ${section.title}`,
+      "Transcript for this section:",
+    ].join("\n")
+    return {
+      title: section.title,
+      header,
+      chunks: packSpeech(section.segments, bodyBudget(system, header, FILL_COMPLETION_TOKENS, writer)),
+    }
+  })
+}
+
 export async function writeLectureNotes(request: LectureNotesRequest): Promise<string> {
   const writer = notesWriter(request)
   const segments = spokenSegments(request.content.segments)
@@ -735,28 +785,11 @@ export async function writeLectureNotes(request: LectureNotesRequest): Promise<s
     report()
   }
 
-  const sections = await buildOutline(request, where, title, segments, { plan, finish, more })
-  if (sections.length === 0) throw new StudyError(emptyOutlineMessage(writer), "NOTES")
-  const covered = coverLecture(sections, segments).filter((section) => section.segments.length > 0)
-  if (covered.length === 0) throw new StudyError(emptyOutlineMessage(writer), "NOTES")
-
   const system = fillSystem(request.language, request.style ?? null, writer)
-  const lectureOutline = outlineList(sections)
-  const pieces = covered.map((section) => {
-    const header = [
-      `Course: ${where}`,
-      `Title: ${title}`,
-      "Outline of the whole lecture:",
-      lectureOutline,
-      `Section: ${section.title}`,
-      "Transcript for this section:",
-    ].join("\n")
-    return {
-      title: section.title,
-      header,
-      chunks: packSpeech(section.segments, bodyBudget(system, header, FILL_COMPLETION_TOKENS, writer)),
-    }
-  })
+  const pieces =
+    writer === "local"
+      ? localPieces(where, title, segments, system)
+      : await groqPieces(request, where, title, segments, system, { plan, finish, more })
   const fillCount = pieces.reduce((sum, piece) => sum + piece.chunks.length, 0)
   plan(done + fillCount)
 
