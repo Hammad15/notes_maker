@@ -29,6 +29,7 @@ export async function transcribeLocal(
       (chapter) => Number.isFinite(chapter.start) && Number.isFinite(chapter.end),
     ),
     model: result.model,
+    pace: request.pace,
     elapsedMs,
   }
 }

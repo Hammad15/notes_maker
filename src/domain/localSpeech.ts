@@ -119,14 +119,34 @@ export interface LocalNotesMessage {
 }
 
 const NOTES_LOG_LINE = /^(?:llama_|ggml_|main:|build:|print_info:|load_backend:)/
+const TIMESTAMPED_TRANSCRIPT_LINE = /^\[\d{1,2}:\d{2}(?::\d{2})?\](?:\s|$)/
 
-/** Drop llama.cpp logs and ChatML end markers. Keep the study notes. */
+/** The reply after the last Assistant marker. The prompt before it is not notes. */
+function textAfterLastAssistant(raw: string): string {
+  let end = -1
+  const token = /<\|im_start\|>\s*assistant\b[^\S\n]*/gi
+  for (const match of raw.matchAll(token)) {
+    if (match.index == null) continue
+    end = Math.max(end, match.index + match[0].length)
+  }
+  const lineMarker = /^\s*assistant\s*:\s*/gim
+  for (const match of raw.matchAll(lineMarker)) {
+    if (match.index == null) continue
+    end = Math.max(end, match.index + match[0].length)
+  }
+  return end < 0 ? raw : raw.slice(end)
+}
+
+/** Drop llama.cpp logs, the echoed prompt, and timestamped transcript lines. */
 export function cleanNotesReply(raw: string): string {
-  const withoutTokens = raw
-    .replace(/\u0000/g, "")
-    .replace(/<\|im_start\|>assistant\n?/g, "")
-    .replace(/<\|im_end\|>/g, "")
-  const lines = withoutTokens.split(/\r?\n/).filter((line) => !NOTES_LOG_LINE.test(line.trim()))
+  const kept = textAfterLastAssistant(raw.replace(/\u0000/g, ""))
+  const withoutTokens = kept.replace(/<\|im_end\|>/g, "")
+  const lines = withoutTokens.split(/\r?\n/).filter((line) => {
+    const trimmed = line.trim()
+    if (NOTES_LOG_LINE.test(trimmed)) return false
+    if (TIMESTAMPED_TRANSCRIPT_LINE.test(trimmed)) return false
+    return true
+  })
   return lines.join("\n").trim()
 }
 

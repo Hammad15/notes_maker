@@ -306,7 +306,9 @@ describe("course files", () => {
     const transcriptDir = path.join(course.path, ".study", "transcripts")
     const transcriptFiles = (await readdir(transcriptDir)).filter((name) => name.endsWith(".json"))
     expect(transcriptFiles).toHaveLength(1)
-    expect(await store.readText(path.join(transcriptDir, transcriptFiles[0]))).toContain("Supply and demand.")
+    const savedSpeech = await store.readText(path.join(transcriptDir, transcriptFiles[0]))
+    expect(savedSpeech).toContain("Supply and demand.")
+    expect(savedSpeech).toContain('"pace": "clearer"')
     expect(await store.exists(path.join(course.path, "notes"))).toBe(false)
     const filed = await makeNotes(store, request)
     expect(transcribed).toBe(1)
@@ -398,6 +400,7 @@ describe("course files", () => {
       createdAt: "2026-01-01T00:00:00.000Z",
       durationSeconds: 80,
       transcribed: true,
+      pace: "clearer",
       segments: [
         { start: 0, end: 8, text: "Um so, today we're going to talk about cell division." },
         { start: 8, end: 20, text: "Mitosis is the process where the cell divides." },
@@ -481,6 +484,71 @@ describe("course files", () => {
     expect(detail.notes).toHaveLength(1)
   })
 
+  it("transcribes again when the saved speech used the other speed", async () => {
+    const home = path.join(root, "home")
+    const store = createNodeFileStore(path.join(root, "appdata"))
+    await store.mkdir(home)
+    const course = await createCourse(store, home, "Biology 101")
+    const media = path.join(root, "lecture.wav")
+    await writeFile(media, wav(2))
+    const noteId = "faster-speech"
+    const study = path.join(course.path, ".study")
+    await store.mkdir(path.join(study, "transcripts"))
+    await store.mkdir(path.join(study, "sources"))
+    await store.writeText(
+      path.join(study, "transcripts", `${noteId}.json`),
+      `${JSON.stringify(
+        {
+          noteId,
+          provider: "local",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          durationSeconds: 4,
+          transcribed: true,
+          model: "ggml-tiny.en",
+          segments: [{ start: 0, end: 4, text: "Faster speech." }],
+          chapters: [],
+        },
+        null,
+        2,
+      )}\n`,
+    )
+    await store.writeText(
+      path.join(study, "sources", `${noteId}.json`),
+      `${JSON.stringify({ noteId, mediaPath: media, courseId: course.id, moduleId: null }, null, 2)}\n`,
+    )
+    readyLocal(store)
+    const groq = blockGroq()
+    let transcribed = 0
+    store.transcribeMedia = async () => {
+      transcribed += 1
+      return {
+        segments: [{ start: 0, end: 4, text: "Clearer speech." }],
+        durationSeconds: 4,
+        elapsedMs: 1000,
+        model: "ggml-base.en",
+      }
+    }
+    store.completeLocal = async (messages) => studyReply(messages)
+    const request = {
+      home,
+      courseId: course.id,
+      mediaPath: media,
+      provider: "local" as const,
+      moduleId: null,
+      moduleName: null,
+      newModuleName: null,
+    }
+    const filed = await makeNotes(store, request)
+    expect(transcribed).toBe(1)
+    expect(groq.calls).toBe(0)
+    const clearer = await store.readText(path.join(study, "transcripts", `${filed.id}.json`))
+    expect(clearer).toContain('"pace": "clearer"')
+    expect(clearer).toContain("Clearer speech.")
+    await makeNotes(store, request)
+    expect(transcribed).toBe(1)
+    vi.unstubAllGlobals()
+  })
+
   it("keeps loose folders and reserved names out of the module list", async () => {
     const home = path.join(root, "home")
     const store = createNodeFileStore(path.join(root, "appdata"))
@@ -525,6 +593,7 @@ describe("a saved long transcript", () => {
       createdAt: "2026-01-01T00:00:00.000Z",
       durationSeconds: cursor,
       transcribed: true,
+      pace: "clearer",
       segments,
       chapters: [],
       model: GROQ_WHISPER_MODEL,
@@ -627,6 +696,7 @@ describe("a recording that already has a note", () => {
           createdAt: "2026-01-01T00:00:00.000Z",
           durationSeconds: 20,
           transcribed: true,
+          pace: "clearer",
           segments: [
             { start: 0, end: 8, text: "Today we talk about cell division." },
             { start: 8, end: 20, text: "Mitosis is the process where the cell divides." },

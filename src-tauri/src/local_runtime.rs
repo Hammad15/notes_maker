@@ -581,12 +581,88 @@ pub(crate) fn setup_local(
     Ok(status_value(&status, pace))
 }
 
+fn last_assistant_end(raw: &str) -> Option<usize> {
+    let lower = raw.to_ascii_lowercase();
+    let mut best: Option<usize> = None;
+    let token = "<|im_start|>assistant";
+    let mut from = 0;
+    while let Some(rel) = lower[from..].find(token) {
+        let at = from + rel;
+        let mut end = at + token.len();
+        let bytes = raw.as_bytes();
+        while end < bytes.len() && (bytes[end] == b' ' || bytes[end] == b'\t') {
+            end += 1;
+        }
+        best = Some(end);
+        from = end.max(at + 1);
+    }
+    let mut offset = 0;
+    for line in raw.split_inclusive('\n') {
+        let trimmed_start = line.len() - line.trim_start().len();
+        let body = line.trim();
+        let body_lower = body.to_ascii_lowercase();
+        if let Some(rel) = body_lower.find("assistant:") {
+            if rel == 0 {
+                let mut after = "assistant:".len();
+                let bytes = body.as_bytes();
+                while after < bytes.len() && (bytes[after] == b' ' || bytes[after] == b'\t') {
+                    after += 1;
+                }
+                let end = offset + trimmed_start + after;
+                if best.map(|current| end >= current).unwrap_or(true) {
+                    best = Some(end);
+                }
+            }
+        }
+        offset += line.len();
+    }
+    best
+}
+
+fn timestamped_transcript_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    let bytes = trimmed.as_bytes();
+    if bytes.first() != Some(&b'[') {
+        return false;
+    }
+    let mut index = 1;
+    let mut digits = 0;
+    while index < bytes.len() && bytes[index].is_ascii_digit() {
+        digits += 1;
+        index += 1;
+        if digits > 2 {
+            return false;
+        }
+    }
+    if digits == 0 || index >= bytes.len() || bytes[index] != b':' {
+        return false;
+    }
+    index += 1;
+    if index + 1 >= bytes.len() || !bytes[index].is_ascii_digit() || !bytes[index + 1].is_ascii_digit() {
+        return false;
+    }
+    index += 2;
+    if index < bytes.len() && bytes[index] == b':' {
+        index += 1;
+        if index + 1 >= bytes.len() || !bytes[index].is_ascii_digit() || !bytes[index + 1].is_ascii_digit() {
+            return false;
+        }
+        index += 2;
+    }
+    if index >= bytes.len() || bytes[index] != b']' {
+        return false;
+    }
+    index += 1;
+    index == bytes.len() || bytes[index].is_ascii_whitespace()
+}
+
 fn clean_notes_reply(raw: &str) -> String {
-    let stripped = raw
-        .replace('\u{0000}', "")
-        .replace("<|im_start|>assistant\n", "")
-        .replace("<|im_start|>assistant", "")
-        .replace("<|im_end|>", "");
+    let without_nulls = raw.replace('\u{0000}', "");
+    let kept = match last_assistant_end(&without_nulls) {
+        Some(end) => &without_nulls[end..],
+        None => without_nulls.as_str(),
+    };
+    let stripped = kept.replace("<|im_end|>", "");
     let mut lines = Vec::new();
     for line in stripped.lines() {
         let trimmed = line.trim();
@@ -596,6 +672,7 @@ fn clean_notes_reply(raw: &str) -> String {
             || trimmed.starts_with("build:")
             || trimmed.starts_with("print_info:")
             || trimmed.starts_with("load_backend:")
+            || timestamped_transcript_line(trimmed)
         {
             continue;
         }
@@ -2451,6 +2528,12 @@ mod tests {
         assert_eq!(
             clean_notes_reply("llama_print_timings: load\n## Cells\n\n- Mitosis.<|im_end|>\n"),
             "## Cells\n\n- Mitosis."
+        );
+        assert_eq!(
+            clean_notes_reply(
+                "User:\nTranscript:\n[1:00] To my beloved ones,\n[14:16] She was given the glad tidings.\n\nAssistant:\nKey points.\n[2:00] Still copied.\n"
+            ),
+            "Key points."
         );
     }
 

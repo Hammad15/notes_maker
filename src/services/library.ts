@@ -559,6 +559,21 @@ export async function findRecordingNote(
   return saved?.note ?? null
 }
 
+/** Pace stored on the transcript, or the pace implied by an older speech-model name. */
+function recordedPace(transcript: Transcript): SpeechPace | null {
+  if (transcript.pace === "faster" || transcript.pace === "clearer") return transcript.pace
+  const model = transcript.model?.toLowerCase() ?? ""
+  if (model.includes("tiny")) return "faster"
+  if (model.includes("base")) return "clearer"
+  return null
+}
+
+/** Reuse speech only when it was made at the speed the user has selected now. */
+function transcriptMatchesPace(transcript: Transcript, pace: SpeechPace): boolean {
+  const saved = recordedPace(transcript)
+  return saved != null && saved === pace
+}
+
 async function findSavedTranscript(
   store: FileStore,
   course: CourseDetail,
@@ -682,10 +697,11 @@ export async function makeNotes(
   }
   const saved = await findSavedTranscript(store, course, input)
   const addingBeside = input.noteChoice === "add" && saved?.note != null
+  const reuseTranscript = saved != null && transcriptMatchesPace(saved.transcript, pace)
   const probe = await store.probeMedia(input.mediaPath)
   const title = titleFromMediaPath(input.mediaPath)
   const rollback = {
-    transcriptionComplete: saved != null,
+    transcriptionComplete: saved != null && reuseTranscript,
     partialTranscriptPaths: [] as string[],
     incompleteNotePaths: [] as string[],
     finishedNotePaths: saved?.note ? [saved.note.markdownPath, saved.note.pdfPath] : [],
@@ -694,9 +710,9 @@ export async function makeNotes(
   throwIfNoteCancelled(input.jobId)
   let transcript: Transcript
   let existingNote: NoteInfo | null = null
-  if (saved) {
+  if (saved && reuseTranscript) {
     transcript = saved.transcript
-    existingNote = addingBeside ? null : saved.note
+    existingNote = addingBeside ? null : (saved?.note ?? null)
     rollback.transcriptionComplete = true
   } else {
     if (!localLanguageSupported(language)) {
@@ -715,6 +731,7 @@ export async function makeNotes(
       language: language.code,
     })
     rollback.transcriptionComplete = true
+    existingNote = addingBeside ? null : (saved?.note ?? null)
   }
   hooks?.onWriting?.()
 
@@ -753,16 +770,16 @@ export async function makeNotes(
     ? crypto.randomUUID()
     : existingNote?.id || transcript.noteId || crypto.randomUUID()
   const study = joinPath(course.path, ".study")
+  const storedTranscript: Transcript = {
+    ...transcript,
+    noteId,
+    createdAt: addingBeside || !reuseTranscript ? new Date().toISOString() : transcript.createdAt,
+  }
   if (!existingNote) {
     await store.mkdir(joinPath(study, "transcripts"))
     await store.mkdir(joinPath(study, "sources"))
     await store.mkdir(joinPath(study, "history"))
     await store.setHidden(study)
-    const storedTranscript: Transcript = {
-      ...transcript,
-      noteId,
-      createdAt: addingBeside ? new Date().toISOString() : transcript.createdAt,
-    }
     await store.writeText(
       joinPath(study, "transcripts", `${noteId}.json`),
       `${JSON.stringify(storedTranscript, null, 2)}\n`,
@@ -774,10 +791,16 @@ export async function makeNotes(
       moduleId,
     }
     await store.writeText(joinPath(study, "sources", `${noteId}.json`), `${JSON.stringify(source, null, 2)}\n`)
+  } else if (!reuseTranscript) {
+    await store.mkdir(joinPath(study, "transcripts"))
+    await store.writeText(
+      joinPath(study, "transcripts", `${noteId}.json`),
+      `${JSON.stringify(storedTranscript, null, 2)}\n`,
+    )
   }
   throwIfNoteCancelled(input.jobId)
   const notesStarted = Date.now()
-  const afterTranscription = saved == null
+  const afterTranscription = !reuseTranscript
   let writingDone = 0
   let writingTotal = 0
   let stepStartedMs = notesStarted
@@ -928,6 +951,9 @@ async function loadTranscript(store: FileStore, coursePath: string, noteId: stri
       transcribed,
       segments: transcribed ? segments : [],
       chapters,
+      pace: json.pace === "faster" || json.pace === "clearer" ? json.pace : undefined,
+      model: typeof json.model === "string" ? json.model : undefined,
+      elapsedMs: typeof json.elapsedMs === "number" ? json.elapsedMs : undefined,
     }
   } catch {
     return null

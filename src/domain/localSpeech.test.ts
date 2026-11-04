@@ -444,6 +444,11 @@ describe("setup downloads", () => {
     expect(cleanNotesReply("llama_print_timings: load\n## Cells\n\n- Mitosis.<|im_end|>\n")).toBe(
       "## Cells\n\n- Mitosis.",
     )
+    expect(
+      cleanNotesReply(
+        "User:\nTranscript:\n[1:00] To my beloved ones,\n[14:16] She was given the glad tidings.\n\nAssistant:\nKey points.\n[2:00] Still copied.\n",
+      ),
+    ).toBe("Key points.")
     expect(FFMPEG_BUNDLE.version).toBe("9.0.2")
     expect(FFMPEG_BUNDLE.zipUrl).toContain("ffmpeg-9.0.2-essentials_build.zip")
   })

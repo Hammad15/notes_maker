@@ -14,6 +14,8 @@ export interface Transcript {
   transcribed: boolean
   segments: TranscriptSegment[]
   chapters: ChapterMark[]
+  /** Faster or Clearer. A later notes run with the other speed transcribes again. */
+  pace?: "faster" | "clearer"
   model?: string
   elapsedMs?: number
 }
