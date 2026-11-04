@@ -1,4 +1,4 @@
-import { messageOf } from "./errors"
+import { messageOf } from "./errors.ts"
 
 export const NOTES_CANCELLED = "Note making was cancelled."
 

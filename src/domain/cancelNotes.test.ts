@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { pathsToRemoveOnCancel } from "./cancelNotes"
+import { pathsToRemoveOnCancel } from "./cancelNotes.ts"
 
 describe("cancel rollback", () => {
   it("deletes a partial transcript and leaves a finished note", () => {
