@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
-import { cancelMakeNotes, clearTranscriptionJob, localRuntimeStatus } from "./localRuntime"
+import { cancelMakeNotes, clearTranscriptionJob, freeSpaceBytes, localRuntimeStatus } from "./localRuntime"
 
 describe("local setup for one speech speed", () => {
   let dir: string | null = null
@@ -10,6 +10,15 @@ describe("local setup for one speech speed", () => {
   afterEach(async () => {
     if (dir) await rm(dir, { recursive: true, force: true })
     dir = null
+  })
+
+  it("reads free space again while setup is still deciding", async () => {
+    const missing = path.join(os.tmpdir(), "study-notes-free-space-missing")
+    const first = await freeSpaceBytes(missing)
+    const second = await freeSpaceBytes(os.tmpdir())
+    expect(first).toBeGreaterThan(0)
+    expect(second).toBeGreaterThan(0)
+    expect(Math.abs(first - second)).toBeLessThan(first)
   })
 
   it("stays not ready for Clearer when only a Faster file is on disk", async () => {

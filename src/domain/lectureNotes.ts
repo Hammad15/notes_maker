@@ -849,13 +849,13 @@ export async function writeLectureNotes(request: LectureNotesRequest): Promise<s
       .map((part) => part.markdown.trim())
       .filter(Boolean)
       .join("\n\n")
-    throw new StudyError(
-      emptyNotesMessage(writer),
-      "NOTES",
-      omitted?.detail ?? (returned ? `body: ${returned.slice(0, 8000)}` : null),
-    )
+    throw new StudyError(emptyNotesMessage(writer), "NOTES", omittedNoteDetail(omitted, returned))
   }
   return notes
+}
+
+function omittedNoteDetail(error: StudyError | null, returned: string): string | null {
+  return error?.detail ?? (returned ? `body: ${returned.slice(0, 8000)}` : null)
 }
 
 function omittedSection(error: unknown): error is StudyError {

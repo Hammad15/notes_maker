@@ -45,6 +45,7 @@ export function createBrowserHost(): Host {
     startInstaller: async (url) => {
       await browserCall({ op: "startInstaller", url })
     },
+    freeSpace: () => browserCall<number>({ op: "freeSpace" }),
     setupLocal: async (pace, onProgress) => {
       onProgress?.({
         phase: "model",

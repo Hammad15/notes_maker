@@ -89,6 +89,7 @@ export function createTauriHost(): Host {
         stop()
       }
     },
+    freeSpace: () => tauriCall<number>({ op: "freeSpace" }),
     setupLocal: async (pace, onProgress) => {
       let unlisten = () => {}
       if (onProgress) {

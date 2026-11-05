@@ -2,12 +2,12 @@ import { NavLink, useNavigate } from "react-router-dom"
 import { Plus, X } from "lucide-react"
 import { CANCEL_NOTE_HELP } from "../domain/cancelNotes"
 import { CLOUD_NOTES_UNAVAILABLE } from "../domain/errors"
-import { barPercent, localJobMessage, type SpeechPace } from "../domain/localSpeech"
+import { barPercent, formatByteSize, localJobMessage, setupDownloadBytes, type SpeechPace } from "../domain/localSpeech"
 import { WINDOWS_DIALOG_REQUIRED } from "../platform/dialogs"
 import { useHost } from "../platform/host"
 import { useLibrary } from "../state/library-context"
 import { Button } from "@/components/ui/button"
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { FeedbackDialog } from "./feedback-dialog"
 import { FirstRunTour } from "./first-run-tour"
 import { NameDialog } from "./name-dialog"
@@ -19,10 +19,35 @@ function setupPercent(received: number, total: number | null): number | null {
 
 function ProviderSwitch() {
   const { settings, setProvider, setSpeechPace, localStatus, setupProgress, setupError, setupLocal } = useLibrary()
+  const host = useHost()
   const [error, setError] = useState<string | null>(null)
+  const [availableBytes, setAvailableBytes] = useState<number | null>(null)
   const localReady = localStatus?.ready === true
   const pace = settings.speechPace
+  const setupShown = settings.provider === "local" && localStatus != null && !localReady
+  const requiredBytes = localStatus ? setupDownloadBytes(localStatus.missing, pace) : 0
+  const spaceShort = availableBytes != null && requiredBytes > availableBytes
   const setupRatio = setupProgress ? setupPercent(setupProgress.received, setupProgress.total) : null
+  useEffect(() => {
+    if (!setupShown) return
+    let stopped = false
+    const read = () => {
+      void host
+        .freeSpace()
+        .then((bytes) => {
+          if (!stopped && Number.isFinite(bytes) && bytes >= 0) setAvailableBytes(bytes)
+        })
+        .catch(() => {
+          // Keep the last reading. The next pass retries while this screen is open.
+        })
+    }
+    read()
+    const timer = window.setInterval(read, 2000)
+    return () => {
+      stopped = true
+      window.clearInterval(timer)
+    }
+  }, [host, setupShown])
   return (
     <fieldset className="grid gap-2">
       <legend className="text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase">
@@ -81,16 +106,25 @@ function ProviderSwitch() {
       ) : (
         <p className="text-xs leading-relaxed text-muted-foreground">{CLOUD_NOTES_UNAVAILABLE}</p>
       )}
-      {settings.provider === "local" && localStatus && !localReady ? (
-        <Button
-          type="button"
-          className="w-full"
-          disabled={setupProgress !== null}
-          aria-busy={setupProgress !== null}
-          onClick={() => void setupLocal()}
-        >
-          {setupProgress ? "Setting up…" : "Set up local notes"}
-        </Button>
+      {setupShown ? (
+        <>
+          <Button
+            type="button"
+            className="w-full"
+            disabled={setupProgress !== null || spaceShort}
+            aria-busy={setupProgress !== null}
+            onClick={() => {
+              if (spaceShort) return
+              void setupLocal()
+            }}
+          >
+            {setupProgress ? "Setting up…" : "Set up local notes"}
+          </Button>
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            {formatByteSize(requiredBytes)} required
+            {availableBytes != null ? ` · ${formatByteSize(availableBytes)} available` : " · checking free space"}
+          </p>
+        </>
       ) : null}
       {settings.provider === "local" && !localStatus ? (
         <p className="text-xs text-muted-foreground">Checking local notes…</p>

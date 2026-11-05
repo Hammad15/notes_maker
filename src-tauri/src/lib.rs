@@ -10,6 +10,74 @@ use tauri_plugin_dialog::DialogExt;
 
 mod local_runtime;
 
+fn volume_dir(path: &Path) -> PathBuf {
+    let mut current = path.to_path_buf();
+    loop {
+        if current.is_dir() {
+            return current;
+        }
+        if !current.pop() {
+            return path.to_path_buf();
+        }
+    }
+}
+
+/// Free bytes the user can use on the disk that holds local setup files.
+fn free_space_bytes(path: &Path) -> Result<u64, String> {
+    let dir = volume_dir(path);
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetDiskFreeSpaceExW(
+                directory: *const u16,
+                available: *mut u64,
+                total: *mut u64,
+                total_free: *mut u64,
+            ) -> i32;
+        }
+        let wide: Vec<u16> = dir.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+        let mut available = 0u64;
+        let ok = unsafe {
+            GetDiskFreeSpaceExW(
+                wide.as_ptr(),
+                &mut available,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            return Err("Could not read free space on that disk.".into());
+        }
+        return Ok(available);
+    }
+    #[cfg(not(windows))]
+    {
+        let output = Command::new("df")
+            .arg("-kP")
+            .arg(&dir)
+            .output()
+            .map_err(|error| error.to_string())?;
+        if !output.status.success() {
+            return Err("Could not read free space on that disk.".into());
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        let line = text
+            .lines()
+            .nth(1)
+            .ok_or("Could not read free space on that disk.")?;
+        let blocks = line
+            .split_whitespace()
+            .nth(3)
+            .ok_or("Could not read free space on that disk.")?;
+        let kib: u64 = blocks
+            .parse()
+            .map_err(|_| "Could not read free space on that disk.".to_string())?;
+        Ok(kib.saturating_mul(1024))
+    }
+}
+
 fn app_data_dir() -> PathBuf {
     #[cfg(target_os = "windows")]
     {
@@ -985,6 +1053,7 @@ fn desktop_request(app: tauri::AppHandle, request: Value) -> Result<Value, Strin
             Ok(Value::String(STANDARD.encode(bytes)))
         }
         "localStatus" => local_runtime::status_json(&app_data_dir(), &pace_of(&request)),
+        "freeSpace" => Ok(json!(free_space_bytes(&app_data_dir())?)),
         "activeTranscription" => Ok(local_runtime::active_job_json(&app_data_dir())),
         "clearTranscription" => {
             local_runtime::clear_job(&app_data_dir(), require_str(&request, "id")?)?;

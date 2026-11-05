@@ -14,6 +14,7 @@ export const Ops = {
   setHidden: "setHidden",
   probeMedia: "probeMedia",
   localStatus: "localStatus",
+  freeSpace: "freeSpace",
   setupLocal: "setupLocal",
   prepareCloudAudio: "prepareCloudAudio",
   readBytes: "readBytes",

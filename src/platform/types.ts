@@ -46,5 +46,7 @@ export interface Host {
   openUrl(url: string): Promise<void>
   startInstaller(url: string): Promise<void>
   setupLocal(pace: SpeechPace, onProgress?: (progress: SetupProgress) => void): Promise<LocalRuntimeStatus>
+  /** Free bytes on the disk that holds local setup files. */
+  freeSpace(): Promise<number>
   watchTranscription?(onProgress: (progress: TranscriptionProgress) => void): Promise<() => void>
 }

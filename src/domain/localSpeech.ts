@@ -40,6 +40,36 @@ export function speechModelsForSetup(pace: SpeechPace): Array<typeof SPEECH_MODE
   return [speechModel(pace)]
 }
 
+/** Bytes the Set up local notes button still has to download. */
+export function setupDownloadBytes(
+  missing: readonly LocalRuntimeStatus["missing"][number][],
+  pace: SpeechPace,
+): number {
+  const need = new Set(missing)
+  let bytes = 0
+  if (need.has("ffmpeg") || need.has("ffprobe")) bytes += FFMPEG_BUNDLE.zipBytes
+  if (need.has("engine")) bytes += WHISPER_ENGINE.zipBytes
+  if (need.has("model")) bytes += speechModel(pace).bytes
+  if (need.has("notesEngine")) bytes += LLAMA_ENGINE.zipBytes
+  if (need.has("notes")) bytes += NOTES_MODEL.bytes
+  return bytes
+}
+
+/** Disk space for the setup screen, in binary units. */
+export function formatByteSize(bytes: number): string {
+  const safe = Number.isFinite(bytes) && bytes > 0 ? bytes : 0
+  const units = ["B", "KB", "MB", "GB", "TB"]
+  let value = safe
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit += 1
+  }
+  if (unit === 0) return `${Math.round(value)} B`
+  const shown = value >= 100 ? value.toFixed(0) : value.toFixed(1)
+  return `${shown} ${units[unit]}`
+}
+
 /** Names a setup download without the file name on disk. */
 export function setupStepLabel(phase: SetupProgress["phase"]): string {
   switch (phase) {

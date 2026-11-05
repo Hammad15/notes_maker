@@ -13,6 +13,7 @@ import type { FileStore } from "../platform/types.ts"
 import {
   cancelMakeNotes as cancelMakeNotesRuntime,
   clearTranscriptionJob,
+  freeSpaceBytes,
   localRuntimeStatus,
   prepareCloudAudio,
   readActiveTranscription,
@@ -360,6 +361,8 @@ export async function dispatchDesktop(
       return store.probeMedia(requiredString(body, "path"))
     case Ops.localStatus:
       return store.localStatus(speechPace(body.pace))
+    case Ops.freeSpace:
+      return freeSpaceBytes(await store.appDataDir())
     case Ops.setupLocal:
       return store.setupLocal(speechPace(body.pace))
     case Ops.completeLocal: {

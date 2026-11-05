@@ -181,6 +181,23 @@ export async function localRuntimeStatus(appData: string, pace: SpeechPace = "cl
   return { ready: missing.length === 0, model: model.name, missing }
 }
 
+/** Free bytes on the volume that holds this folder. */
+export async function freeSpaceBytes(dir: string): Promise<number> {
+  let current = path.resolve(dir)
+  for (;;) {
+    try {
+      if ((await fs.stat(current)).isDirectory()) break
+    } catch {
+      // The setup folder may not exist until the first download.
+    }
+    const parent = path.dirname(current)
+    if (parent === current) break
+    current = parent
+  }
+  const stats = await fs.statfs(current)
+  return Number(stats.bavail) * Number(stats.bsize)
+}
+
 async function downloadVerified(
   url: string,
   dest: string,

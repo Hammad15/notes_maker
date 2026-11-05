@@ -20,6 +20,8 @@ import {
   scaleTranscriptionPercent,
   sameSavedRecording,
   SPEECH_MODEL,
+  formatByteSize,
+  setupDownloadBytes,
   setupStepLabel,
   speechModel,
   speechModelsForSetup,
@@ -134,6 +136,16 @@ describe("transcription stays usable", () => {
     expect(speechModelsForSetup("clearer").map((model) => model.file)).toEqual(["ggml-base.en.bin"])
     expect(setupStepLabel("model")).toBe("Downloading the speech model")
     expect(setupStepLabel("notes")).toBe("Downloading the notes model")
+    expect(setupDownloadBytes(["notes"], "clearer")).toBe(NOTES_MODEL.bytes)
+    expect(setupDownloadBytes(["ffmpeg", "ffprobe"], "faster")).toBe(FFMPEG_BUNDLE.zipBytes)
+    expect(setupDownloadBytes(["model"], "faster")).toBe(TINY_MODEL.bytes)
+    expect(setupDownloadBytes(["model"], "clearer")).toBe(SPEECH_MODEL.bytes)
+    expect(setupDownloadBytes(["engine", "notesEngine", "notes"], "clearer")).toBe(
+      WHISPER_ENGINE.zipBytes + LLAMA_ENGINE.zipBytes + NOTES_MODEL.bytes,
+    )
+    expect(setupDownloadBytes(["config"], "clearer")).toBe(0)
+    expect(formatByteSize(NOTES_MODEL.bytes)).toBe("4.4 GB")
+    expect(formatByteSize(TINY_MODEL.bytes)).toBe("74.1 MB")
     for (const phase of ["ffmpeg", "engine", "model", "notesEngine", "notes", "config"] as const) {
       expect(setupStepLabel(phase)).not.toMatch(/ggml|qwen|\.bin|\.gguf|\.zip/i)
     }
