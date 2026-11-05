@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { CLOUD_NOTES_UNAVAILABLE, messageOf } from "../domain/errors"
+import { groqApiKey } from "../domain/groq"
 import { fileName } from "../domain/paths"
 import { formatRange } from "../domain/text"
 import type { Preset } from "../domain/types"
@@ -24,6 +25,7 @@ export function NoteScreen() {
   const host = useHost()
   const { store } = host
   const { settings, revision } = useLibrary()
+  const groqOn = Boolean(groqApiKey())
   const [note, setNote] = useState<NoteDocument | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -192,7 +194,11 @@ export function NoteScreen() {
           Restyle these notes
         </h2>
         <p id="restyle-note" className="mt-2 text-sm text-muted-foreground">
-          {settings.provider === "cloud" ? CLOUD_NOTES_UNAVAILABLE : "Restyle uses local notes and keeps the previous copy."}
+          {settings.provider === "cloud" && !groqOn
+            ? CLOUD_NOTES_UNAVAILABLE
+            : settings.provider === "cloud"
+              ? "Restyle uses Groq and keeps the previous copy."
+              : "Restyle uses local notes and keeps the previous copy."}
         </p>
         <div className="mt-4 flex flex-wrap gap-2" role="group" aria-labelledby="restyle-heading">
           {PRESETS.map((item) => (
@@ -221,7 +227,7 @@ export function NoteScreen() {
           </p>
         ) : null}
         <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-          <Button type="submit" aria-describedby="restyle-note" disabled={busy || settings.provider === "cloud"}>
+          <Button type="submit" aria-describedby="restyle-note" disabled={busy || (settings.provider === "cloud" && !groqOn)}>
             {busy ? "Restyling…" : "Restyle notes"}
           </Button>
           <Button

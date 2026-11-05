@@ -2,6 +2,7 @@ import { NavLink, useNavigate } from "react-router-dom"
 import { Plus, X } from "lucide-react"
 import { CANCEL_NOTE_HELP } from "../domain/cancelNotes"
 import { CLOUD_NOTES_UNAVAILABLE } from "../domain/errors"
+import { groqApiKey } from "../domain/groq"
 import { barPercent, formatByteSize, localJobMessage, setupDownloadBytes, type SpeechPace } from "../domain/localSpeech"
 import { WINDOWS_DIALOG_REQUIRED } from "../platform/dialogs"
 import { useHost } from "../platform/host"
@@ -19,6 +20,7 @@ function setupPercent(received: number, total: number | null): number | null {
 
 function ProviderSwitch() {
   const { settings, setProvider, setSpeechPace, localStatus, setupProgress, setupError, setupLocal } = useLibrary()
+  const groqOn = Boolean(groqApiKey())
   const host = useHost()
   const [error, setError] = useState<string | null>(null)
   const [availableBytes, setAvailableBytes] = useState<number | null>(null)
@@ -104,7 +106,7 @@ function ProviderSwitch() {
             </p>
           </fieldset>
       ) : (
-        <p className="text-xs leading-relaxed text-muted-foreground">{CLOUD_NOTES_UNAVAILABLE}</p>
+        groqOn ? null : <p className="text-xs leading-relaxed text-muted-foreground">{CLOUD_NOTES_UNAVAILABLE}</p>
       )}
       {setupShown ? (
         <>

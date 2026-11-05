@@ -13,6 +13,8 @@ import type { DirEntry, FileStat, MediaProbe } from "../domain/types"
 
 export interface FileStore {
   appDataDir(): Promise<string>
+  /** GROQ_API_KEY from the app process, or null when it is unset. */
+  groqApiKey(): Promise<string | null>
   userHome(): Promise<string>
   roots(): Promise<string[]>
   readText(path: string): Promise<string | null>

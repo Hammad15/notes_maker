@@ -1,4 +1,4 @@
-import { CloudNotesError, StudyError } from "./errors.ts"
+import { StudyError } from "./errors.ts"
 import type { NotesLanguage } from "./language.ts"
 import { cleanSpokenText } from "./localSpeech.ts"
 import type { TranscriptSegment } from "./types.ts"
@@ -15,6 +15,19 @@ export const GROQ_WHISPER_MODEL = "whisper-large-v3-turbo"
  * Groq's model list names this id as its replacement, and the API serves it.
  */
 export const GROQ_NOTES_MODEL = "openai/gpt-oss-120b"
+/** Process environment. Cloud notes stay off when this is missing or blank. */
+export const GROQ_API_KEY = "GROQ_API_KEY"
+
+let rememberedGroqKey: string | null = null
+
+export function rememberGroqApiKey(key: string | null): void {
+  rememberedGroqKey = key?.trim() || null
+}
+
+/** The key remembered from GROQ_API_KEY. Empty when the variable is not set. */
+export function groqApiKey(): string | null {
+  return rememberedGroqKey
+}
 /** Moves the bar during one speech request. A finished chunk still sets the real slice. */
 export const CLOUD_WHISPER_SPEED = 10
 
@@ -190,13 +203,6 @@ async function groqPost(
   model: string,
   fetchImpl: typeof fetch,
 ): Promise<GroqHttpResult> {
-  void url
-  void key
-  void body
-  void jsonBody
-  void model
-  void fetchImpl
-  throw new CloudNotesError()
   const host = new URL(url).host
   if (host !== "api.groq.com") {
     throw new StudyError("Cloud notes use Groq.", "GROQ")

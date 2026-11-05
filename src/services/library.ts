@@ -3,7 +3,7 @@ import { withNoteHeader } from "../domain/compose"
 import { renderPdf } from "../domain/pdf"
 import { parseNoteFile, writeFrontmatter, type NoteMeta } from "../domain/frontmatter"
 import { CloudNotesError, LocalSetupError, StudyError } from "../domain/errors"
-import { restyleInstruction } from "../domain/groq"
+import { completeChat, GROQ_WHISPER_MODEL, rememberGroqApiKey, restyleInstruction, transcribeChunk } from "../domain/groq"
 import { writeLectureNotes, type NoteStyle } from "../domain/lectureNotes"
 import { localLanguageSupported, notesLanguage } from "../domain/language"
 import {
@@ -143,6 +143,13 @@ function forgetNoteCancel(jobId: string | undefined): void {
 
 function settingsPath(appData: string): string {
   return joinPath(appData, "settings.json")
+}
+
+/** GROQ_API_KEY from the app process. Missing or blank leaves cloud notes off. */
+export async function readGroqKey(store: FileStore): Promise<string | null> {
+  const key = (await store.groqApiKey())?.trim() || null
+  rememberGroqApiKey(key)
+  return key
 }
 
 async function writeJson(store: FileStore, path: string, value: unknown): Promise<void> {
@@ -622,6 +629,76 @@ async function findSavedTranscript(
   return best ? { transcript: best.transcript, note: best.note } : null
 }
 
+async function notesFromGroq(
+  key: string,
+  languageCode: string,
+  content: NoteContent,
+  style?: NoteStyle | null,
+  onStep?: (done: number, total: number) => void,
+  jobId?: string,
+): Promise<string> {
+  const body = await writeLectureNotes({
+    language: notesLanguage(languageCode),
+    content,
+    style,
+    onStep: (done, total) => {
+      throwIfNoteCancelled(jobId)
+      onStep?.(done, total)
+    },
+    writer: "groq",
+    complete: (messages, maxCompletionTokens) => {
+      throwIfNoteCancelled(jobId)
+      return completeChat(key, messages, globalThis.fetch, maxCompletionTokens)
+    },
+  })
+  return withNoteHeader(content, body)
+}
+
+async function transcribeWithGroq(
+  store: FileStore,
+  mediaPath: string,
+  input: { noteId: string; title: string; probe: { durationSeconds: number | null; chapters: ChapterMark[] } },
+  key: string,
+  languageCode: string,
+  pace: SpeechPace,
+): Promise<Transcript> {
+  const prepared = await store.prepareCloudAudio(mediaPath)
+  try {
+    const language = notesLanguage(languageCode)
+    const segments: TranscriptSegment[] = []
+    for (const chunk of prepared.chunks) {
+      const bytes = await store.readBytes(chunk.path)
+      const part = await transcribeChunk(key, bytes, fileName(chunk.path) || "audio.wav", language, chunk.startSeconds)
+      segments.push(...part)
+    }
+    if (!segments.some((segment) => segment.text.trim())) {
+      throw new StudyError("Groq did not return a transcript.", "GROQ")
+    }
+    return {
+      noteId: input.noteId,
+      provider: "cloud",
+      createdAt: new Date().toISOString(),
+      durationSeconds: input.probe.durationSeconds,
+      transcribed: true,
+      segments,
+      chapters: input.probe.chapters.filter(
+        (chapter) => Number.isFinite(chapter.start) && Number.isFinite(chapter.end),
+      ),
+      model: GROQ_WHISPER_MODEL,
+      pace,
+    }
+  } finally {
+    for (const chunk of prepared.chunks) {
+      if (chunk.path === mediaPath) continue
+      try {
+        await store.remove(chunk.path)
+      } catch {
+        // A leftover chunk stays in the app data temp folder.
+      }
+    }
+  }
+}
+
 async function notesFromLocal(
   store: FileStore,
   languageCode: string,
@@ -682,7 +759,8 @@ export async function makeNotes(
   input: MakeNotesInput,
   hooks?: { onWriting?: () => void; onProgress?: (progress: TranscriptionProgress) => void },
 ): Promise<NoteInfo> {
-  if (input.provider === "cloud") throw new CloudNotesError()
+  const groqKey = input.provider === "cloud" ? await readGroqKey(store) : null
+  if (input.provider === "cloud" && !groqKey) throw new CloudNotesError()
   const course = await findCourse(store, input.home, input.courseId)
   const settings = await loadSettings(store)
   const pace = speechPace(settings.speechPace)
@@ -715,21 +793,24 @@ export async function makeNotes(
     existingNote = addingBeside ? null : (saved?.note ?? null)
     rollback.transcriptionComplete = true
   } else {
-    if (!localLanguageSupported(language)) {
-      throw new StudyError("Local notes in this build use the English speech models.", "LANGUAGE")
-    }
     const noteId = crypto.randomUUID()
-    transcript = await transcribeLocal(store, input.mediaPath, { noteId, title, probe }, {
-      jobId: input.jobId || noteId,
-      home: input.home,
-      courseId: input.courseId,
-      moduleId: input.moduleId,
-      moduleName: input.moduleName,
-      newModuleName: input.newModuleName,
-      mediaPath: input.mediaPath,
-      pace,
-      language: language.code,
-    })
+    if (groqKey) {
+      transcript = await transcribeWithGroq(store, input.mediaPath, { noteId, title, probe }, groqKey, language.code, pace)
+    } else if (!localLanguageSupported(language)) {
+      throw new StudyError("Local notes in this build use the English speech models.", "LANGUAGE")
+    } else {
+      transcript = await transcribeLocal(store, input.mediaPath, { noteId, title, probe }, {
+        jobId: input.jobId || noteId,
+        home: input.home,
+        courseId: input.courseId,
+        moduleId: input.moduleId,
+        moduleName: input.moduleName,
+        newModuleName: input.newModuleName,
+        mediaPath: input.mediaPath,
+        pace,
+        language: language.code,
+      })
+    }
     rollback.transcriptionComplete = true
     existingNote = addingBeside ? null : (saved?.note ?? null)
   }
@@ -824,7 +905,9 @@ export async function makeNotes(
   }
   let body: string
   try {
-    body = await notesFromLocal(store, language.code, content, null, publishWriting, input.jobId)
+    body = groqKey
+      ? await notesFromGroq(groqKey, language.code, content, null, publishWriting, input.jobId)
+      : await notesFromLocal(store, language.code, content, null, publishWriting, input.jobId)
   } finally {
     clearInterval(notesTimer)
   }
@@ -1017,7 +1100,8 @@ export async function restyleNote(
     prompt: string
   },
 ): Promise<NoteDocument> {
-  if (input.provider === "cloud") throw new CloudNotesError()
+  const groqKey = input.provider === "cloud" ? await readGroqKey(store) : null
+  if (input.provider === "cloud" && !groqKey) throw new CloudNotesError()
   const note = await readNote(store, input.home, input.courseId, input.noteId)
   const course = await findCourse(store, input.home, input.courseId)
   const settings = await loadSettings(store)
@@ -1032,11 +1116,24 @@ export async function restyleNote(
     note.transcriptProduced,
   )
   const pace = speechPace(settings.speechPace)
-  const runtime = await store.localStatus(pace)
-  if (!runtime.ready) throw new LocalSetupError()
+  if (!groqKey) {
+    const runtime = await store.localStatus(pace)
+    if (!runtime.ready) throw new LocalSetupError()
+  }
   const language = notesLanguage(settings.languageCode)
   let body: string
-  if (content.transcriptProduced && content.segments.some((segment) => segment.text.trim())) {
+  if (groqKey && content.transcriptProduced && content.segments.some((segment) => segment.text.trim())) {
+    body = await notesFromGroq(groqKey, language.code, content, {
+      preset: input.preset,
+      prompt: input.prompt,
+    })
+  } else if (groqKey) {
+    const text = await completeChat(groqKey, [
+      { role: "system", content: restyleInstruction(language, input.preset, input.prompt) },
+      { role: "user", content: note.body },
+    ])
+    body = withNoteHeader(content, text)
+  } else if (content.transcriptProduced && content.segments.some((segment) => segment.text.trim())) {
     body = await notesFromLocal(store, language.code, content, {
       preset: input.preset,
       prompt: input.prompt,

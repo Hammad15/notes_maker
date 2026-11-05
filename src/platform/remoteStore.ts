@@ -18,6 +18,11 @@ function bytesToBase64(bytes: Uint8Array): string {
 export function createRemoteStore(call: Caller): FileStore {
   return {
     appDataDir: () => call<string>({ op: Ops.appDataDir }),
+    groqApiKey: async () => {
+      const value = await call<string | null>({ op: Ops.groqApiKey })
+      const key = value?.trim() ?? ""
+      return key || null
+    },
     userHome: () => call<string>({ op: Ops.userHome }),
     roots: () => call<string[]>({ op: Ops.roots }),
     readText: (path) => call<string | null>({ op: Ops.readText, path }),

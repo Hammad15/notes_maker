@@ -1002,6 +1002,17 @@ fn desktop_request(app: tauri::AppHandle, request: Value) -> Result<Value, Strin
     let op = require_str(&request, "op")?;
     match op {
         "appDataDir" => Ok(json!(app_data_dir().to_string_lossy())),
+        "groqApiKey" => match std::env::var("GROQ_API_KEY") {
+            Ok(value) => {
+                let key = value.trim().to_string();
+                if key.is_empty() {
+                    Ok(Value::Null)
+                } else {
+                    Ok(json!(key))
+                }
+            }
+            Err(_) => Ok(Value::Null),
+        },
         "userHome" => Ok(json!(user_home())),
         "roots" => Ok(json!(roots())),
         "readText" => read_text(require_str(&request, "path")?),

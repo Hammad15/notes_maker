@@ -1,5 +1,6 @@
 export const Ops = {
   appDataDir: "appDataDir",
+  groqApiKey: "groqApiKey",
   userHome: "userHome",
   roots: "roots",
   readText: "readText",

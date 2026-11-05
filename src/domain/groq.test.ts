@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { CloudNotesError, StudyError } from "./errors"
+import { StudyError } from "./errors"
 import {
   chatText,
   completeChat,
@@ -59,19 +59,24 @@ describe("Groq speech and notes", () => {
     expect(english).not.toMatch(/Hijrah|Biʿthah|Bi.thah|ISC\s*102/i)
   })
 
-  it("does not send a pasted key or a transcript to Groq", async () => {
+  it("sends chat and speech to Groq and keeps the key out of the log", async () => {
     const key = "gsk_secret_value"
     const request = "Transcript for this section:\n[00:00] The year 622 was spoken."
-    let calls = 0
-    const fetchImpl: typeof fetch = async () => {
-      calls += 1
+    const urls: string[] = []
+    const fetchImpl: typeof fetch = async (input, init) => {
+      urls.push(typeof input === "string" ? input : input instanceof URL ? input.href : input.url)
+      const auth = new Headers(init?.headers).get("authorization")
+      expect(auth).toBe(`Bearer ${key}`)
+      if (String(input).includes("/audio/")) {
+        return Response.json({ segments: [{ start: 0, end: 1, text: "Cells." }] })
+      }
       return Response.json({ choices: [{ message: { content: "## Cells" } }] })
     }
-    await expect(completeChat(key, [{ role: "user", content: request }], fetchImpl)).rejects.toBeInstanceOf(CloudNotesError)
+    await expect(completeChat(key, [{ role: "user", content: request }], fetchImpl)).resolves.toBe("## Cells")
     await expect(
       transcribeChunk(key, new Uint8Array([1, 2, 3]), "clip.wav", notesLanguage("en"), 0, fetchImpl),
-    ).rejects.toThrow("Cloud notes are not available in this build.")
-    expect(calls).toBe(0)
+    ).resolves.toEqual([{ start: 0, end: 1, text: "Cells." }])
+    expect(urls).toEqual([GROQ_CHAT_URL, GROQ_TRANSCRIPTIONS_URL])
     const detail = groqCallDetail(GROQ_NOTES_MODEL, 400, `bad ${key}`, key)
     expect(detail).toContain(`model: ${GROQ_NOTES_MODEL}`)
     expect(detail).toContain("status: 400")

@@ -31,6 +31,7 @@ import {
   listCourses,
   loadSettings,
   makeNotes,
+  readGroqKey,
   requestNoteCancel,
   saveSettings,
   type CourseSummary,
@@ -177,6 +178,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   const reload = useCallback(async () => {
     setError(null)
     const loaded = await loadSettings(store)
+    await readGroqKey(store)
     settingsRef.current = loaded
     setSettings(loaded)
     try {
@@ -262,6 +264,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   const setProvider = useCallback(
     async (provider: ProviderId) => {
       const next = { ...settingsRef.current, provider }
+      await readGroqKey(store)
       settingsRef.current = next
       setSettings(next)
       await saveSettings(store, next)

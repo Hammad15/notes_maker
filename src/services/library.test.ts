@@ -334,6 +334,9 @@ describe("course files", () => {
       `${JSON.stringify({ homeDirectory: home, provider: "cloud", groqApiKey: pasted, languageCode: "en" }, null, 2)}\n`,
     )
     await store.writeText(path.join(data, "license.json"), '{"entitled":true}\n')
+    await store.writeText(path.join(data, "groq.key"), "gsk_file_key\n")
+    const previousKey = process.env.GROQ_API_KEY
+    delete process.env.GROQ_API_KEY
     const groq = blockGroq()
     const request = {
       home,
@@ -367,6 +370,60 @@ describe("course files", () => {
     expect(settingsText).not.toContain("groqApiKey")
     expect(await pathsContaining(course.path, pasted)).toEqual([])
     expect(await pathsContaining(data, pasted)).toEqual([])
+    if (previousKey == null) delete process.env.GROQ_API_KEY
+    else process.env.GROQ_API_KEY = previousKey
+    vi.unstubAllGlobals()
+  })
+
+  it("uses Groq when GROQ_API_KEY is set", async () => {
+    const home = path.join(root, "home")
+    const data = path.join(root, "appdata")
+    const store = createNodeFileStore(data)
+    await store.mkdir(home)
+    const course = await createCourse(store, home, "Biology 101")
+    const media = path.join(root, "lecture.wav")
+    await writeFile(media, wav())
+    const key = "gsk_file_key"
+    const previousKey = process.env.GROQ_API_KEY
+    process.env.GROQ_API_KEY = key
+    await store.writeText(
+      path.join(data, "settings.json"),
+      `${JSON.stringify({ homeDirectory: home, provider: "cloud", languageCode: "en" }, null, 2)}\n`,
+    )
+    const urls: string[] = []
+    const native = globalThis.fetch
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const href = requestHref(input)
+      if (href.startsWith("file:")) return native(input, init)
+      urls.push(href)
+      const auth = new Headers(init?.headers).get("authorization")
+      expect(auth).toBe(`Bearer ${key}`)
+      if (href.includes("/audio/")) {
+        return Response.json({ segments: [{ start: 0, end: 1, text: "Mitosis begins." }] })
+      }
+      const body = typeof init?.body === "string" ? init.body : ""
+      if (/outline of the whole lecture/i.test(body)) {
+        return Response.json({ choices: [{ message: { content: '{"sections":[{"title":"Cells","start":0,"end":1}]}' } }] })
+      }
+      return Response.json({ choices: [{ message: { content: "## Cells\n\n- Mitosis begins." } }] })
+    })
+    const filed = await makeNotes(store, {
+      home,
+      courseId: course.id,
+      mediaPath: media,
+      provider: "cloud",
+      moduleId: null,
+      moduleName: null,
+      newModuleName: null,
+    })
+    expect(urls.some((url) => url.includes("api.groq.com"))).toBe(true)
+    const markdown = await store.readText(filed.markdownPath)
+    expect(markdown).toContain("## Cells")
+    expect(markdown).toContain('provider: "cloud"')
+    expect(await pathsContaining(home, key)).toEqual([])
+    expect((await store.readText(path.join(data, "settings.json"))) ?? "").not.toContain(key)
+    if (previousKey == null) delete process.env.GROQ_API_KEY
+    else process.env.GROQ_API_KEY = previousKey
     vi.unstubAllGlobals()
   })
 

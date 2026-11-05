@@ -136,6 +136,10 @@ export function createNodeFileStore(appData = resolveAppDataDir(process.platform
     async appDataDir() {
       return appData
     },
+    async groqApiKey() {
+      const key = process.env.GROQ_API_KEY?.trim() ?? ""
+      return key || null
+    },
     async userHome() {
       return os.homedir()
     },
@@ -324,6 +328,8 @@ export async function dispatchDesktop(
   switch (op) {
     case Ops.appDataDir:
       return store.appDataDir()
+    case Ops.groqApiKey:
+      return store.groqApiKey()
     case Ops.userHome:
       return store.userHome()
     case Ops.roots:
