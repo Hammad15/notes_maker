@@ -45,8 +45,10 @@ jobs:
         run: |
           shopt -s nullglob
           files=(src-tauri/target/release/bundle/dmg/*.dmg)
-          if [ "${#files[@]}" -eq 0 ]; then
-            echo "No .dmg was produced."
+          if [ "${#files[@]}" -ne 1 ]; then
+            echo "Expected one .dmg."
             exit 1
           fi
-          gh release upload "${{ github.event.release.tag_name }}" "${files[@]}" --clobber
+          dest="src-tauri/target/release/bundle/dmg/Create Notes for Mac.dmg"
+          cp "${files[0]}" "$dest"
+          gh release upload "${{ github.event.release.tag_name }}" "$dest" --clobber

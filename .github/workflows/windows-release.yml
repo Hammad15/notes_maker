@@ -40,8 +40,10 @@ jobs:
         shell: pwsh
         run: |
           $files = @(Get-ChildItem -Path "src-tauri/target/release/bundle/msi" -Filter *.msi)
-          if ($files.Count -eq 0) {
-            Write-Error "No .msi was produced."
+          if ($files.Count -ne 1) {
+            Write-Error "Expected one .msi."
             exit 1
           }
-          gh release upload "${{ github.event.release.tag_name }}" $files.FullName --clobber
+          $dest = Join-Path $files[0].DirectoryName "Create Notes for Windows.msi"
+          Copy-Item -LiteralPath $files[0].FullName -Destination $dest -Force
+          gh release upload "${{ github.event.release.tag_name }}" $dest --clobber
