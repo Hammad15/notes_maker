@@ -1,0 +1,47 @@
+name: macOS release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  dmg:
+    runs-on: macos-latest
+    steps:
+      - name: Check out the release
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build output
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install npm packages
+        run: npm ci
+
+      - name: Build the unsigned disk image
+        run: npm run tauri -- build --bundles dmg --no-sign
+
+      - name: Upload the disk image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          shopt -s nullglob
+          files=(src-tauri/target/release/bundle/dmg/*.dmg)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No .dmg was produced."
+            exit 1
+          fi
+          gh release upload "${{ github.event.release.tag_name }}" "${files[@]}" --clobber
