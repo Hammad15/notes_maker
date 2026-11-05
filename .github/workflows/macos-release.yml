@@ -42,6 +42,7 @@ jobs:
       - name: Upload the disk image
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           shopt -s nullglob
           files=(src-tauri/target/release/bundle/dmg/*.dmg)
@@ -49,6 +50,11 @@ jobs:
             echo "Expected one .dmg."
             exit 1
           fi
-          dest="src-tauri/target/release/bundle/dmg/Create Notes for Mac.dmg"
+          version="${RELEASE_TAG#[vV]}"
+          if [ -z "$version" ]; then
+            echo "The release tag has no version."
+            exit 1
+          fi
+          dest="src-tauri/target/release/bundle/dmg/CreateNotes_V${version}_Mac.dmg"
           cp "${files[0]}" "$dest"
-          gh release upload "${{ github.event.release.tag_name }}" "$dest" --clobber
+          gh release upload "$RELEASE_TAG" "$dest" --clobber

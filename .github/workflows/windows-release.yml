@@ -37,6 +37,7 @@ jobs:
       - name: Upload the installer
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         shell: pwsh
         run: |
           $files = @(Get-ChildItem -Path "src-tauri/target/release/bundle/msi" -Filter *.msi)
@@ -44,6 +45,11 @@ jobs:
             Write-Error "Expected one .msi."
             exit 1
           }
-          $dest = Join-Path $files[0].DirectoryName "Create Notes for Windows.msi"
+          $version = $env:RELEASE_TAG -replace '^[vV]', ''
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            Write-Error "The release tag has no version."
+            exit 1
+          }
+          $dest = Join-Path $files[0].DirectoryName "CreateNotes_V${version}_Windows_x64.msi"
           Copy-Item -LiteralPath $files[0].FullName -Destination $dest -Force
-          gh release upload "${{ github.event.release.tag_name }}" $dest --clobber
+          gh release upload $env:RELEASE_TAG $dest --clobber
