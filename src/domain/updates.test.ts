@@ -101,4 +101,13 @@ describe("installer launch", () => {
     expect(effect.includes("startInstaller")).toBe(false)
     expect(effect.includes("confirmInstall")).toBe(false)
   })
+
+  it("hides a dismissed update until the app restarts", () => {
+    const source = readFileSync(path.join(process.cwd(), "src/components/update-notice.tsx"), "utf8")
+    expect(source).toContain("Dismiss the update notice")
+    expect(source).toContain("dismissedUntilRestart")
+    expect(source.includes("localStorage")).toBe(false)
+    expect(source.includes("sessionStorage")).toBe(false)
+    expect(source.includes("saveSettings")).toBe(false)
+  })
 })

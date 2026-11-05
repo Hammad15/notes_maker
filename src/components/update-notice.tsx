@@ -1,12 +1,17 @@
+import { X } from "lucide-react"
 import { useEffect, useState } from "react"
 import { messageOf } from "../domain/errors"
 import { newerInstaller, RELEASES_URL, type InstallerUpdate } from "../domain/updates"
 import { useHost } from "../platform/host"
 import { Button } from "@/components/ui/button"
 
+/** Lives for this process. A restart reads GitHub again. */
+let dismissedUntilRestart = false
+
 export function UpdateNotice() {
   const host = useHost()
   const [update, setUpdate] = useState<InstallerUpdate | null>(null)
+  const [dismissed, setDismissed] = useState(dismissedUntilRestart)
   const [phase, setPhase] = useState<"ready" | "downloading" | "started">("ready")
   const [startError, setStartError] = useState<string | null>(null)
 
@@ -30,6 +35,12 @@ export function UpdateNotice() {
   }, [])
 
   if (!update) return null
+  if (dismissed) return null
+
+  function dismiss() {
+    dismissedUntilRestart = true
+    setDismissed(true)
+  }
 
   async function confirmInstall() {
     if (!update || phase !== "ready") return
@@ -57,17 +68,27 @@ export function UpdateNotice() {
         <p role="status" className="min-w-0 text-sm">
           {status}
         </p>
-        <Button
-          type="button"
-          className="w-fit shrink-0"
-          aria-label={`Download and start the Create Notes ${update.version} installer`}
-          disabled={phase !== "ready"}
-          onClick={() => {
-            void confirmInstall()
-          }}
-        >
-          {phase === "downloading" ? "Downloading…" : phase === "started" ? "Installer started" : "Start installer"}
-        </Button>
+        <div className="flex shrink-0 items-center gap-1">
+          <Button
+            type="button"
+            className="w-fit shrink-0"
+            aria-label={`Download and start the Create Notes ${update.version} installer`}
+            disabled={phase !== "ready"}
+            onClick={() => {
+              void confirmInstall()
+            }}
+          >
+            {phase === "downloading" ? "Downloading…" : phase === "started" ? "Installer started" : "Start installer"}
+          </Button>
+          <button
+            type="button"
+            aria-label="Dismiss the update notice"
+            className="grid size-10 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+            onClick={dismiss}
+          >
+            <X className="size-6" aria-hidden="true" />
+          </button>
+        </div>
       </div>
       {startError ? (
         <p role="alert" className="mx-auto mt-2 w-full max-w-4xl text-sm text-destructive">
