@@ -1,6 +1,6 @@
 [package]
 name = "study-notes"
-version = "0.1.0"
+version = "1.0.2"
 description = "Create Notes on this computer"
 authors = ["Hammad15"]
 license = "GPL-3.0-only"

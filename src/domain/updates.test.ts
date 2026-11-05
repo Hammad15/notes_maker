@@ -17,19 +17,19 @@ describe("newerInstaller", () => {
 
   it("prefers a newer Windows setup exe and ignores drafts, prereleases, and other files", () => {
     const update = newerInstaller([
-      release("v0.2.0", [
+      release("v1.0.3", [
         { name: "CreateNotes_0.2.0_x64-setup.exe.sig", browser_download_url: `${setup}.sig` },
         { name: "notes.zip", browser_download_url: "https://github.com/Hammad15/notes_maker/releases/download/v0.2.0/notes.zip" },
         { name: "Create Notes.msi", browser_download_url: "https://github.com/Hammad15/notes_maker/releases/download/v0.2.0/Create.Notes.msi" },
         { name: "CreateNotes_0.2.0_x64-setup.exe", browser_download_url: setup },
       ]),
-      release("v0.3.0", [{ name: "CreateNotes.dmg", browser_download_url: "https://github.com/Hammad15/notes_maker/releases/download/v0.3.0/CreateNotes.dmg" }]),
+      release("v1.1.0", [{ name: "CreateNotes.dmg", browser_download_url: "https://github.com/Hammad15/notes_maker/releases/download/v0.3.0/CreateNotes.dmg" }]),
       release("v9.0.0", [{ name: "Setup.exe", browser_download_url: setup }], { draft: true }),
       release("v8.0.0", [{ name: "Setup.exe", browser_download_url: setup }], { prerelease: true }),
     ])
     expect(update).toEqual({
-      version: "0.2.0",
-      name: "Create Notes v0.2.0",
+      version: "1.0.3",
+      name: "Create Notes v1.0.3",
       downloadUrl: setup,
     })
   })
@@ -37,10 +37,10 @@ describe("newerInstaller", () => {
   it("keeps a lower installer when a higher release has none", () => {
     const older = "https://github.com/Hammad15/notes_maker/releases/download/v0.1.1/CreateNotes.exe"
     const update = newerInstaller([
-      release("v0.4.0", [{ name: "AppImage", browser_download_url: "https://example.com/CreateNotes.AppImage" }]),
-      release("v0.1.1", [{ name: "CreateNotes.exe", browser_download_url: older }]),
+      release("v1.2.0", [{ name: "AppImage", browser_download_url: "https://example.com/CreateNotes.AppImage" }]),
+      release("v1.0.3", [{ name: "CreateNotes.exe", browser_download_url: older }]),
     ])
-    expect(update?.version).toBe("0.1.1")
+    expect(update?.version).toBe("1.0.3")
     expect(update?.downloadUrl).toBe(older)
   })
 

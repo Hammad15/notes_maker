@@ -1,7 +1,7 @@
 // A newer Windows installer is downloaded and started after the user confirms.
 // The Tauri updater installs a signed bundle and does not fit this app.
 
-export const APP_VERSION = "0.1.0"
+export const APP_VERSION = "1.0.2"
 
 export const RELEASES_URL = "https://api.github.com/repos/Hammad15/notes_maker/releases?per_page=20"
 
