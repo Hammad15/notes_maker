@@ -2,7 +2,7 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { writeFrontmatter } from "../domain/frontmatter"
+import { parseNoteFile, writeFrontmatter } from "../domain/frontmatter"
 import { GROQ_WHISPER_MODEL } from "../domain/groq"
 import { estimateTokens } from "../domain/lectureNotes"
 import { CloudNotesError } from "../domain/errors"
@@ -14,6 +14,7 @@ import {
   createModule,
   deleteNote,
   findRecordingNote,
+  generateNotePdf,
   getCourse,
   loadSettings,
   makeNotes,
@@ -97,6 +98,10 @@ function blockGroq(): { calls: number } {
   return seen
 }
 
+function storedBody(text: string | null): string {
+  return parseNoteFile(text ?? "")?.body.replace(/^\n+/, "").replace(/\s+$/, "") ?? ""
+}
+
 function studyReply(messages: LocalNotesMessage[], version?: { n: number }): string {
   const system = messages.find((message) => message.role === "system")?.content ?? ""
   const user = messages.find((message) => message.role === "user")?.content ?? ""
@@ -127,7 +132,7 @@ function studyReply(messages: LocalNotesMessage[], version?: { n: number }): str
 }
 
 describe("course files", () => {
-  it("files markdown, a PDF, a transcript, and the media path", async () => {
+  it("files markdown, a transcript, and the media path", async () => {
     const home = path.join(root, "home")
     const data = path.join(root, "appdata")
     const media = path.join(root, "Lecture 3.wav")
@@ -181,8 +186,8 @@ describe("course files", () => {
     expect(markdown).toContain("id:")
     expect(markdown).toContain("# Lecture 3")
     expect(filed.markdownPath).toContain(`${path.sep}Cells${path.sep}notes${path.sep}`)
-    const pdfBytes = await store.stat(filed.pdfPath)
-    expect(pdfBytes?.size).toBeGreaterThan(500)
+    expect(filed.pdfExists).toBe(false)
+    expect(await store.exists(filed.pdfPath)).toBe(false)
 
     const source = JSON.parse(
       (await store.readText(path.join(course.path, ".study", "sources", `${filed.id}.json`))) ?? "{}",
@@ -235,7 +240,8 @@ describe("course files", () => {
     expect(undone.body).toContain("## Cell division")
     expect(undone.body).not.toContain("## Transcript")
     expect(undone.hasHistory).toBe(false)
-    expect(await store.stat(undone.pdfPath)).toMatchObject({ isDir: false })
+    expect(undone.pdfExists).toBe(false)
+    expect(await store.exists(undone.pdfPath)).toBe(false)
 
     const renamed = await renameCourse(store, home, course.id, "Life science")
     expect(renamed.id).toBe(course.id)
@@ -688,15 +694,15 @@ describe("a saved long transcript", () => {
     const notesDir = path.join(course.path, "notes")
     const names = await readdir(notesDir)
     expect(names.filter((name) => name.endsWith(".md"))).toHaveLength(1)
-    expect(names.filter((name) => name.endsWith(".pdf"))).toHaveLength(1)
+    expect(names.filter((name) => name.endsWith(".pdf"))).toHaveLength(0)
     const markdown = await store.readText(filed.markdownPath)
     expect(markdown).toContain("# ISC 102 U06")
     expect(markdown?.match(/^## .+$/gm)).toEqual(["## Elasticity"])
     expect(markdown).toContain("  - Detail")
     expect((markdown?.match(/^- Point /gm) ?? []).length).toBeGreaterThan(1)
     expect(markdown).not.toContain("## Transcript")
-    expect(await store.stat(filed.pdfPath)).toMatchObject({ isDir: false })
-    expect((await store.stat(filed.pdfPath))?.size).toBeGreaterThan(500)
+    expect(filed.pdfExists).toBe(false)
+    expect(await store.exists(filed.pdfPath)).toBe(false)
     const savedTranscript = await store.readText(transcriptPath)
     expect(savedTranscript).toContain("point 0")
     expect(groq.calls).toBe(0)
@@ -713,10 +719,10 @@ describe("a saved long transcript", () => {
     expect(groq.calls).toBe(0)
     expect(styled.body).toContain("## Elasticity")
     expect(styled.body).not.toContain("## Transcript")
-    expect(await store.stat(styled.pdfPath)).toMatchObject({ isDir: false })
+    expect(styled.pdfExists).toBe(false)
     const after = await readdir(notesDir)
     expect(after.filter((name) => name.endsWith(".md"))).toHaveLength(1)
-    expect(after.filter((name) => name.endsWith(".pdf"))).toHaveLength(1)
+    expect(after.filter((name) => name.endsWith(".pdf"))).toHaveLength(0)
     vi.unstubAllGlobals()
   })
 })
@@ -900,6 +906,9 @@ describe("cancelling note making", () => {
     store.completeLocal = async (messages) => studyReply(messages)
     const finished = await makeNotes(store, request)
     const finishedMarkdown = await store.readText(finished.markdownPath)
+    expect(await store.exists(finished.pdfPath)).toBe(false)
+    const keptPdf = new Uint8Array([7, 7, 7, 7])
+    await store.writeBytes(finished.pdfPath, keptPdf)
     const finishedPdf = (await store.stat(finished.pdfPath))?.size
     const jobId = "cancel-replace"
     store.completeLocal = async () => {
@@ -982,6 +991,105 @@ describe("cancelling note making", () => {
     expect((await getCourse(store, home, course.id)).notes).toHaveLength(1)
     const transcripts = await store.list(path.join(course.path, ".study", "transcripts"))
     expect(transcripts.map((entry) => entry.name)).toEqual([`${finished.id}.json`])
+  })
+})
+
+describe("a note PDF", () => {
+  it("saves Markdown only, drops a stale PDF when the body changes, and renders one on request", async () => {
+    const home = path.join(root, "home")
+    const store = createNodeFileStore(path.join(root, "appdata"))
+    await store.mkdir(home)
+    const course = await createCourse(store, home, "Biology 101")
+    const media = path.join(root, "Lecture 3.wav")
+    await writeFile(media, wav(2))
+    readyLocal(store)
+    blockGroq()
+    let restyle = false
+    let replacement = false
+    store.transcribeMedia = async () => ({
+      segments: [
+        { start: 0, end: 8, text: "Today we talk about cell division." },
+        { start: 8, end: 20, text: "Mitosis is the process where the cell divides." },
+      ],
+      durationSeconds: 20,
+      elapsedMs: 1000,
+      model: "ggml-base.en",
+    })
+    store.completeLocal = async (messages) => {
+      const system = messages.find((message) => message.role === "system")?.content ?? ""
+      if (restyle && /Rewrite these study notes/i.test(system)) {
+        return "## Cell division\n\n- A shorter restyle."
+      }
+      if (replacement && /Write study notes/i.test(system)) {
+        return "## Cell division\n\n- A replaced note."
+      }
+      return studyReply(messages)
+    }
+    const request = {
+      home,
+      courseId: course.id,
+      mediaPath: media,
+      provider: "local" as const,
+      moduleId: null,
+      moduleName: null,
+      newModuleName: null,
+    }
+    const filed = await makeNotes(store, request)
+    expect(filed.pdfExists).toBe(false)
+    expect(await store.exists(filed.pdfPath)).toBe(false)
+    const marker = new Uint8Array([1, 2, 3, 4])
+    await store.writeBytes(filed.pdfPath, marker)
+    const original = await store.readText(filed.markdownPath)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+
+    const again = await makeNotes(store, request)
+    expect(again.id).toBe(filed.id)
+    const rewritten = await store.readText(again.markdownPath)
+    expect(rewritten).not.toBe(original)
+    expect(storedBody(rewritten)).toBe(storedBody(original))
+    expect(again.pdfExists).toBe(true)
+    expect((await store.stat(filed.pdfPath))?.size).toBe(marker.length)
+
+    replacement = true
+    const replaced = await makeNotes(store, request)
+    expect(await store.readText(replaced.markdownPath)).toContain("A replaced note.")
+    expect(replaced.pdfExists).toBe(false)
+    expect(await store.exists(replaced.pdfPath)).toBe(false)
+
+    await store.writeBytes(replaced.pdfPath, marker)
+    restyle = true
+    const styled = await restyleNote(store, {
+      home,
+      courseId: course.id,
+      noteId: filed.id,
+      provider: "local",
+      preset: "bullets",
+      prompt: "",
+    })
+    expect(styled.body).toContain("A shorter restyle.")
+    expect(styled.pdfExists).toBe(false)
+    expect(await store.exists(styled.pdfPath)).toBe(false)
+
+    await store.writeBytes(styled.pdfPath, marker)
+    const undone = await undoRestyle(store, home, course.id, filed.id)
+    expect(undone.body).toContain("A replaced note.")
+    expect(undone.pdfExists).toBe(false)
+    expect(await store.exists(undone.pdfPath)).toBe(false)
+
+    const generated = await generateNotePdf(store, home, course.id, filed.id)
+    expect(generated.pdfExists).toBe(true)
+    expect((await store.stat(generated.pdfPath))?.size).toBeGreaterThan(500)
+    const generatedBytes = await store.stat(generated.pdfPath)
+
+    const current = await store.readText(generated.markdownPath)
+    const historyPath = path.join(course.path, ".study", "history", `${generated.id}.md`)
+    await store.mkdir(path.join(course.path, ".study", "history"))
+    await store.writeText(historyPath, current ?? "")
+    const sameUndo = await undoRestyle(store, home, course.id, filed.id)
+    expect(sameUndo.body).toBe(generated.body)
+    expect(sameUndo.pdfExists).toBe(true)
+    expect((await store.stat(sameUndo.pdfPath))?.size).toBe(generatedBytes?.size)
+    vi.unstubAllGlobals()
   })
 })
 

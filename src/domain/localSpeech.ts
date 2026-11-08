@@ -625,7 +625,7 @@ export function localJobMessage(
 ): string {
   if (progress && writingStepsKnown(progress)) {
     const measured = barPercent(progress, now)
-    if (measured == null) return `Writing the notes and PDF for ${fileLabel}…`
+    if (measured == null) return `Writing the notes for ${fileLabel}…`
     const remaining = writingRemainingSeconds(
       progress.writingStartedMs,
       progress.writingDone,
@@ -633,14 +633,14 @@ export function localJobMessage(
       now,
     )
     const suffix = remaining == null ? ` ${measured}%` : ` ${measured}% · ${formatRemaining(remaining)}`
-    return `Writing the notes and PDF for ${fileLabel}…${suffix}`
+    return `Writing the notes for ${fileLabel}…${suffix}`
   }
   const measured = barPercent(progress, now)
   const remaining = measured == null ? null : remainingSeconds(progress?.startedMs, measured, now)
   const suffix =
     measured == null || remaining == null ? "" : ` ${measured}% · ${formatRemaining(remaining)}`
   if (progress?.phase === "reading") return `Reading ${fileLabel}…`
-  if (progress?.phase === "writing") return `Writing the notes and PDF for ${fileLabel}…${suffix}`
+  if (progress?.phase === "writing") return `Writing the notes for ${fileLabel}…${suffix}`
   return `Transcribing ${fileLabel}…${suffix}`
 }
 

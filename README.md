@@ -4,17 +4,17 @@ LectureText turns a lecture video or audio file already on your computer into Ma
 
 A recorded lecture is awkward to review as one long file. LectureText transcribes that recording on the computer and writes study notes for the course, so the lecture can be read back from the notes.
 
-LectureText is a desktop app for one student on a computer. Pick a home folder, create a course, and turn a video or audio file that is already on the computer into study notes. Notes are Markdown. Every save also writes a PDF beside the Markdown.
+LectureText is a desktop app for one student on a computer. Pick a home folder, create a course, and turn a video or audio file that is already on the computer into study notes. Notes are Markdown. Generate PDF on a note writes a PDF beside that Markdown.
 
 The app keeps a course library and makes notes. The theme is dark.
 
-Press **Set up local notes** once in the sidebar. That button downloads the speech model for the speed you chose, the speech engine, and ffmpeg and ffprobe when those programs are missing. After setup finishes, Make Notes transcribes the recording and writes Markdown plus a PDF. The window shows a percent and an estimate of the time remaining for the whole run, including writing the notes after transcription.
+Press **Set up local notes** once in the sidebar. That button downloads the speech model for the speed you chose, the speech engine, and ffmpeg and ffprobe when those programs are missing. After setup finishes, Make Notes transcribes the recording and writes Markdown. The window shows a percent and an estimate of the time remaining for the whole run, including writing the notes after transcription.
 
 A comfortable machine has a 4-core CPU and 16 GB of RAM. A smaller computer runs the same work more slowly.
 
 **Speed** is chosen under Local. Faster is quicker and the notes can be rougher. Clearer is slower and the notes are better. Switching speed shows setup again until that speed's speech model is present. Both model files can sit next to each other.
 
-When a transcript already exists for the same recording and the same course or module, Make Notes rewrites the study notes from that saved transcript. The raw transcript stays in the hidden `.study` folder. The Markdown note and the PDF are study notes.
+When a transcript already exists for the same recording and the same course or module, Make Notes rewrites the study notes from that saved transcript. The raw transcript stays in the hidden `.study` folder. The Markdown note is the study notes. A PDF already saved for that note is removed when the note body changes.
 
 Notes are English.
 

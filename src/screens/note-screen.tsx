@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react"
+import { useEffect, useRef, useState, type FormEvent } from "react"
 import { Link, useParams } from "react-router-dom"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
@@ -8,7 +8,7 @@ import { fileName } from "../domain/paths"
 import { formatRange } from "../domain/text"
 import type { Preset } from "../domain/types"
 import { useHost } from "../platform/host"
-import { readNote, restyleNote, undoRestyle, type NoteDocument } from "../services/library"
+import { generateNotePdf, readNote, restyleNote, undoRestyle, type NoteDocument } from "../services/library"
 import { useLibrary } from "../state/library-context"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
@@ -34,6 +34,8 @@ export function NoteScreen() {
   const [busy, setBusy] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
   const [pdfError, setPdfError] = useState<string | null>(null)
+  const [pdfBusy, setPdfBusy] = useState(false)
+  const pdfBusyRef = useRef(false)
 
   useEffect(() => {
     const home = settings.homeDirectory
@@ -118,6 +120,35 @@ export function NoteScreen() {
     }
   }
 
+  async function onPdf() {
+    if (!note || pdfBusyRef.current) return
+    setPdfError(null)
+    if (note.pdfExists) {
+      try {
+        await host.openPath(note.pdfPath)
+      } catch (err) {
+        setPdfError(messageOf(err))
+      }
+      return
+    }
+    pdfBusyRef.current = true
+    setPdfBusy(true)
+    try {
+      const next = await generateNotePdf(store, home, courseId, noteId)
+      setNote(next)
+      try {
+        await host.openPath(next.pdfPath)
+      } catch (err) {
+        setPdfError(messageOf(err))
+      }
+    } catch (err) {
+      setPdfError(messageOf(err))
+    } finally {
+      pdfBusyRef.current = false
+      setPdfBusy(false)
+    }
+  }
+
   return (
     <div className="pb-10">
       <Link to={backTo} className="inline-flex rounded-sm text-sm text-muted-foreground hover:text-foreground">
@@ -134,14 +165,18 @@ export function NoteScreen() {
           type="button"
           variant="outline"
           className="shrink-0"
-          aria-label={`Open PDF for ${note.title}`}
-          disabled={!note.pdfExists}
-          onClick={() => {
-            setPdfError(null)
-            void host.openPath(note.pdfPath).catch((err: unknown) => setPdfError(messageOf(err)))
-          }}
+          aria-label={
+            pdfBusy
+              ? `Generating PDF for ${note.title}`
+              : note.pdfExists
+                ? `Open PDF for ${note.title}`
+                : `Generate PDF for ${note.title}`
+          }
+          aria-busy={pdfBusy}
+          disabled={pdfBusy}
+          onClick={() => void onPdf()}
         >
-          Open PDF
+          {pdfBusy ? "Generating…" : note.pdfExists ? "Open PDF" : "Generate PDF"}
         </Button>
       </div>
       {pdfError ? (

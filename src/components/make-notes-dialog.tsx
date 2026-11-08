@@ -148,8 +148,8 @@ export function MakeNotesDialog({
                 <DialogTitle>This recording already has a note</DialogTitle>
                 <DialogDescription>
                   {existing.note.title} is already in {existing.note.moduleName ?? courseName}. Replace
-                  overwrites that note&apos;s Markdown and PDF. Add keeps those files and writes a new note
-                  beside them.
+                  overwrites that note&apos;s Markdown and removes its PDF when the notes change. Add keeps
+                  those files and writes a new note beside them.
                 </DialogDescription>
               </DialogHeader>
               <DialogFooter className="gap-2 sm:flex-wrap sm:justify-end">

@@ -163,21 +163,21 @@ describe("transcription stays usable", () => {
       barPercent({ phase: "transcribing", label: "Transcribing the recording", percent: 40 }),
     ).toBeNull()
     expect(
-      localJobMessage("ISC 102 U01.mp3", { phase: "writing", label: "Writing the notes and PDF", percent: null }),
-    ).toBe("Writing the notes and PDF for ISC 102 U01.mp3…")
+      localJobMessage("ISC 102 U01.mp3", { phase: "writing", label: "Writing the notes", percent: null }),
+    ).toBe("Writing the notes for ISC 102 U01.mp3…")
     const writingStarted = Date.now() - 60_000
     expect(
       localJobMessage("ISC 102 U01.mp3", {
         phase: "writing",
-        label: "Writing the notes and PDF",
+        label: "Writing the notes",
         percent: 92,
         startedMs: writingStarted,
       }),
-    ).toBe("Writing the notes and PDF for ISC 102 U01.mp3… 92% · less than a minute left")
+    ).toBe("Writing the notes for ISC 102 U01.mp3… 92% · less than a minute left")
     expect(
       barPercent({
         phase: "writing",
-        label: "Writing the notes and PDF",
+        label: "Writing the notes",
         percent: 92,
         startedMs: writingStarted,
       }),
@@ -213,7 +213,7 @@ describe("transcription stays usable", () => {
         "ISC 102 U05.mp3",
         {
           phase: "writing",
-          label: "Writing the notes and PDF",
+          label: "Writing the notes",
           percent: 99,
           startedMs: transcriptionStarted,
           writingDone: 0,
@@ -222,12 +222,12 @@ describe("transcription stays usable", () => {
         },
         afterHalfHour,
       ),
-    ).toBe("Writing the notes and PDF for ISC 102 U05.mp3… 99%")
+    ).toBe("Writing the notes for ISC 102 U05.mp3… 99%")
     expect(
       barPercent(
         {
           phase: "writing",
-          label: "Writing the notes and PDF",
+          label: "Writing the notes",
           percent: 90,
           startedMs: transcriptionStarted,
           writingDone: 0,
@@ -241,7 +241,7 @@ describe("transcription stays usable", () => {
       barPercent(
         {
           phase: "writing",
-          label: "Writing the notes and PDF",
+          label: "Writing the notes",
           percent: 1,
           startedMs: transcriptionStarted,
           writingDone: 0,
@@ -256,7 +256,7 @@ describe("transcription stays usable", () => {
         "ISC 102 U05.mp3",
         {
           phase: "writing",
-          label: "Writing the notes and PDF",
+          label: "Writing the notes",
           percent: 1,
           startedMs: transcriptionStarted,
           writingDone: 0,
@@ -265,13 +265,13 @@ describe("transcription stays usable", () => {
         },
         afterHalfHour,
       ),
-    ).toBe("Writing the notes and PDF for ISC 102 U05.mp3… 1%")
+    ).toBe("Writing the notes for ISC 102 U05.mp3… 1%")
     expect(
       localJobMessage(
         "ISC 102 U05.mp3",
         {
           phase: "writing",
-          label: "Writing the notes and PDF",
+          label: "Writing the notes",
           percent: 92,
           startedMs: transcriptionStarted,
           writingDone: 1,
@@ -280,7 +280,7 @@ describe("transcription stays usable", () => {
         },
         afterHalfHour,
       ),
-    ).toBe("Writing the notes and PDF for ISC 102 U05.mp3… 92% · about 1 hr 30 min left")
+    ).toBe("Writing the notes for ISC 102 U05.mp3… 92% · about 1 hr 30 min left")
     expect(
       remainingSeconds(transcriptionStarted, 99, afterHalfHour),
     ).toBe(115)

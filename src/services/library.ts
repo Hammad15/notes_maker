@@ -728,30 +728,44 @@ function partialNotePath(filePath: string): string {
   return `${filePath}.partial`
 }
 
-/** Stage the note, then copy it into place. Cancel deletes the staged files only. */
+/** Body text as it is stored, so a frontmatter-only save does not count as a new note. */
+function comparableNoteBody(body: string): string {
+  return body.replace(/^\n+/, "").replace(/\s+$/, "")
+}
+
+/**
+ * A PDF is written only when the user asks for one.
+ * Drop a saved PDF when this note's body changed, so Open PDF cannot show the previous pages.
+ * The same body leaves the file where it is.
+ */
+async function keepOrDropPdf(
+  store: FileStore,
+  pdfPath: string,
+  previousBody: string | null,
+  nextBody: string,
+): Promise<boolean> {
+  if (!(await store.exists(pdfPath))) return false
+  if (previousBody != null && comparableNoteBody(previousBody) === comparableNoteBody(nextBody)) return true
+  await store.remove(pdfPath)
+  return false
+}
+
+/** Stage the Markdown, then copy it into place. Cancel deletes the staged file only. */
 async function writeFinishedNote(
   store: FileStore,
   markdownPath: string,
-  pdfPath: string,
   markdown: string,
-  pdf: Uint8Array,
   jobId: string | undefined,
   incomplete: string[],
 ): Promise<void> {
   const partialMarkdown = partialNotePath(markdownPath)
-  const partialPdf = partialNotePath(pdfPath)
-  incomplete.push(partialMarkdown, partialPdf)
+  incomplete.push(partialMarkdown)
   await store.writeText(partialMarkdown, markdown)
-  await store.writeBytes(partialPdf, pdf)
   throwIfNoteCancelled(jobId)
   await store.writeText(markdownPath, markdown)
-  await store.writeBytes(pdfPath, pdf)
   const markdownIndex = incomplete.indexOf(partialMarkdown)
   if (markdownIndex >= 0) incomplete.splice(markdownIndex, 1)
-  const pdfIndex = incomplete.indexOf(partialPdf)
-  if (pdfIndex >= 0) incomplete.splice(pdfIndex, 1)
   await store.remove(partialMarkdown)
-  await store.remove(partialPdf)
 }
 
 export async function makeNotes(
@@ -888,7 +902,7 @@ export async function makeNotes(
   const publishWritingProgress = () => {
     hooks?.onProgress?.({
       phase: "writing",
-      label: "Writing the notes and PDF",
+      label: "Writing the notes",
       percent: writingPercent(writingDone, writingTotal, afterTranscription, Date.now() - stepStartedMs),
       jobId: input.jobId,
       writingDone,
@@ -921,17 +935,17 @@ export async function makeNotes(
     provider: input.provider,
   }
   const markdown = writeFrontmatter(meta, body)
-  const pdf = await renderPdf(body)
   if (existingNote) {
+    const previousText = await store.readText(existingNote.markdownPath)
+    const previousBody = previousText ? (parseNoteFile(previousText)?.body ?? null) : null
     await writeFinishedNote(
       store,
       existingNote.markdownPath,
-      existingNote.pdfPath,
       markdown,
-      pdf,
       input.jobId,
       rollback.incompleteNotePaths,
     )
+    const pdfExists = await keepOrDropPdf(store, existingNote.pdfPath, previousBody, body)
     await touchCourse(store, course, updatedAt)
     forgetNoteCancel(input.jobId)
     return {
@@ -939,7 +953,7 @@ export async function makeNotes(
       title: content.title,
       updatedAt,
       provider: input.provider,
-      pdfExists: true,
+      pdfExists,
       mediaFileName: existingNote.mediaFileName ?? fileName(input.mediaPath),
     }
   }
@@ -948,7 +962,7 @@ export async function makeNotes(
   const markdownPath = joinPath(notesDir, `${stem}.md`)
   const pdfPath = joinPath(notesDir, `${stem}.pdf`)
   await store.mkdir(notesDir)
-  await writeFinishedNote(store, markdownPath, pdfPath, markdown, pdf, input.jobId, rollback.incompleteNotePaths)
+  await writeFinishedNote(store, markdownPath, markdown, input.jobId, rollback.incompleteNotePaths)
   await touchCourse(store, course, updatedAt)
   forgetNoteCancel(input.jobId)
   return {
@@ -957,7 +971,7 @@ export async function makeNotes(
     fileStem: stem,
     markdownPath,
     pdfPath,
-    pdfExists: true,
+    pdfExists: false,
     moduleId,
     moduleName,
     createdAt: filedAt,
@@ -1165,9 +1179,21 @@ export async function restyleNote(
     provider: input.provider,
   }
   await store.writeText(note.markdownPath, writeFrontmatter(meta, body))
-  await store.writeBytes(note.pdfPath, await renderPdf(body))
+  await keepOrDropPdf(store, note.pdfPath, note.body, body)
   await touchCourse(store, course, now)
   return readNote(store, input.home, input.courseId, input.noteId)
+}
+
+/** Render the saved Markdown and write that note's PDF. */
+export async function generateNotePdf(
+  store: FileStore,
+  home: string,
+  courseId: string,
+  noteId: string,
+): Promise<NoteDocument> {
+  const note = await readNote(store, home, courseId, noteId)
+  await store.writeBytes(note.pdfPath, await renderPdf(note.body))
+  return readNote(store, home, courseId, noteId)
 }
 
 export async function undoRestyle(
@@ -1184,7 +1210,7 @@ export async function undoRestyle(
   const parsed = parseNoteFile(history)
   if (!parsed) throw new StudyError("The previous notes could not be read.", "UNDO")
   await store.writeText(note.markdownPath, history.endsWith("\n") ? history : `${history}\n`)
-  await store.writeBytes(note.pdfPath, await renderPdf(parsed.body))
+  await keepOrDropPdf(store, note.pdfPath, note.body, parsed.body)
   await store.remove(historyPath)
   return readNote(store, home, courseId, noteId)
 }

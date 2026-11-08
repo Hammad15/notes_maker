@@ -377,7 +377,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
                     ...job,
                     progress: {
                       phase: "writing",
-                      label: "Writing the notes and PDF",
+                      label: "Writing the notes",
                       percent: continued ? TRANSCRIPTION_PERCENT_END : null,
                       startedMs: job.progress?.startedMs ?? Date.now(),
                       writingDone: 0,
