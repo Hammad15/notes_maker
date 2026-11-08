@@ -55,6 +55,6 @@ jobs:
             echo "The release tag has no version."
             exit 1
           fi
-          dest="src-tauri/target/release/bundle/dmg/CreateNotes_V${version}_Mac.dmg"
+          dest="src-tauri/target/release/bundle/dmg/LectureText_V${version}_Mac.dmg"
           cp "${files[0]}" "$dest"
           gh release upload "$RELEASE_TAG" "$dest" --clobber

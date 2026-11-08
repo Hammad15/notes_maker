@@ -50,6 +50,6 @@ jobs:
             Write-Error "The release tag has no version."
             exit 1
           }
-          $dest = Join-Path $files[0].DirectoryName "CreateNotes_V${version}_Windows_x64.msi"
+          $dest = Join-Path $files[0].DirectoryName "LectureText_V${version}_Windows_x64.msi"
           Copy-Item -LiteralPath $files[0].FullName -Destination $dest -Force
           gh release upload $env:RELEASE_TAG $dest --clobber
