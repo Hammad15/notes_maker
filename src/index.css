@@ -102,8 +102,13 @@
     @apply font-sans antialiased;
   }
   body {
-    @apply bg-background text-foreground;
+    /* Same dark purple glow as the LectureText landing page. */
+    background:
+      radial-gradient(ellipse at top left, oklch(0.22 0.05 305) 0%, transparent 46%),
+      var(--background);
+    @apply text-foreground;
     cursor: default;
+    min-height: 100%;
   }
   a,
   button:not(:disabled),

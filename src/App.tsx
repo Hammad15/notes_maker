@@ -42,7 +42,7 @@ function Frame() {
     )
   }
   return (
-    <div className="flex h-dvh min-w-0 flex-col overflow-hidden bg-background text-foreground">
+    <div className="flex h-dvh min-w-0 flex-col overflow-hidden text-foreground">
       <a className="skip-link" href="#main">
         Skip to main content
       </a>
