@@ -6,7 +6,7 @@ export interface ListedNote {
 }
 
 /** A later note from the same recording gets (2), (3), so the list can tell them apart. */
-export function noteListTitle(note: ListedNote, notes: ListedNote[]): string {
+export function noteListTitle(note: ListedNote, notes: readonly ListedNote[]): string {
   const media = note.mediaFileName
   if (!media) return note.title
   const same = notes.filter((item) => item.mediaFileName === media && item.title === note.title)

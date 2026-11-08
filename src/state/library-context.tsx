@@ -21,6 +21,7 @@ import {
   transcriptionWasReplaced,
   type SpeechPace,
 } from "../domain/localSpeech"
+import type { NoteSortSettings } from "../domain/noteSort"
 import { recordMakeNotesFailure } from "../domain/notesLog"
 import { parentPath } from "../domain/paths"
 import type { ProviderId } from "../domain/types"
@@ -124,6 +125,7 @@ interface LibraryState {
   chooseHome: (path: string) => Promise<void>
   setProvider: (provider: ProviderId) => Promise<void>
   setSpeechPace: (pace: SpeechPace) => Promise<void>
+  setNoteSort: (sort: NoteSortSettings) => Promise<void>
   addCourse: (name: string) => Promise<CourseSummary>
   startMakeNotes: (input: MakeNotesInput) => void
   cancelJob: (id: string) => void
@@ -140,6 +142,9 @@ const EMPTY_SETTINGS: Settings = {
   speechPace: "clearer",
   languageCode: "en",
   tourDismissed: false,
+  noteSort: "name",
+  noteSortName: "asc",
+  noteSortDate: "asc",
 }
 
 function notReady(pace: SpeechPace): LocalRuntimeStatus {
@@ -257,6 +262,16 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       } catch {
         setLocalStatus(notReady(pace))
       }
+    },
+    [store],
+  )
+
+  const setNoteSort = useCallback(
+    async (sort: NoteSortSettings) => {
+      const next = { ...settingsRef.current, ...sort }
+      settingsRef.current = next
+      setSettings(next)
+      await saveSettings(store, next)
     },
     [store],
   )
@@ -517,6 +532,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       chooseHome,
       setProvider,
       setSpeechPace,
+      setNoteSort,
       addCourse,
       startMakeNotes,
       cancelJob,
@@ -540,6 +556,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       chooseHome,
       setProvider,
       setSpeechPace,
+      setNoteSort,
       addCourse,
       startMakeNotes,
       cancelJob,

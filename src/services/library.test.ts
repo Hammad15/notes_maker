@@ -18,6 +18,7 @@ import {
   getCourse,
   loadSettings,
   makeNotes,
+  saveSettings,
   requestNoteCancel,
   readNote,
   renameCourse,
@@ -444,6 +445,36 @@ describe("course files", () => {
       `${JSON.stringify({ provider: "local", tourDismissed: true })}\n`,
     )
     expect((await loadSettings(store)).tourDismissed).toBe(true)
+  })
+
+  it("remembers the note list sort and both directions", async () => {
+    const data = path.join(root, "appdata")
+    const store = createNodeFileStore(data)
+    expect(await loadSettings(store)).toMatchObject({
+      noteSort: "name",
+      noteSortName: "asc",
+      noteSortDate: "asc",
+    })
+    await saveSettings(store, {
+      ...(await loadSettings(store)),
+      noteSort: "date",
+      noteSortName: "desc",
+      noteSortDate: "asc",
+    })
+    expect(await loadSettings(store)).toMatchObject({
+      noteSort: "date",
+      noteSortName: "desc",
+      noteSortDate: "asc",
+    })
+    await store.writeText(
+      path.join(data, "settings.json"),
+      `${JSON.stringify({ noteSort: "title", noteSortName: "up", noteSortDate: "down" })}\n`,
+    )
+    expect(await loadSettings(store)).toMatchObject({
+      noteSort: "name",
+      noteSortName: "asc",
+      noteSortDate: "asc",
+    })
   })
 
   it("writes study notes from a saved transcript with the local notes model", async () => {

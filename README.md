@@ -35,7 +35,7 @@ Settings live outside the home folder. The folder name stays Study Notes:
 - Linux: `~/.local/share/Study Notes\settings.json`
 - macOS: `~/Library/Application Support/Study Notes\settings.json`
 
-`settings.json` holds the home folder, the notes choice, and the speech speed.
+`settings.json` holds the home folder, the notes choice, the speech speed, and the note list sort.
 
 ## Course folders
 

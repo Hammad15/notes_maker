@@ -14,6 +14,7 @@ import {
   type TranscriptionProgress,
 } from "../domain/localSpeech"
 import { assertUsableFolderName, folderNameFromDisplay, isReservedFolder } from "../domain/names"
+import { DEFAULT_NOTE_SORT, noteSortDirection, noteSortKey, type NoteSortDirection, type NoteSortKey } from "../domain/noteSort"
 import { fileName, joinPath } from "../domain/paths"
 import { isMediaFile, titleFromMediaPath } from "../domain/text"
 import type {
@@ -35,6 +36,9 @@ export interface Settings {
   speechPace: SpeechPace
   languageCode: string
   tourDismissed: boolean
+  noteSort: NoteSortKey
+  noteSortName: NoteSortDirection
+  noteSortDate: NoteSortDirection
 }
 
 export interface CourseSummary {
@@ -53,6 +57,7 @@ export interface ModuleInfo {
   folderName: string
   path: string
   noteCount: number
+  createdAt: string
 }
 
 export interface NoteInfo {
@@ -122,6 +127,7 @@ const EMPTY_SETTINGS: Settings = {
   speechPace: "clearer",
   languageCode: "en",
   tourDismissed: false,
+  ...DEFAULT_NOTE_SORT,
 }
 
 let pendingSettingsWrite: Promise<void> = Promise.resolve()
@@ -175,6 +181,9 @@ export async function loadSettings(store: FileStore): Promise<Settings> {
     speechPace: speechPace(json.speechPace),
     languageCode: typeof languageCode === "string" && languageCode.trim() ? languageCode.trim() : "en",
     tourDismissed: json.tourDismissed === true,
+    noteSort: noteSortKey(json.noteSort),
+    noteSortName: noteSortDirection(json.noteSortName),
+    noteSortDate: noteSortDirection(json.noteSortDate),
   }
   if (Object.prototype.hasOwnProperty.call(json, "groqApiKey")) await saveSettings(store, settings)
   return settings
@@ -337,6 +346,7 @@ async function readModules(store: FileStore, coursePath: string): Promise<Module
       folderName: entry.name,
       path,
       noteCount: notes.length,
+      createdAt: data.createdAt,
     })
   }
   modules.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }))
@@ -487,7 +497,7 @@ export async function createModule(
   }
   await store.mkdir(path)
   await writeJson(store, joinPath(path, "module.json"), data)
-  return { id: data.id, name: data.name, folderName: folder, path, noteCount: 0 }
+  return { id: data.id, name: data.name, folderName: folder, path, noteCount: 0, createdAt: data.createdAt }
 }
 
 export async function renameModule(

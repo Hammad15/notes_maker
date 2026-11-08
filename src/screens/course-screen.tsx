@@ -1,8 +1,18 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Link, useParams } from "react-router-dom"
-import { Trash2 } from "lucide-react"
+import { ArrowDown, ArrowUp, ChevronDown, Trash2 } from "lucide-react"
 import { messageOf } from "../domain/errors"
 import { noteListTitle } from "../domain/noteTitle"
+import {
+  directionFor,
+  nextNoteSort,
+  sortModules,
+  sortNotes,
+  sortOptionName,
+  type NoteSortDirection,
+  type NoteSortKey,
+  type NoteSortSettings,
+} from "../domain/noteSort"
 import { useHost } from "../platform/host"
 import {
   createModule,
@@ -23,7 +33,7 @@ export function CourseScreen() {
   const { courseId = "" } = useParams()
   const host = useHost()
   const { store } = host
-  const { settings, revision, refreshLibrary } = useLibrary()
+  const { settings, revision, refreshLibrary, setNoteSort } = useLibrary()
   const [course, setCourse] = useState<CourseDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -73,7 +83,17 @@ export function CourseScreen() {
 
   const current = course
   const home = settings.homeDirectory
-  const courseNotes = current.notes.filter((note) => note.moduleId == null)
+  const sort: NoteSortSettings = {
+    noteSort: settings.noteSort,
+    noteSortName: settings.noteSortName,
+    noteSortDate: settings.noteSortDate,
+  }
+  const courseNotes = sortNotes(
+    current.notes.filter((note) => note.moduleId == null),
+    current.notes,
+    sort.noteSort,
+    directionFor(sort, sort.noteSort),
+  )
 
   async function reload() {
     setCourse(await getCourse(store, home, current.id))
@@ -145,7 +165,17 @@ export function CourseScreen() {
       )}
       <section className="mt-10">
         <div className="flex items-center justify-between gap-3">
-          <h2 className="font-serif text-2xl">Modules</h2>
+          <div className="flex min-w-0 items-center gap-3">
+            <h2 className="font-serif text-2xl">Modules</h2>
+            {current.notes.length > 0 ? (
+              <NoteSortMenu
+                sort={sort}
+                onChoose={(key) => {
+                  void setNoteSort(nextNoteSort(sort, key)).catch((err: unknown) => setError(messageOf(err)))
+                }}
+              />
+            ) : null}
+          </div>
           <Button type="button" variant="outline" size="sm" aria-label="New module" onClick={() => setModuleOpen(true)}>
             New
           </Button>
@@ -156,8 +186,13 @@ export function CourseScreen() {
           </p>
         ) : (
           <div className="mt-6 grid gap-8">
-            {current.modules.map((module) => {
-              const notes = current.notes.filter((note) => note.moduleId === module.id)
+            {sortModules(current.modules, current.notes, sort.noteSort, directionFor(sort, sort.noteSort)).map((module) => {
+              const notes = sortNotes(
+                current.notes.filter((note) => note.moduleId === module.id),
+                current.notes,
+                sort.noteSort,
+                directionFor(sort, sort.noteSort),
+              )
               return (
                 <section key={module.id}>
                   <h3 className="border-b border-border pb-2">
@@ -212,6 +247,85 @@ export function CourseScreen() {
       />
     </div>
   )
+}
+
+function NoteSortMenu({
+  sort,
+  onChoose,
+}: {
+  sort: NoteSortSettings
+  onChoose: (key: NoteSortKey) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const onPointerDown = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false)
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false)
+    }
+    document.addEventListener("pointerdown", onPointerDown)
+    document.addEventListener("keydown", onKeyDown)
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown)
+      document.removeEventListener("keydown", onKeyDown)
+    }
+  }, [open])
+  const active = sort.noteSort
+  return (
+    <div ref={rootRef} className="relative">
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        aria-label="Sort notes"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls="note-sort-menu"
+        onClick={() => setOpen((currentOpen) => !currentOpen)}
+      >
+        {active === "name" ? "Name" : "Date"}
+        <SortArrow direction={directionFor(sort, active)} className="size-3.5" />
+        <ChevronDown className="size-3.5 text-muted-foreground" aria-hidden="true" />
+      </Button>
+      {open ? (
+        <div
+          id="note-sort-menu"
+          role="menu"
+          aria-label="Sort notes"
+          className="absolute right-0 z-20 mt-1 min-w-36 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md"
+        >
+          {(["name", "date"] as const).map((key) => (
+            <button
+              key={key}
+              type="button"
+              role="menuitem"
+              className="flex w-full items-center justify-between gap-3 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent"
+              aria-label={sortOptionName(sort, key)}
+              onClick={() => {
+                onChoose(key)
+                setOpen(false)
+              }}
+            >
+              <span>{key === "name" ? "Name" : "Date"}</span>
+              {sort.noteSort === key ? (
+                <SortArrow direction={directionFor(sort, key)} />
+              ) : (
+                <span className="size-4" aria-hidden="true" />
+              )}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function SortArrow({ direction, className = "size-4" }: { direction: NoteSortDirection; className?: string }) {
+  const Icon = direction === "asc" ? ArrowUp : ArrowDown
+  return <Icon className={className} aria-hidden="true" />
 }
 
 function NoteList({
