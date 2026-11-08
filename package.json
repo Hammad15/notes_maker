@@ -1,7 +1,7 @@
 {
   "name": "study-notes",
   "private": true,
-  "version": "1.0.2",
+  "version": "1.2.0",
   "license": "GPL-3.0-only",
   "type": "module",
   "scripts": {

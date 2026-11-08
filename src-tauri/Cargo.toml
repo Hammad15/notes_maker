@@ -1,6 +1,6 @@
 [package]
 name = "study-notes"
-version = "1.0.2"
+version = "1.2.0"
 description = "LectureText on this computer"
 authors = ["Hammad15"]
 license = "GPL-3.0-only"
