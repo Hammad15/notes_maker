@@ -241,11 +241,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <div className="h-full min-h-0 bg-background text-foreground">
       <div className="h-full min-h-0 overflow-y-auto md:grid md:grid-cols-[minmax(0,250px)_minmax(0,1fr)] md:grid-rows-[minmax(0,1fr)] md:overflow-hidden">
         <aside
-          aria-label="Create Notes"
+          aria-label="LectureText"
           className="flex min-w-0 flex-col gap-6 scroll-p-3 border-b border-sidebar-border bg-sidebar px-5 py-5 md:min-h-0 md:overflow-y-auto md:border-r md:border-b-0"
         >
           <div>
-            <p className="font-serif text-xl tracking-tight">Create Notes</p>
+            <p className="font-serif text-xl tracking-tight">LectureText</p>
             <div className="mt-4">
               <FeedbackDialog />
             </div>

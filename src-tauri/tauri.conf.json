@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Create Notes",
+  "productName": "LectureText",
   "mainBinaryName": "CreateNotes",
   "version": "1.0.2",
   "identifier": "com.hammad15.createnotes",
@@ -18,7 +18,7 @@
   "app": {
     "windows": [
       {
-        "title": "Create Notes",
+        "title": "LectureText",
         "width": 1120,
         "height": 760,
         "minWidth": 880,

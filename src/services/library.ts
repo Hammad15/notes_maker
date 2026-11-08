@@ -199,7 +199,7 @@ export async function assertWritableDirectory(store: FileStore, dir: string): Pr
   try {
     await store.writeText(probe, "ok")
   } catch {
-    throw new StudyError("Create Notes cannot save courses in that folder.", "HOME")
+    throw new StudyError("LectureText cannot save courses in that folder.", "HOME")
   }
   try {
     await store.remove(probe)

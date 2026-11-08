@@ -10,7 +10,7 @@ export function OpeningScreen() {
     <div id="main" tabIndex={-1} className="h-full overflow-y-auto bg-background text-foreground">
       <div className="h-1 bg-primary" />
       <div className="mx-auto flex min-h-[calc(100%-4px)] max-w-lg flex-col justify-center px-6 py-10">
-        <p className="font-serif text-3xl">Opening Create Notes…</p>
+        <p className="font-serif text-3xl">Opening LectureText…</p>
       </div>
     </div>
   )
@@ -21,7 +21,7 @@ export function StartupError({ message, onRetry }: { message: string; onRetry: (
     <div id="main" tabIndex={-1} className="h-full overflow-y-auto bg-background text-foreground">
       <div className="h-1 bg-primary" />
       <div className="mx-auto flex min-h-[calc(100%-4px)] max-w-lg flex-col justify-center gap-4 px-6 py-10">
-        <h1 className="font-serif text-3xl">Create Notes could not open</h1>
+        <h1 className="font-serif text-3xl">LectureText could not open</h1>
         <p className="text-muted-foreground">{message}</p>
         <Button type="button" className="w-fit" onClick={onRetry}>
           Try again
@@ -67,10 +67,10 @@ export function SetupScreen({ missing }: { missing: boolean }) {
     <div id="main" tabIndex={-1} className="h-full overflow-y-auto bg-background text-foreground">
       <div className="h-1 bg-primary" />
       <div className="mx-auto flex min-h-full max-w-lg flex-col justify-center px-6 py-10">
-        <p className="text-xs font-medium tracking-[0.18em] text-primary-text uppercase">Create Notes</p>
+        <p className="text-xs font-medium tracking-[0.18em] text-primary-text uppercase">LectureText</p>
         <h1 className="mt-3 font-serif text-4xl tracking-tight break-words">Choose a home folder</h1>
         <p className="mt-4 text-base leading-relaxed text-muted-foreground">
-          Courses are folders in one place on this computer. Create Notes remembers the location.
+          Courses are folders in one place on this computer. LectureText remembers the location.
         </p>
         {missing ? (
           <p className="mt-4 text-sm text-destructive">

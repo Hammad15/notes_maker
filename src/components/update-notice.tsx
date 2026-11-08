@@ -57,10 +57,10 @@ export function UpdateNotice() {
 
   const status =
     phase === "downloading"
-      ? `Downloading the Create Notes ${update.version} installer.`
+      ? `Downloading the LectureText ${update.version} installer.`
       : phase === "started"
-        ? `The Create Notes ${update.version} installer is starting.`
-        : `Create Notes ${update.version} is available.`
+        ? `The LectureText ${update.version} installer is starting.`
+        : `LectureText ${update.version} is available.`
 
   return (
     <div className="border-b border-border bg-card px-4 py-3">
@@ -72,7 +72,7 @@ export function UpdateNotice() {
           <Button
             type="button"
             className="w-fit shrink-0"
-            aria-label={`Download and start the Create Notes ${update.version} installer`}
+            aria-label={`Download and start the LectureText ${update.version} installer`}
             disabled={phase !== "ready"}
             onClick={() => {
               void confirmInstall()

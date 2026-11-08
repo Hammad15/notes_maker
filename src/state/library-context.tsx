@@ -553,6 +553,6 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
 
 export function useLibrary(): LibraryState {
   const value = useContext(LibraryContext)
-  if (!value) throw new Error("Create Notes is missing its library.")
+  if (!value) throw new Error("LectureText is missing its library.")
   return value
 }

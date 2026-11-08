@@ -1,10 +1,10 @@
-# Create Notes
+# LectureText
 
-Create Notes turns a lecture video or audio file already on your computer into Markdown and PDF study notes, with transcription and writing done locally. No account needed.
+LectureText turns a lecture video or audio file already on your computer into Markdown and PDF study notes, with transcription and writing done locally. No account needed.
 
-A recorded lecture is awkward to review as one long file. Create Notes transcribes that recording on the computer and writes study notes for the course, so the lecture can be read back from the notes.
+A recorded lecture is awkward to review as one long file. LectureText transcribes that recording on the computer and writes study notes for the course, so the lecture can be read back from the notes.
 
-Create Notes is a desktop app for one student on a computer. Pick a home folder, create a course, and turn a video or audio file that is already on the computer into study notes. Notes are Markdown. Every save also writes a PDF beside the Markdown.
+LectureText is a desktop app for one student on a computer. Pick a home folder, create a course, and turn a video or audio file that is already on the computer into study notes. Notes are Markdown. Every save also writes a PDF beside the Markdown.
 
 The app keeps a course library and makes notes. The theme is dark.
 
@@ -79,7 +79,7 @@ npm install
 npm run tauri dev
 ```
 
-That opens the Create Notes window. The file dialogs come from the Tauri dialog plugin. Use that window. Do not pick files from a browser tab pointed at the dev server.
+That opens the LectureText window. The file dialogs come from the Tauri dialog plugin. Use that window. Do not pick files from a browser tab pointed at the dev server.
 
 `npm run dev` only serves the UI at http://127.0.0.1:43127. Tauri starts it for you. Opening that address in a browser cannot show the Windows file dialog.
 
@@ -102,7 +102,7 @@ npm test
 
 ## License
 
-Create Notes is released under the GNU General Public License version 3. See [LICENSE](LICENSE).
+LectureText is released under the GNU General Public License version 3. See [LICENSE](LICENSE).
 
 Third-party code keeps its own license. Dependency licenses were checked for the npm packages and the Rust crates. These are not permissive software licenses:
 
