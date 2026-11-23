@@ -10,6 +10,7 @@ import type { Preset } from "../domain/types"
 import { useHost } from "../platform/host"
 import { generateNotePdf, readNote, restyleNote, undoRestyle, type NoteDocument } from "../services/library"
 import { useLibrary } from "../state/library-context"
+import { NotePdfButton, openOrGenerateNotePdf } from "../components/note-pdf-button"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 
@@ -123,29 +124,29 @@ export function NoteScreen() {
   async function onPdf() {
     if (!note || pdfBusyRef.current) return
     setPdfError(null)
-    if (note.pdfExists) {
-      try {
-        await host.openPath(note.pdfPath)
-      } catch (err) {
-        setPdfError(messageOf(err))
-      }
-      return
+    const generating = !note.pdfExists
+    if (generating) {
+      pdfBusyRef.current = true
+      setPdfBusy(true)
     }
-    pdfBusyRef.current = true
-    setPdfBusy(true)
     try {
-      const next = await generateNotePdf(store, home, courseId, noteId)
-      setNote(next)
-      try {
-        await host.openPath(next.pdfPath)
-      } catch (err) {
-        setPdfError(messageOf(err))
-      }
+      await openOrGenerateNotePdf({
+        pdfExists: note.pdfExists,
+        pdfPath: note.pdfPath,
+        generate: async () => {
+          const next = await generateNotePdf(store, home, courseId, noteId)
+          setNote(next)
+          return next
+        },
+        openPath: (path) => host.openPath(path),
+      })
     } catch (err) {
       setPdfError(messageOf(err))
     } finally {
-      pdfBusyRef.current = false
-      setPdfBusy(false)
+      if (generating) {
+        pdfBusyRef.current = false
+        setPdfBusy(false)
+      }
     }
   }
 
@@ -161,23 +162,12 @@ export function NoteScreen() {
           {" · "}
           {note.fileStem}.md and {note.fileStem}.pdf
         </p>
-        <Button
-          type="button"
-          variant="outline"
-          className="shrink-0"
-          aria-label={
-            pdfBusy
-              ? `Generating PDF for ${note.title}`
-              : note.pdfExists
-                ? `Open PDF for ${note.title}`
-                : `Generate PDF for ${note.title}`
-          }
-          aria-busy={pdfBusy}
-          disabled={pdfBusy}
+        <NotePdfButton
+          title={note.title}
+          busy={pdfBusy}
+          pdfExists={note.pdfExists}
           onClick={() => void onPdf()}
-        >
-          {pdfBusy ? "Generating…" : note.pdfExists ? "Open PDF" : "Generate PDF"}
-        </Button>
+        />
       </div>
       {pdfError ? (
         <p className="mt-3 text-sm text-destructive" role="alert">

@@ -17,6 +17,7 @@ import { useHost } from "../platform/host"
 import {
   createModule,
   deleteNote,
+  generateNotePdf,
   getCourse,
   renameCourse,
   renameModule,
@@ -26,6 +27,7 @@ import {
 import { useLibrary } from "../state/library-context"
 import { Button } from "@/components/ui/button"
 import { InlineName } from "../components/inline-name"
+import { NotePdfButton, openOrGenerateNotePdf } from "../components/note-pdf-button"
 import { MakeNotesDialog } from "../components/make-notes-dialog"
 import { NameDialog } from "../components/name-dialog"
 
@@ -40,6 +42,8 @@ export function CourseScreen() {
   const [makeOpen, setMakeOpen] = useState(false)
   const [moduleOpen, setModuleOpen] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [pdfBusyIds, setPdfBusyIds] = useState<ReadonlySet<string>>(() => new Set())
+  const pdfBusyRef = useRef(new Set<string>())
 
   useEffect(() => {
     const home = settings.homeDirectory
@@ -97,6 +101,52 @@ export function CourseScreen() {
 
   async function reload() {
     setCourse(await getCourse(store, home, current.id))
+  }
+
+  function setPdfBusy(id: string, busy: boolean) {
+    setPdfBusyIds((current) => {
+      const next = new Set(current)
+      if (busy) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }
+
+  async function onPdf(note: NoteInfo) {
+    if (pdfBusyRef.current.has(note.id)) return
+    setError(null)
+    const generating = !note.pdfExists
+    if (generating) {
+      pdfBusyRef.current.add(note.id)
+      setPdfBusy(note.id, true)
+    }
+    try {
+      await openOrGenerateNotePdf({
+        pdfExists: note.pdfExists,
+        pdfPath: note.pdfPath,
+        generate: async () => {
+          const next = await generateNotePdf(store, home, current.id, note.id)
+          setCourse((shown) => {
+            if (!shown) return shown
+            return {
+              ...shown,
+              notes: shown.notes.map((item) =>
+                item.id === next.id ? { ...item, pdfExists: next.pdfExists, pdfPath: next.pdfPath } : item,
+              ),
+            }
+          })
+          return next
+        },
+        openPath: (path) => host.openPath(path),
+      })
+    } catch (err) {
+      setError(messageOf(err))
+    } finally {
+      if (generating) {
+        pdfBusyRef.current.delete(note.id)
+        setPdfBusy(note.id, false)
+      }
+    }
   }
 
   async function removeNote(note: NoteInfo) {
@@ -157,9 +207,8 @@ export function CourseScreen() {
           notes={current.notes}
           visible={courseNotes}
           deletingId={deletingId}
-          onOpenPdf={(note) => {
-            void host.openPath(note.pdfPath).catch((err: unknown) => setError(messageOf(err)))
-          }}
+          pdfBusyIds={pdfBusyIds}
+          onPdf={(note) => void onPdf(note)}
           onDelete={(note) => void removeNote(note)}
         />
       )}
@@ -214,9 +263,8 @@ export function CourseScreen() {
                       notes={current.notes}
                       visible={notes}
                       deletingId={deletingId}
-                      onOpenPdf={(note) => {
-                        void host.openPath(note.pdfPath).catch((err: unknown) => setError(messageOf(err)))
-                      }}
+                      pdfBusyIds={pdfBusyIds}
+                      onPdf={(note) => void onPdf(note)}
                       onDelete={(note) => void removeNote(note)}
                     />
                   )}
@@ -333,14 +381,16 @@ function NoteList({
   notes,
   visible,
   deletingId,
-  onOpenPdf,
+  pdfBusyIds,
+  onPdf,
   onDelete,
 }: {
   courseId: string
   notes: NoteInfo[]
   visible: NoteInfo[]
   deletingId: string | null
-  onOpenPdf: (note: NoteInfo) => void
+  pdfBusyIds: ReadonlySet<string>
+  onPdf: (note: NoteInfo) => void
   onDelete: (note: NoteInfo) => void
 }) {
   if (visible.length === 0) return null
@@ -348,6 +398,7 @@ function NoteList({
     <ul className="mt-4">
       {visible.map((note) => {
         const title = noteListTitle(note, notes)
+        const busy = pdfBusyIds.has(note.id)
         return (
           <li key={note.id} className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 py-3">
             <Link
@@ -356,16 +407,7 @@ function NoteList({
             >
               <span className="block truncate font-serif text-xl group-hover:text-primary-text">{title}</span>
             </Link>
-            <Button
-              type="button"
-              variant="outline"
-              className="shrink-0"
-              aria-label={`Open PDF for ${title}`}
-              disabled={!note.pdfExists}
-              onClick={() => onOpenPdf(note)}
-            >
-              Open PDF
-            </Button>
+            <NotePdfButton title={title} busy={busy} pdfExists={note.pdfExists} onClick={() => onPdf(note)} />
             <Button
               type="button"
               variant="ghost"
