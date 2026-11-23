@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState, type FormEvent } from "react"
 import { GROQ_KEY_REQUIRED, messageOf } from "../domain/errors"
 import { LOCAL_HARDWARE_NOTE } from "../domain/localSpeech"
 import { assertUsableFolderName } from "../domain/names"
+import { sortModules } from "../domain/noteSort"
 import { fileName } from "../domain/paths"
 import { isMediaFile } from "../domain/text"
 import { WINDOWS_DIALOG_REQUIRED } from "../platform/dialogs"
@@ -50,6 +51,7 @@ export function MakeNotesDialog({
   const [existing, setExisting] = useState<{ input: MakeNotesInput; note: NoteInfo } | null>(null)
   const openRef = useRef(open)
   const placeId = useId()
+  const moduleChoices = sortModules(modules, [], "name", "asc")
   openRef.current = open
 
   useEffect(() => {
@@ -195,7 +197,7 @@ export function MakeNotesDialog({
                 </SelectTrigger>
                 <SelectContent position="popper">
                   <SelectItem value="course">This course</SelectItem>
-                  {modules.map((module) => (
+                  {moduleChoices.map((module) => (
                     <SelectItem key={module.id} value={module.id}>
                       {module.name}
                     </SelectItem>
