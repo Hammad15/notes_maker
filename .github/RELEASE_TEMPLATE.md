@@ -4,10 +4,9 @@ This release includes the Windows installer and an unsigned macOS .dmg.
 
 ## What's new
 
-- The app is named LectureText.
-- Notes stay as Markdown until you choose Generate PDF. Changing a note removes its outdated PDF.
-- Lecture titles sort by name or date from the control beside Modules. Name and date each keep their own direction.
-- The window uses the dark purple glow from the LectureText landing page.
+- Generate PDF on each note in the course list, as well as inside a note.
+- A student can save their own Groq key. It stays on their computer and is sent only to Groq.
+- The create-notes module list orders lecture numbers, so Lecture 5 comes before Lecture 10.
 
 ## Install on Windows
 
