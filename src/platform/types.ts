@@ -15,6 +15,10 @@ export interface FileStore {
   appDataDir(): Promise<string>
   /** GROQ_API_KEY from the app process, or null when it is unset. */
   groqApiKey(): Promise<string | null>
+  /** Groq key saved in the OS credential store, or null. Never settings.json. */
+  readSavedGroqKey(): Promise<string | null>
+  writeSavedGroqKey(key: string): Promise<void>
+  deleteSavedGroqKey(): Promise<void>
   userHome(): Promise<string>
   roots(): Promise<string[]>
   readText(path: string): Promise<string | null>

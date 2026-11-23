@@ -724,6 +724,31 @@ async fn desktop_call(app: tauri::AppHandle, request: Value) -> Result<Value, St
                 };
             }
         }
+        // Checking the notes model hashes a multi-gigabyte file. Keep that off
+        // the async runtime so the course list is not stuck behind it.
+        "localStatus" => {
+            let pace = pace_of(&request);
+            let app_data = app_data_dir();
+            return local_status_call(move || local_runtime::status_json(&app_data, &pace)).await;
+        }
+        // Credential Manager and the macOS keychain can wait. Keep that wait
+        // off the async runtime so opening the window does not sit behind it.
+        "readSavedGroqKey" => return keychain_call(read_saved_groq_key).await,
+        "writeSavedGroqKey" => {
+            let key = require_str(&request, "key")?.to_string();
+            return keychain_call(move || {
+                write_saved_groq_key(&key)?;
+                Ok(Value::Null)
+            })
+            .await;
+        }
+        "deleteSavedGroqKey" => {
+            return keychain_call(|| {
+                delete_saved_groq_key()?;
+                Ok(Value::Null)
+            })
+            .await;
+        }
         _ => {}
     }
     desktop_request(app, request)
@@ -998,6 +1023,68 @@ fn start_installer(path: &Path) -> Result<(), String> {
     }
 }
 
+/// Windows Credential Manager and the macOS Keychain. The account is the Groq key.
+const GROQ_KEYCHAIN_SERVICE: &str = "LectureText";
+const GROQ_KEYCHAIN_ACCOUNT: &str = "groq-api-key";
+
+fn groq_key_entry() -> Result<keyring::Entry, String> {
+    keyring::Entry::new(GROQ_KEYCHAIN_SERVICE, GROQ_KEYCHAIN_ACCOUNT)
+        .map_err(|_| "Could not open the keychain.".to_string())
+}
+
+fn read_saved_groq_key() -> Result<Value, String> {
+    let entry = groq_key_entry()?;
+    match entry.get_password() {
+        Ok(value) => {
+            let key = value.trim();
+            if key.is_empty() {
+                Ok(Value::Null)
+            } else {
+                Ok(Value::String(key.to_string()))
+            }
+        }
+        Err(keyring::Error::NoEntry) => Ok(Value::Null),
+        Err(_) => Err("Could not read the saved Groq key.".into()),
+    }
+}
+
+fn write_saved_groq_key(key: &str) -> Result<(), String> {
+    let trimmed = key.trim();
+    if trimmed.is_empty() {
+        return Err("Paste a Groq API key.".into());
+    }
+    groq_key_entry()?
+        .set_password(trimmed)
+        .map_err(|_| "Could not save the Groq key.".to_string())
+}
+
+fn delete_saved_groq_key() -> Result<(), String> {
+    match groq_key_entry()?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(_) => Err("Could not remove the saved Groq key.".into()),
+    }
+}
+
+async fn local_status_call<F>(work: F) -> Result<Value, String>
+where
+    F: FnOnce() -> Result<Value, String> + Send + 'static,
+{
+    match tauri::async_runtime::spawn_blocking(work).await {
+        Ok(result) => result,
+        Err(_) => Err("Could not check local notes.".into()),
+    }
+}
+
+async fn keychain_call<F>(work: F) -> Result<Value, String>
+where
+    F: FnOnce() -> Result<Value, String> + Send + 'static,
+{
+    match tauri::async_runtime::spawn_blocking(work).await {
+        Ok(result) => result,
+        Err(_) => Err("Could not use the keychain.".into()),
+    }
+}
+
 fn desktop_request(app: tauri::AppHandle, request: Value) -> Result<Value, String> {
     let op = require_str(&request, "op")?;
     match op {
@@ -1063,7 +1150,6 @@ fn desktop_request(app: tauri::AppHandle, request: Value) -> Result<Value, Strin
             let bytes = fs::read(require_str(&request, "path")?).map_err(|error| error.to_string())?;
             Ok(Value::String(STANDARD.encode(bytes)))
         }
-        "localStatus" => local_runtime::status_json(&app_data_dir(), &pace_of(&request)),
         "freeSpace" => Ok(json!(free_space_bytes(&app_data_dir())?)),
         "activeTranscription" => Ok(local_runtime::active_job_json(&app_data_dir())),
         "clearTranscription" => {

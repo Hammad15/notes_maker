@@ -23,6 +23,17 @@ export function createRemoteStore(call: Caller): FileStore {
       const key = value?.trim() ?? ""
       return key || null
     },
+    readSavedGroqKey: async () => {
+      const value = await call<string | null>({ op: Ops.readSavedGroqKey })
+      const key = value?.trim() ?? ""
+      return key || null
+    },
+    writeSavedGroqKey: async (key) => {
+      await call({ op: Ops.writeSavedGroqKey, key })
+    },
+    deleteSavedGroqKey: async () => {
+      await call({ op: Ops.deleteSavedGroqKey })
+    },
     userHome: () => call<string>({ op: Ops.userHome }),
     roots: () => call<string[]>({ op: Ops.roots }),
     readText: (path) => call<string | null>({ op: Ops.readText, path }),

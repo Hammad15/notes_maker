@@ -1,6 +1,5 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from "react"
-import { CLOUD_NOTES_UNAVAILABLE, messageOf } from "../domain/errors"
-import { groqApiKey } from "../domain/groq"
+import { GROQ_KEY_REQUIRED, messageOf } from "../domain/errors"
 import { LOCAL_HARDWARE_NOTE } from "../domain/localSpeech"
 import { assertUsableFolderName } from "../domain/names"
 import { fileName } from "../domain/paths"
@@ -42,8 +41,7 @@ export function MakeNotesDialog({
   onOpenChange: (open: boolean) => void
 }) {
   const host = useHost()
-  const { settings, startMakeNotes, localStatus } = useLibrary()
-  const groqOn = Boolean(groqApiKey())
+  const { settings, startMakeNotes, localStatus, groqReady, groqKeyKnown } = useLibrary()
   const [mediaPath, setMediaPath] = useState<string | null>(null)
   const [moduleChoice, setModuleChoice] = useState("course")
   const [newModuleName, setNewModuleName] = useState("")
@@ -219,9 +217,9 @@ export function MakeNotesDialog({
                 />
               ) : null}
             </div>
-            {settings.provider === "cloud" && !groqOn ? (
+            {settings.provider === "cloud" && groqKeyKnown && !groqReady ? (
               <p className="rounded-lg bg-muted px-3 py-2 text-sm leading-relaxed text-muted-foreground">
-                {CLOUD_NOTES_UNAVAILABLE}
+                {GROQ_KEY_REQUIRED}
               </p>
             ) : settings.provider === "cloud" ? (
               <p className="text-sm text-muted-foreground">Study notes are written with Groq.</p>
@@ -247,7 +245,7 @@ export function MakeNotesDialog({
                 type="submit"
                 disabled={
                   checking ||
-                  (settings.provider === "cloud" && !groqOn) ||
+                  (settings.provider === "cloud" && (!groqKeyKnown || !groqReady)) ||
                   (settings.provider === "local" && localStatus?.ready !== true)
                 }
               >

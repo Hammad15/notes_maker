@@ -1,13 +1,14 @@
 import { NavLink, useNavigate } from "react-router-dom"
 import { Plus, X } from "lucide-react"
 import { CANCEL_NOTE_HELP } from "../domain/cancelNotes"
-import { CLOUD_NOTES_UNAVAILABLE } from "../domain/errors"
+import { GROQ_KEY_REQUIRED, messageOf } from "../domain/errors"
 import { groqApiKey } from "../domain/groq"
 import { barPercent, formatByteSize, localJobMessage, setupDownloadBytes, type SpeechPace } from "../domain/localSpeech"
 import { WINDOWS_DIALOG_REQUIRED } from "../platform/dialogs"
 import { useHost } from "../platform/host"
 import { useLibrary } from "../state/library-context"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { useEffect, useState } from "react"
 import { FeedbackDialog } from "./feedback-dialog"
 import { FirstRunTour } from "./first-run-tour"
@@ -18,9 +19,191 @@ function setupPercent(received: number, total: number | null): number | null {
   return Math.min(100, Math.round((received / total) * 100))
 }
 
+const GROQ_KEY_TIP =
+  "Create a key at console.groq.com, then paste it here. It stays on this computer and is sent only to Groq."
+
+function GroqKeyField({ describedBy, pending }: { describedBy?: string; pending?: boolean }) {
+  const { groqKeySaved, saveGroqKey, clearGroqKey } = useLibrary()
+  const [draft, setDraft] = useState("")
+  const [replacing, setReplacing] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  function shownError(err: unknown): string {
+    let text = messageOf(err)
+    for (const secret of [draft.trim(), groqApiKey() ?? ""]) {
+      if (!secret || !text.includes(secret)) continue
+      text = text.split(secret).join("")
+    }
+    const cleaned = text.replace(/\s{2,}/g, " ").trim()
+    return cleaned || "Could not save the Groq API key."
+  }
+
+  async function onSave() {
+    setError(null)
+    setBusy(true)
+    try {
+      await saveGroqKey(draft)
+      setDraft("")
+      setReplacing(false)
+    } catch (err) {
+      setError(shownError(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function onRemove() {
+    setError(null)
+    setBusy(true)
+    try {
+      await clearGroqKey()
+      setDraft("")
+      setReplacing(false)
+    } catch (err) {
+      setError(shownError(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const locked = !pending && groqKeySaved && !replacing
+  const showField = !pending
+
+  return (
+    <div className="grid gap-2">
+      <div className="relative flex items-center gap-1.5">
+        <label
+          htmlFor={showField ? "groq-api-key" : undefined}
+          className="text-xs font-medium tracking-[0.14em] text-muted-foreground uppercase"
+        >
+          Groq API key
+        </label>
+        <button
+          type="button"
+          className="peer inline-flex size-4 shrink-0 items-center justify-center rounded-full border border-border text-[10px] leading-none font-serif text-muted-foreground italic outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring"
+          aria-label="About the Groq API key"
+          aria-describedby="groq-key-tip"
+        >
+          <span aria-hidden="true">i</span>
+        </button>
+        <span id="groq-key-tip" className="sr-only">
+          {GROQ_KEY_TIP}
+        </span>
+        <p
+          role="tooltip"
+          aria-hidden="true"
+          className="pointer-events-none absolute bottom-full left-0 z-30 mb-1.5 hidden w-full rounded-lg border border-border bg-popover px-2.5 py-2 text-left text-xs leading-relaxed font-sans tracking-normal text-popover-foreground normal-case not-italic shadow-md peer-hover:block peer-focus:block"
+        >
+          {GROQ_KEY_TIP}
+        </p>
+      </div>
+      {pending ? (
+        <p role="status" className="text-xs leading-relaxed text-muted-foreground">
+          Checking the saved key…
+        </p>
+      ) : (
+        <Input
+          id="groq-api-key"
+          type="password"
+          autoComplete="off"
+          spellCheck={false}
+          value={locked ? (groqApiKey() ?? "") : draft}
+          aria-label={locked ? "Saved Groq API key" : undefined}
+          aria-disabled={locked || undefined}
+          aria-describedby={
+            [describedBy, error ? "groq-key-error" : undefined].filter(Boolean).join(" ") || undefined
+          }
+          readOnly={locked}
+          disabled={busy && !locked}
+          className={locked ? "cursor-not-allowed bg-input/50 opacity-50 dark:bg-input/80" : undefined}
+          onChange={(event) => {
+            if (locked) return
+            setDraft(event.target.value)
+            setError(null)
+          }}
+        />
+      )}
+      {pending ? null : !locked ? (
+        <div className="flex gap-2">
+          <Button
+            type="button"
+            size="sm"
+            className="flex-1"
+            aria-label="Save Groq API key"
+            disabled={busy}
+            onClick={() => void onSave()}
+          >
+            {busy ? "Saving…" : "Save"}
+          </Button>
+          {replacing ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              aria-label="Cancel replacing the Groq API key"
+              disabled={busy}
+              onClick={() => {
+                setDraft("")
+                setError(null)
+                setReplacing(false)
+              }}
+            >
+              Cancel
+            </Button>
+          ) : null}
+        </div>
+      ) : (
+        <div className="flex gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="flex-1"
+            aria-label="Replace Groq API key"
+            disabled={busy}
+            onClick={() => {
+              setError(null)
+              setDraft("")
+              setReplacing(true)
+            }}
+          >
+            Replace
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="flex-1"
+            aria-label="Remove Groq API key"
+            disabled={busy}
+            onClick={() => void onRemove()}
+          >
+            Remove
+          </Button>
+        </div>
+      )}
+      {error ? (
+        <p id="groq-key-error" className="text-xs text-destructive" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
 function ProviderSwitch() {
-  const { settings, setProvider, setSpeechPace, localStatus, setupProgress, setupError, setupLocal } = useLibrary()
-  const groqOn = Boolean(groqApiKey())
+  const {
+    settings,
+    setProvider,
+    setSpeechPace,
+    localStatus,
+    setupProgress,
+    setupError,
+    setupLocal,
+    groqReady,
+    groqKeyKnown,
+  } = useLibrary()
   const host = useHost()
   const [error, setError] = useState<string | null>(null)
   const [availableBytes, setAvailableBytes] = useState<number | null>(null)
@@ -106,7 +289,17 @@ function ProviderSwitch() {
             </p>
           </fieldset>
       ) : (
-        groqOn ? null : <p className="text-xs leading-relaxed text-muted-foreground">{CLOUD_NOTES_UNAVAILABLE}</p>
+        <div className="mt-3 grid gap-2">
+          {groqKeyKnown && !groqReady ? (
+            <p id="groq-key-required" className="text-xs leading-relaxed text-muted-foreground">
+              {GROQ_KEY_REQUIRED}
+            </p>
+          ) : null}
+          <GroqKeyField
+            pending={!groqKeyKnown}
+            describedBy={groqKeyKnown && !groqReady ? "groq-key-required" : undefined}
+          />
+        </div>
       )}
       {setupShown ? (
         <>

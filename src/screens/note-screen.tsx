@@ -2,8 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react"
 import { Link, useParams } from "react-router-dom"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import { CLOUD_NOTES_UNAVAILABLE, messageOf } from "../domain/errors"
-import { groqApiKey } from "../domain/groq"
+import { GROQ_KEY_REQUIRED, messageOf } from "../domain/errors"
 import { fileName } from "../domain/paths"
 import { formatRange } from "../domain/text"
 import type { Preset } from "../domain/types"
@@ -25,8 +24,7 @@ export function NoteScreen() {
   const { courseId = "", noteId = "" } = useParams()
   const host = useHost()
   const { store } = host
-  const { settings, revision } = useLibrary()
-  const groqOn = Boolean(groqApiKey())
+  const { settings, revision, groqReady, groqKeyKnown } = useLibrary()
   const [note, setNote] = useState<NoteDocument | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -219,8 +217,8 @@ export function NoteScreen() {
           Restyle these notes
         </h2>
         <p id="restyle-note" className="mt-2 text-sm text-muted-foreground">
-          {settings.provider === "cloud" && !groqOn
-            ? CLOUD_NOTES_UNAVAILABLE
+          {settings.provider === "cloud" && groqKeyKnown && !groqReady
+            ? GROQ_KEY_REQUIRED
             : settings.provider === "cloud"
               ? "Restyle uses Groq and keeps the previous copy."
               : "Restyle uses local notes and keeps the previous copy."}
@@ -252,7 +250,7 @@ export function NoteScreen() {
           </p>
         ) : null}
         <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-          <Button type="submit" aria-describedby="restyle-note" disabled={busy || (settings.provider === "cloud" && !groqOn)}>
+          <Button type="submit" aria-describedby="restyle-note" disabled={busy || (settings.provider === "cloud" && (!groqKeyKnown || !groqReady))}>
             {busy ? "Restyling…" : "Restyle notes"}
           </Button>
           <Button

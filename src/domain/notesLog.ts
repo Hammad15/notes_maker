@@ -1,5 +1,5 @@
 import { StudyError, messageOf } from "./errors"
-import { redactLogText } from "./groq"
+import { groqApiKey, redactLogText } from "./groq"
 import { joinPath } from "./paths"
 import type { FileStore } from "../platform/types"
 
@@ -13,7 +13,7 @@ export function notesLogPath(appData: string): string {
 export function notesFailureReport(label: string, error: unknown, at = new Date()): string {
   const lines = [`${at.toISOString()} Could not write notes for ${label}. ${messageOf(error)}`]
   if (error instanceof StudyError && error.detail) lines.push(error.detail)
-  return redactLogText(lines.join("\n"))
+  return redactLogText(lines.join("\n"), groqApiKey() ?? "")
 }
 
 /** Append one Make Notes failure to the log file and print those same lines. */

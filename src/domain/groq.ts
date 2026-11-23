@@ -24,7 +24,7 @@ export function rememberGroqApiKey(key: string | null): void {
   rememberedGroqKey = key?.trim() || null
 }
 
-/** The key remembered from GROQ_API_KEY. Empty when the variable is not set. */
+/** The key cloud notes will send. A key saved in the app wins over GROQ_API_KEY. */
 export function groqApiKey(): string | null {
   return rememberedGroqKey
 }

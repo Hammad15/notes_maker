@@ -11,11 +11,12 @@ export class StudyError extends Error {
   }
 }
 
-export const CLOUD_NOTES_UNAVAILABLE = "Cloud notes are not available in this build."
+export const GROQ_KEY_REQUIRED =
+  "A Groq API key is required. Paste it in the Groq API key field under Cloud."
 
 export class CloudNotesError extends StudyError {
   constructor() {
-    super(CLOUD_NOTES_UNAVAILABLE, "CLOUD_NOTES")
+    super(GROQ_KEY_REQUIRED, "CLOUD_NOTES")
     this.name = "CloudNotesError"
   }
 }

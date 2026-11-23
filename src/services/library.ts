@@ -131,6 +131,17 @@ const EMPTY_SETTINGS: Settings = {
 }
 
 let pendingSettingsWrite: Promise<void> = Promise.resolve()
+let pendingGroqKey: Promise<void> = Promise.resolve()
+
+/** Reads, saves, and removals share one queue so a slow keychain read cannot overwrite a newer key. */
+function enqueueGroqKey<T>(work: () => Promise<T>): Promise<T> {
+  const run = pendingGroqKey.then(work, work)
+  pendingGroqKey = run.then(
+    () => undefined,
+    () => undefined,
+  )
+  return run
+}
 
 const cancelledJobs = new Set<string>()
 
@@ -151,30 +162,26 @@ function settingsPath(appData: string): string {
   return joinPath(appData, "settings.json")
 }
 
-/** GROQ_API_KEY from the app process. Missing or blank leaves cloud notes off. */
-export async function readGroqKey(store: FileStore): Promise<string | null> {
-  const key = (await store.groqApiKey())?.trim() || null
-  rememberGroqApiKey(key)
-  return key
-}
-
 async function writeJson(store: FileStore, path: string, value: unknown): Promise<void> {
   await store.writeText(path, `${JSON.stringify(value, null, 2)}\n`)
 }
 
-export async function loadSettings(store: FileStore): Promise<Settings> {
+async function readSettingsRecord(store: FileStore): Promise<Record<string, unknown> | null> {
   const text = await store.readText(settingsPath(await store.appDataDir()))
-  if (!text) return { ...EMPTY_SETTINGS }
-  let json: Record<string, unknown>
+  if (!text) return null
   try {
     const parsed: unknown = JSON.parse(text)
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { ...EMPTY_SETTINGS }
-    json = parsed as Record<string, unknown>
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null
+    return parsed as Record<string, unknown>
   } catch {
-    return { ...EMPTY_SETTINGS }
+    return null
   }
+}
+
+function settingsFrom(json: Record<string, unknown> | null): Settings {
+  if (!json) return { ...EMPTY_SETTINGS }
   const languageCode = json.languageCode
-  const settings: Settings = {
+  return {
     homeDirectory: typeof json.homeDirectory === "string" ? json.homeDirectory : null,
     provider: json.provider === "cloud" ? "cloud" : "local",
     lastMediaDirectory: typeof json.lastMediaDirectory === "string" ? json.lastMediaDirectory : null,
@@ -185,20 +192,116 @@ export async function loadSettings(store: FileStore): Promise<Settings> {
     noteSortName: noteSortDirection(json.noteSortName),
     noteSortDate: noteSortDirection(json.noteSortDate),
   }
-  if (Object.prototype.hasOwnProperty.call(json, "groqApiKey")) await saveSettings(store, settings)
-  return settings
 }
 
-export async function saveSettings(store: FileStore, settings: Settings): Promise<void> {
-  const run = pendingSettingsWrite.then(
-    async () => writeJson(store, settingsPath(await store.appDataDir()), settings),
-    async () => writeJson(store, settingsPath(await store.appDataDir()), settings),
-  )
+/** A leftover plain key from an older settings.json. Blank is not a key. */
+function plainGroqKeyFrom(json: Record<string, unknown> | null): string | null {
+  if (!json || !Object.prototype.hasOwnProperty.call(json, "groqApiKey")) return null
+  const value = json.groqApiKey
+  if (typeof value !== "string") return null
+  const key = value.trim()
+  return key || null
+}
+
+async function envGroqKey(store: FileStore): Promise<string | null> {
+  try {
+    return (await store.groqApiKey())?.trim() || null
+  } catch {
+    return null
+  }
+}
+
+export interface GroqKeyState {
+  /** Key sent to Groq. Null when cloud notes must not run. */
+  key: string | null
+  /** True when the credential store holds a saved key. */
+  saved: boolean
+}
+
+/**
+ * Saved key wins. GROQ_API_KEY is the fallback when the user has not saved one.
+ * The key stays out of the Settings object the rest of the app keeps in memory.
+ */
+export async function readGroqKeyState(store: FileStore): Promise<GroqKeyState> {
+  return enqueueGroqKey(async () => {
+    await migratePlainGroqKey(store)
+    const savedKey = (await store.readSavedGroqKey())?.trim() || null
+    const fromEnv = await envGroqKey(store)
+    const key = savedKey || fromEnv
+    rememberGroqApiKey(key)
+    return { key, saved: savedKey != null }
+  })
+}
+
+/** Key for a Groq request, or null when cloud notes should explain that a key is required. */
+export async function readGroqKey(store: FileStore): Promise<string | null> {
+  return (await readGroqKeyState(store)).key
+}
+
+async function enqueueSettingsWrite(work: () => Promise<void>): Promise<void> {
+  const run = pendingSettingsWrite.then(work, work)
   pendingSettingsWrite = run.then(
     () => undefined,
     () => undefined,
   )
   await run
+}
+
+async function writeSettingsFile(store: FileStore, settings: Settings): Promise<void> {
+  const payload: Record<string, unknown> = { ...settings }
+  delete payload.groqApiKey
+  await writeJson(store, settingsPath(await store.appDataDir()), payload)
+}
+
+/** Move a plain settings.json key into the credential store, then delete it from the file. */
+async function migratePlainGroqKey(store: FileStore): Promise<void> {
+  await enqueueSettingsWrite(async () => {
+    const json = await readSettingsRecord(store)
+    if (!json || !Object.prototype.hasOwnProperty.call(json, "groqApiKey")) return
+    const plain = plainGroqKeyFrom(json)
+    if (plain) await store.writeSavedGroqKey(plain)
+    await writeSettingsFile(store, settingsFrom(json))
+  })
+}
+
+/** Drop a leftover plain key without copying it back over the credential store. */
+async function stripPlainGroqKey(store: FileStore): Promise<void> {
+  await enqueueSettingsWrite(async () => {
+    const json = await readSettingsRecord(store)
+    if (!json || !Object.prototype.hasOwnProperty.call(json, "groqApiKey")) return
+    await writeSettingsFile(store, settingsFrom(json))
+  })
+}
+
+export async function loadSettings(store: FileStore): Promise<Settings> {
+  return settingsFrom(await readSettingsRecord(store))
+}
+
+export async function saveSettings(store: FileStore, settings: Settings): Promise<void> {
+  await migratePlainGroqKey(store)
+  await enqueueSettingsWrite(async () => {
+    await writeSettingsFile(store, settings)
+  })
+}
+
+/** Remember a Groq key in the OS credential store. Empty input is refused and Groq is not called. */
+export async function saveGroqKey(store: FileStore, key: string): Promise<void> {
+  const trimmed = key.trim()
+  if (!trimmed) throw new StudyError("Paste a Groq API key.", "GROQ_KEY")
+  await enqueueGroqKey(async () => {
+    await store.writeSavedGroqKey(trimmed)
+    await stripPlainGroqKey(store)
+    rememberGroqApiKey(trimmed)
+  })
+}
+
+/** Drop the saved key from the credential store. GROQ_API_KEY remains the fallback when it is set. */
+export async function clearGroqKey(store: FileStore): Promise<void> {
+  await enqueueGroqKey(async () => {
+    await store.deleteSavedGroqKey()
+    await stripPlainGroqKey(store)
+    rememberGroqApiKey(await envGroqKey(store))
+  })
 }
 
 export async function assertWritableDirectory(store: FileStore, dir: string): Promise<void> {

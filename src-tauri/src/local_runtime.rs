@@ -220,6 +220,51 @@ fn file_matches(path: &Path, expected: u64, sha256: &str) -> Result<bool, String
     Ok(sha256_file(path)? == sha256)
 }
 
+fn verified_stamp(path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.verified", path.display()))
+}
+
+fn modified_millis(meta: &fs::Metadata) -> u128 {
+    meta.modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
+}
+
+/// Startup asks whether the model is ready. Hashing the multi-gigabyte file on
+/// every launch keeps the opening screen up, so a matching size and mtime reuse
+/// the last good hash.
+fn file_matches_cached(path: &Path, expected: u64, sha256: &str) -> Result<bool, String> {
+    static GATE: Mutex<()> = Mutex::new(());
+    let _guard = GATE.lock().unwrap_or_else(|poison| poison.into_inner());
+    let Ok(meta) = fs::metadata(path) else {
+        return Ok(false);
+    };
+    if !meta.is_file() || meta.len() != expected {
+        return Ok(false);
+    }
+    let modified = modified_millis(&meta);
+    let stamp = verified_stamp(path);
+    if let Ok(text) = fs::read_to_string(&stamp) {
+        let len = expected.to_string();
+        let when = modified.to_string();
+        let mut parts = text.split_whitespace();
+        if parts.next() == Some(len.as_str())
+            && parts.next() == Some(when.as_str())
+            && parts.next() == Some(sha256)
+        {
+            return Ok(true);
+        }
+    }
+    if sha256_file(path)? != sha256 {
+        let _ = fs::remove_file(&stamp);
+        return Ok(false);
+    }
+    let _ = fs::write(&stamp, format!("{expected} {modified} {sha256}\n"));
+    Ok(true)
+}
+
 fn agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(30))
@@ -354,20 +399,7 @@ fn notes_engine_ready(dir: &Path) -> bool {
 }
 
 fn notes_model_ready(app_data: &Path) -> Result<bool, String> {
-    static VERIFIED: Mutex<Option<PathBuf>> = Mutex::new(None);
-    let path = notes_model_path(app_data);
-    if let Ok(guard) = VERIFIED.lock() {
-        if guard.as_ref() == Some(&path) && sized_file(&path, NOTES_MODEL_BYTES) {
-            return Ok(true);
-        }
-    }
-    let ready = file_matches(&path, NOTES_MODEL_BYTES, NOTES_MODEL_SHA256)?;
-    if ready {
-        if let Ok(mut guard) = VERIFIED.lock() {
-            *guard = Some(path);
-        }
-    }
-    Ok(ready)
+    file_matches_cached(&notes_model_path(app_data), NOTES_MODEL_BYTES, NOTES_MODEL_SHA256)
 }
 
 fn engine_ready(dir: &Path) -> bool {
@@ -403,7 +435,7 @@ fn collect_status(app_data: &Path, pace: &str) -> Result<RuntimeStatus, String> 
     if !engine_ready(&bin_dir(app_data)) {
         missing.push("engine");
     }
-    if !file_matches(&model_path(app_data, pace), spec.bytes, spec.sha256)? {
+    if !file_matches_cached(&model_path(app_data, pace), spec.bytes, spec.sha256)? {
         missing.push("model");
     }
     if !notes_engine_ready(&notes_bin(app_data)) {

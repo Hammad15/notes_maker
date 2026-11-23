@@ -228,7 +228,9 @@ describe("providers", () => {
   it("keeps cloud notes unavailable in this build", () => {
     const cloud = createProvider("cloud")
     const probe = { size: 1, durationSeconds: 1, title: null, chapters: [] }
-    expect(new CloudNotesError().message).toBe("Cloud notes are not available in this build.")
+    expect(new CloudNotesError().message).toBe(
+      "A Groq API key is required. Paste it in the Groq API key field under Cloud.",
+    )
     expect(() => cloud.transcribe({ noteId: "n", title: "Lecture 3", probe })).toThrow(CloudNotesError)
     expect(() => cloud.compose(content)).toThrow(CloudNotesError)
     expect(() => cloud.restyle(content, "bullets", "")).toThrow(CloudNotesError)

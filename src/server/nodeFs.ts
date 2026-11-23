@@ -132,6 +132,7 @@ async function readProbe(target: string, size: number, ffprobe: string | null): 
 
 export function createNodeFileStore(appData = resolveAppDataDir(process.platform, process.env, os.homedir())): FileStore {
   void reconcileTranscriptionOnLaunch(appData).catch(() => undefined)
+  let savedGroqKey: string | null = null
   return {
     async appDataDir() {
       return appData
@@ -139,6 +140,20 @@ export function createNodeFileStore(appData = resolveAppDataDir(process.platform
     async groqApiKey() {
       const key = process.env.GROQ_API_KEY?.trim() ?? ""
       return key || null
+    },
+    // The installed app stores this in Windows Credential Manager or the macOS Keychain.
+    // Tests and the browser dev server keep it in memory so it is never written to settings.json.
+    async readSavedGroqKey() {
+      const key = savedGroqKey?.trim() ?? ""
+      return key || null
+    },
+    async writeSavedGroqKey(key: string) {
+      const trimmed = key.trim()
+      if (!trimmed) throw new Error("Paste a Groq API key.")
+      savedGroqKey = trimmed
+    },
+    async deleteSavedGroqKey() {
+      savedGroqKey = null
     },
     async userHome() {
       return os.homedir()
@@ -330,6 +345,14 @@ export async function dispatchDesktop(
       return store.appDataDir()
     case Ops.groqApiKey:
       return store.groqApiKey()
+    case Ops.readSavedGroqKey:
+      return store.readSavedGroqKey()
+    case Ops.writeSavedGroqKey:
+      await store.writeSavedGroqKey(typeof body.key === "string" ? body.key : "")
+      return null
+    case Ops.deleteSavedGroqKey:
+      await store.deleteSavedGroqKey()
+      return null
     case Ops.userHome:
       return store.userHome()
     case Ops.roots:

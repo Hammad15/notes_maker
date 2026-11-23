@@ -10,6 +10,7 @@ import {
 } from "react"
 import { notesWereCancelled } from "../domain/cancelNotes"
 import { StudyError, messageOf } from "../domain/errors"
+import { groqApiKey } from "../domain/groq"
 import type { LocalRuntimeStatus, SetupProgress, TranscriptionProgress, TranscriptionTarget } from "../domain/localSpeech"
 import {
   forwardProgress,
@@ -30,10 +31,12 @@ import {
   assertWritableDirectory,
   createCourse,
   listCourses,
+  clearGroqKey,
   loadSettings,
   makeNotes,
-  readGroqKey,
+  readGroqKeyState,
   requestNoteCancel,
+  saveGroqKey,
   saveSettings,
   type CourseSummary,
   type MakeNotesInput,
@@ -124,6 +127,12 @@ interface LibraryState {
   refreshLibrary: () => Promise<void>
   chooseHome: (path: string) => Promise<void>
   setProvider: (provider: ProviderId) => Promise<void>
+  groqReady: boolean
+  groqKeySaved: boolean
+  /** False until the credential store has been checked. Startup does not wait for that check. */
+  groqKeyKnown: boolean
+  saveGroqKey: (key: string) => Promise<void>
+  clearGroqKey: () => Promise<void>
   setSpeechPace: (pace: SpeechPace) => Promise<void>
   setNoteSort: (sort: NoteSortSettings) => Promise<void>
   addCourse: (name: string) => Promise<CourseSummary>
@@ -168,8 +177,13 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   const [localStatus, setLocalStatus] = useState<LocalRuntimeStatus | null>(null)
   const [setupProgress, setSetupProgress] = useState<SetupProgress | null>(null)
   const [setupError, setSetupError] = useState<string | null>(null)
+  const [groqReady, setGroqReady] = useState(false)
+  const [groqKeySaved, setGroqKeySaved] = useState(false)
+  const [groqKeyKnown, setGroqKeyKnown] = useState(false)
   const settingsRef = useRef(settings)
   settingsRef.current = settings
+  const groqTicket = useRef(0)
+  const localTicket = useRef(0)
 
   const refreshCourses = useCallback(
     async (home: string) => {
@@ -180,33 +194,60 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     [store],
   )
 
+  const refreshGroqKey = useCallback(async () => {
+    const ticket = ++groqTicket.current
+    try {
+      const groq = await readGroqKeyState(store)
+      if (ticket !== groqTicket.current) return
+      setGroqKeySaved(groq.saved)
+      setGroqReady(Boolean(groq.key))
+    } catch {
+      if (ticket !== groqTicket.current) return
+      setGroqKeySaved(false)
+      setGroqReady(false)
+    } finally {
+      if (ticket === groqTicket.current) setGroqKeyKnown(true)
+    }
+  }, [store])
+
+  const checkLocal = useCallback(
+    async (pace: SpeechPace) => {
+      const ticket = ++localTicket.current
+      try {
+        const status = await store.localStatus(pace)
+        if (ticket !== localTicket.current) return
+        setLocalStatus(status)
+      } catch {
+        if (ticket !== localTicket.current) return
+        setLocalStatus(notReady(pace))
+      }
+    },
+    [store],
+  )
+
   const reload = useCallback(async () => {
     setError(null)
     const loaded = await loadSettings(store)
-    await readGroqKey(store)
     settingsRef.current = loaded
     setSettings(loaded)
-    try {
-      setLocalStatus(await store.localStatus(speechPace(loaded.speechPace)))
-    } catch {
-      setLocalStatus(notReady(speechPace(loaded.speechPace)))
-    }
+    const pace = speechPace(loaded.speechPace)
     if (!loaded.homeDirectory) {
       setHomeMissing(false)
       setCourses([])
-      return
-    }
-    try {
-      await refreshCourses(loaded.homeDirectory)
-    } catch (err) {
-      if (err instanceof StudyError && err.code === "HOME_MISSING") {
+    } else {
+      try {
+        await refreshCourses(loaded.homeDirectory)
+      } catch (err) {
+        if (!(err instanceof StudyError && err.code === "HOME_MISSING")) throw err
         setHomeMissing(true)
         setCourses([])
-        return
       }
-      throw err
     }
-  }, [refreshCourses, store])
+    // The notes-model check hashes a multi-gigabyte file, and the keychain read
+    // can wait. The course list is already loaded, so neither one holds the window.
+    void refreshGroqKey()
+    void checkLocal(pace)
+  }, [checkLocal, refreshCourses, refreshGroqKey, store])
 
   useEffect(() => {
     let cancelled = false
@@ -257,13 +298,9 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       setSettings(next)
       setLocalStatus(null)
       await saveSettings(store, next)
-      try {
-        setLocalStatus(await store.localStatus(pace))
-      } catch {
-        setLocalStatus(notReady(pace))
-      }
+      await checkLocal(pace)
     },
-    [store],
+    [checkLocal, store],
   )
 
   const setNoteSort = useCallback(
@@ -279,13 +316,31 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   const setProvider = useCallback(
     async (provider: ProviderId) => {
       const next = { ...settingsRef.current, provider }
-      await readGroqKey(store)
       settingsRef.current = next
       setSettings(next)
       await saveSettings(store, next)
     },
     [store],
   )
+
+  const saveGroqKeySetting = useCallback(
+    async (key: string) => {
+      groqTicket.current += 1
+      await saveGroqKey(store, key)
+      setGroqKeySaved(true)
+      setGroqReady(true)
+      setGroqKeyKnown(true)
+    },
+    [store],
+  )
+
+  const clearGroqKeySetting = useCallback(async () => {
+    groqTicket.current += 1
+    await clearGroqKey(store)
+    setGroqKeySaved(false)
+    setGroqReady(Boolean(groqApiKey()))
+    setGroqKeyKnown(true)
+  }, [store])
 
   const dismissTour = useCallback(async () => {
     const next = { ...settingsRef.current, tourDismissed: true }
@@ -531,6 +586,11 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       refreshLibrary,
       chooseHome,
       setProvider,
+      groqReady,
+      groqKeySaved,
+      groqKeyKnown,
+      saveGroqKey: saveGroqKeySetting,
+      clearGroqKey: clearGroqKeySetting,
       setSpeechPace,
       setNoteSort,
       addCourse,
@@ -555,6 +615,11 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       refreshLibrary,
       chooseHome,
       setProvider,
+      groqReady,
+      groqKeySaved,
+      groqKeyKnown,
+      saveGroqKeySetting,
+      clearGroqKeySetting,
       setSpeechPace,
       setNoteSort,
       addCourse,

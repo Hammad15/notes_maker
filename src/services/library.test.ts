@@ -6,6 +6,7 @@ import { parseNoteFile, writeFrontmatter } from "../domain/frontmatter"
 import { GROQ_WHISPER_MODEL } from "../domain/groq"
 import { estimateTokens } from "../domain/lectureNotes"
 import { CloudNotesError } from "../domain/errors"
+import { notesFailureReport } from "../domain/notesLog"
 import type { LocalNotesMessage } from "../domain/localSpeech"
 import type { FileStore } from "../platform/types"
 import { createNodeFileStore, dispatchDesktop, resolveAppDataDir } from "../server/nodeFs"
@@ -14,10 +15,13 @@ import {
   createModule,
   deleteNote,
   findRecordingNote,
+  clearGroqKey,
   generateNotePdf,
   getCourse,
   loadSettings,
   makeNotes,
+  readGroqKey,
+  saveGroqKey,
   saveSettings,
   requestNoteCancel,
   readNote,
@@ -327,7 +331,7 @@ describe("course files", () => {
     vi.unstubAllGlobals()
   })
 
-  it("refuses cloud notes and drops a pasted key, even when a license file says entitled", async () => {
+  it("requires a saved or environment Groq key and ignores a license file", async () => {
     const home = path.join(root, "home")
     const data = path.join(root, "appdata")
     const store = createNodeFileStore(data)
@@ -335,13 +339,13 @@ describe("course files", () => {
     const course = await createCourse(store, home, "Biology 101")
     const media = path.join(root, "lecture.mp3")
     await writeFile(media, wav())
-    const pasted = "gsk_pasted_not_a_real_key"
+    const decoy = "gsk_file_key"
     await store.writeText(
       path.join(data, "settings.json"),
-      `${JSON.stringify({ homeDirectory: home, provider: "cloud", groqApiKey: pasted, languageCode: "en" }, null, 2)}\n`,
+      `${JSON.stringify({ homeDirectory: home, provider: "cloud", languageCode: "en", groqApiKey: "   " }, null, 2)}\n`,
     )
     await store.writeText(path.join(data, "license.json"), '{"entitled":true}\n')
-    await store.writeText(path.join(data, "groq.key"), "gsk_file_key\n")
+    await store.writeText(path.join(data, "groq.key"), `${decoy}\n`)
     const previousKey = process.env.GROQ_API_KEY
     delete process.env.GROQ_API_KEY
     const groq = blockGroq()
@@ -355,7 +359,8 @@ describe("course files", () => {
       newModuleName: null,
     }
     await expect(makeNotes(store, request)).rejects.toBeInstanceOf(CloudNotesError)
-    await expect(makeNotes(store, request)).rejects.toThrow("Cloud notes are not available in this build.")
+    await expect(makeNotes(store, request)).rejects.toThrow(/Groq API key is required/)
+    await expect(makeNotes(store, request)).rejects.toThrow(/Groq API key field under Cloud/)
     await expect(
       restyleNote(store, {
         home,
@@ -363,20 +368,99 @@ describe("course files", () => {
         noteId: "missing",
         provider: "cloud",
         preset: "bullets",
-        prompt: pasted,
+        prompt: decoy,
       }),
     ).rejects.toBeInstanceOf(CloudNotesError)
+    await expect(saveGroqKey(store, "  ")).rejects.toThrow(/Paste a Groq API key/)
     expect(groq.calls).toBe(0)
     expect(await store.exists(path.join(course.path, "notes"))).toBe(false)
     expect(await store.exists(path.join(course.path, ".study"))).toBe(false)
     const loaded = await loadSettings(store)
     expect(loaded).not.toHaveProperty("groqApiKey")
     expect(loaded.provider).toBe("cloud")
+    expect(await readGroqKey(store)).toBeNull()
     const settingsText = (await store.readText(path.join(data, "settings.json"))) ?? ""
-    expect(settingsText).not.toContain(pasted)
+    expect(settingsText).not.toContain(decoy)
     expect(settingsText).not.toContain("groqApiKey")
-    expect(await pathsContaining(course.path, pasted)).toEqual([])
-    expect(await pathsContaining(data, pasted)).toEqual([])
+    expect(await pathsContaining(course.path, decoy)).toEqual([])
+    if (previousKey == null) delete process.env.GROQ_API_KEY
+    else process.env.GROQ_API_KEY = previousKey
+    vi.unstubAllGlobals()
+  })
+
+  it("uses a saved Groq key ahead of GROQ_API_KEY and keeps it out of the notes", async () => {
+    const home = path.join(root, "home")
+    const data = path.join(root, "appdata")
+    const store = createNodeFileStore(data)
+    await store.mkdir(home)
+    const course = await createCourse(store, home, "Biology 101")
+    const media = path.join(root, "lecture.wav")
+    await writeFile(media, wav())
+    const saved = "user-pasted-key-39"
+    const envKey = "gsk_env_key"
+    const previousKey = process.env.GROQ_API_KEY
+    process.env.GROQ_API_KEY = envKey
+    await store.writeText(
+      path.join(data, "settings.json"),
+      `${JSON.stringify({ homeDirectory: home, provider: "cloud", languageCode: "en", groqApiKey: saved }, null, 2)}\n`,
+    )
+    expect(await readGroqKey(store)).toBe(saved)
+    const migrated = (await store.readText(path.join(data, "settings.json"))) ?? ""
+    expect(migrated).not.toContain(saved)
+    expect(migrated).not.toContain("groqApiKey")
+    expect(await pathsContaining(data, saved)).toEqual([])
+    await saveGroqKey(store, `  ${saved}  `)
+    const urls: string[] = []
+    const native = globalThis.fetch
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const href = requestHref(input)
+      if (href.startsWith("file:")) return native(input, init)
+      urls.push(href)
+      const auth = new Headers(init?.headers).get("authorization")
+      expect(auth).toBe(`Bearer ${saved}`)
+      expect(auth).not.toContain(envKey)
+      if (href.includes("/audio/")) {
+        return Response.json({ segments: [{ start: 0, end: 1, text: "Mitosis begins." }] })
+      }
+      const body = typeof init?.body === "string" ? init.body : ""
+      if (/outline of the whole lecture/i.test(body)) {
+        return Response.json({ choices: [{ message: { content: '{"sections":[{"title":"Cells","start":0,"end":1}]}' } }] })
+      }
+      return Response.json({ choices: [{ message: { content: "## Cells\n\n- Mitosis begins." } }] })
+    })
+    const filed = await makeNotes(store, {
+      home,
+      courseId: course.id,
+      mediaPath: media,
+      provider: "cloud",
+      moduleId: null,
+      moduleName: null,
+      newModuleName: null,
+    })
+    expect(urls.some((url) => url.includes("api.groq.com"))).toBe(true)
+    expect(await store.readText(filed.markdownPath)).toContain("## Cells")
+    expect(notesFailureReport("lecture.wav", new Error(`Groq refused ${saved}`))).not.toContain(saved)
+    expect(await pathsContaining(home, saved)).toEqual([])
+    expect(await pathsContaining(home, envKey)).toEqual([])
+    const settingsText = (await store.readText(path.join(data, "settings.json"))) ?? ""
+    expect(settingsText).not.toContain(saved)
+    expect(settingsText).not.toContain("groqApiKey")
+    expect(settingsText).not.toContain(envKey)
+    expect(await pathsContaining(data, saved)).toEqual([])
+    expect(await loadSettings(store)).not.toHaveProperty("groqApiKey")
+    expect((await loadSettings(store)).provider).toBe("cloud")
+    await saveSettings(store, { ...(await loadSettings(store)), provider: "local" })
+    const kept = (await store.readText(path.join(data, "settings.json"))) ?? ""
+    expect(kept).not.toContain(saved)
+    expect(kept).not.toContain("groqApiKey")
+    expect((await loadSettings(store)).provider).toBe("local")
+    expect(await readGroqKey(store)).toBe(saved)
+    await clearGroqKey(store)
+    const cleared = (await store.readText(path.join(data, "settings.json"))) ?? ""
+    expect(cleared).not.toContain(saved)
+    expect(cleared).not.toContain("groqApiKey")
+    expect(await readGroqKey(store)).toBe(envKey)
+    expect(await pathsContaining(path.join(data, "logs"), saved)).toEqual([])
     if (previousKey == null) delete process.env.GROQ_API_KEY
     else process.env.GROQ_API_KEY = previousKey
     vi.unstubAllGlobals()
@@ -395,7 +479,7 @@ describe("course files", () => {
     process.env.GROQ_API_KEY = key
     await store.writeText(
       path.join(data, "settings.json"),
-      `${JSON.stringify({ homeDirectory: home, provider: "cloud", languageCode: "en" }, null, 2)}\n`,
+      `${JSON.stringify({ homeDirectory: home, provider: "cloud", languageCode: "en", groqApiKey: "  " }, null, 2)}\n`,
     )
     const urls: string[] = []
     const native = globalThis.fetch
